@@ -1,0 +1,204 @@
+# Like Family PMS — Sổ Tay Kỹ Thuật & Trạng Thái Dự Án (`Progress.md`)
+
+- **Phiên bản hiện tại:** `v2.1.1` (Bản vá P&L & KPI Split-Stay Chain — tương ứng yêu cầu vá `v2.0.1` trên nền trọn bộ Phần A + Phần B + Phần C)
+- **Cập nhật lần cuối:** `2026-11-27 11:36 (UTC+7)`
+- **Trạng thái tổng thể:** Hoàn thành 100% Giai đoạn 1 (Web App + PWA) & Nâng cấp toàn diện Phần A + Phần B + Phần C
+- **URL Production:** https://likefamilypms.web.app (Nhân viên: `/` | SuperAdmin gốc: `/superadmin`)
+- **Firebase Project ID:** `likefamilypms`
+- **Tài liệu thiết kế gốc:** `like_family_pms_design.md` (v2.3) & `master_prompt.md`
+
+> **QUY TẮC BẮT BUỘC VỀ ĐỒNG BỘ TÀI LIỆU:**  
+> Sau **mỗi lần** sửa lỗi, nâng cấp tính năng, thay đổi thuật toán, schema Firestore, quy tắc bảo mật hoặc cấu hình hệ thống, agent/lập trình viên **BẮT BUỘC** cập nhật đồng thời cả `Progress.md` và thêm mục phiên bản mới vào `changelog.md` trước khi kết thúc tác vụ.
+
+---
+
+## 1. Cấu Trúc Thư Mục Mã Nguồn Thực Tế (`v2.1.0`)
+
+Dự án sử dụng **React 18 + TypeScript 5.7 + Vite 6 + Tailwind CSS v4 + Firebase SDK v11 (Auth cho SuperAdmin gốc & Firestore Persistent Cache) + Vite PWA**.  
+Tuyệt đối **KHÔNG** sử dụng `firebase/storage` (`0` import) và **KHÔNG** sử dụng Google Sign-In (`GoogleAuthProvider`).
+
+```text
+Hotel PMS/
+├── .env                                # Biến môi trường Firebase, VietQR, Gemini API keys
+├── .firebaserc                         # Trỏ dự án Firebase mặc định: likefamilypms
+├── firebase.json                       # Cấu hình Hosting SPA rewrite, cache headers, Firestore rules & indexes
+├── firestore.rules                     # Quy tắc bảo mật v1.1.0 (SuperAdmin gốc + chặn xóa RoomTypes/Rooms/Transactions/Audit)
+├── firestore.indexes.json              # Composite indexes cho bookings & guest_documents
+├── index.html                          # Entry HTML (Plus Jakarta Sans + JetBrains Mono, PWA theme)
+├── package.json                        # Scripts (dev, build, preview) & dependencies
+├── tsconfig.json                       # TypeScript strict config
+├── vite.config.ts                      # Vite + Tailwind v4 + VitePWA + Manual chunk splitting
+├── Progress.md                         # Sổ tay kỹ thuật & trạng thái dự án (file này)
+├── changelog.md                        # Nhật ký phiên bản theo chuẩn Keep a Changelog
+├── public/icon.svg                     # Biểu tượng ứng dụng PWA
+└── src/
+    ├── main.tsx                        # React root mount + PmsProvider
+    ├── App.tsx                         # Shell ứng dụng, Sidebar 248px, Mobile Drawer, Global Modals & Undo 15s
+    ├── index.css                       # Design tokens, typography tabular-nums, print styles
+    ├── vite-env.d.ts                   # Khai báo kiểu import.meta.env của Vite
+    ├── types/pms.ts                    # Toàn bộ TypeScript interfaces (bổ sung HourlyPricingConfig, BookingSourceConfig, ota_debt, isActive)
+    ├── context/PmsContext.tsx          # Dual Auth (SuperAdmin Firebase Auth + Firestore staff_users SHA-256) & 13 Real-time Listeners
+    ├── lib/
+    │   ├── firebase.ts                 # Firebase App, Auth (Email/Password), Firestore Persistent Multi-Tab Cache (không GoogleAuthProvider)
+    │   ├── crypto.ts                   # Mã hóa mật khẩu nhân viên SHA-256 (Web Crypto API + fallback)
+    │   ├── utils.ts                    # Date dd/mm/YYYY, calculateHourlyRoomTotal 3 bậc, Overlap check, Pricing split, isLoyalGuest (>=2)
+    │   ├── imageCompression.ts         # Nén ảnh HTML5 Canvas 2 luồng (Storage <=800px q=0.65 & OCR <=1600px q=0.90)
+    │   ├── geminiOcr.ts                # Gemini Vision OCR: 4-layer Model Resolver, Auto-Discovery /v1beta/models, Key Rotation
+    │   ├── vietqr.ts                   # Sinh URL VietQR động theo ngân hàng, số tiền & nội dung
+    │   ├── seedData.ts                 # Cấu hình mặc định, danh mục Nguồn/OTA, 16 phòng mẫu kèm giá ngày & giá theo giờ 3 bậc
+    │   ├── pmsActions.ts               # Nghiệp vụ Firestore (Booking ngày/giờ, Staff CRUD, Split-Stay, Merge, Bút toán đối ứng, Cleanup)
+    │   ├── cancellationActions.ts      # Quy trình Hủy đơn 8 quy tắc chuẩn kế toán (Hủy 1 phần, No-show, Cọc treo, OTA 3 trạng thái, Undo Cancel)
+    │   ├── postStayActions.ts          # Phần C — 9 quy tắc Kế toán Sau Check-in / Check-out (Reverse Check-in, Early CO, Reclassify, Void CO, Reopen, Post-CO Adj, OTA Adj, Period Lock)
+    │   └── backupExport.ts             # 1-Click Full Backup (.xlsx / .json chuẩn dd/mm/YYYY) & Xuất Excel khai báo ASM
+    └── components/
+        ├── DateInputVN.tsx             # Component chọn & hiển thị ngày chuẩn Việt Nam dd/mm/YYYY đồng bộ toàn hệ thống
+        ├── CancelBookingModal.tsx      # Hủy toàn bộ / Hủy 1 phần đoàn, phân loại Khách hủy / No-show / Khóa Void khi có cọc, 4 phương án cọc & OTA
+        ├── DepositResolutionModal.tsx  # Chốt xử lý tiền cọc treo (Hoàn tiền mặt/chuyển khoản độc lập, Giữ cọc phí hủy, Chuyển đơn khác)
+        ├── UndoCancelModal.tsx         # Khôi phục đơn hủy chặt chẽ: kiểm tra trùng phòng & đặt tiền đã thu về 0đ nếu cọc đã hoàn/chuyển
+        ├── PostStayAccountingModal.tsx # Modal kế toán 5 chế độ: Đảo Check-in, Trả sớm minh bạch, Mở lại đơn (Hóa đơn vs Lưu trú), Điều chỉnh sau CO, Hủy ghi nhận sau CO
+        ├── ReclassifyPaymentModal.tsx  # Đổi phương thức thanh toán bằng bút toán 2 chân (reclassification_out + reclassification_in), không tạo thu/chi giả
+        ├── LoginScreen.tsx             # Trang đăng nhập chính (/) dành riêng cho Chủ khách sạn & Nhân viên (Username/Password)
+        ├── SuperAdminLoginPage.tsx     # Trang đăng nhập riêng (/superadmin) dành cho SuperAdmin gốc (Firebase Auth Email/Password)
+        ├── RoomGridView.tsx            # Sơ đồ phòng hoạt động theo Tầng, huy hiệu Khách hàng thân quen & nhãn Nghỉ giờ
+        ├── TimelineCalendarView.tsx    # Lịch Timeline cuộn ngang vô tận, zoom 14/30/60đ, kéo chọn/kéo thả/gia hạn +1đ
+        ├── AvailabilityFinder.tsx      # Tìm phòng trống (DateInputVN dd/mm/YYYY, ẩn phòng ngừng dùng), đánh giá Đủ/Thiếu
+        ├── PricingEditor.tsx           # Bộ chỉnh giá 4 công cụ đồng bộ hiển thị ngày dd/mm/YYYY
+        ├── BookingCreateModal.tsx      # Đặt theo ngày/đêm HOẶC theo giờ 3 bậc, hiển thị số ngày ở, nhập giá OTA trực tiếp, Công nợ OTA
+        ├── GroupBookingModal.tsx       # Đặt phòng Khách đoàn (DateInputVN dd/mm/YYYY, hỗ trợ Công nợ OTA)
+        ├── BookingDetailModal.tsx      # Trung tâm xử lý đơn (ngày/giờ), huy hiệu Khách hàng thân quen, Công nợ OTA, Split-Stay, Merge, Undo
+        ├── OccupantOcrPanel.tsx        # Quản lý đa khách/phòng, upload 2 ảnh CCCD / 3 ảnh nước ngoài, AI OCR & trạng thái ASM
+        ├── BookingsAndGroupsView.tsx   # Tìm kiếm 1 ô không dấu/có dấu, Khách đoàn (Check-in hàng loạt), ASM & Khách hàng thân quen
+        ├── PrintableFormModal.tsx      # Xuất PNG / In PDF 3 biểu mẫu (hỗ trợ đơn theo ngày & theo giờ, chuẩn dd/mm/YYYY) kèm VietQR động
+        ├── FormCustomizerView.tsx      # Trình tùy chỉnh biểu mẫu động + Live Preview (chỉ khả dụng trên Web desktop)
+        ├── OtaReconciliationView.tsx   # Sổ Công nợ OTA phải thu (không hoa hồng/Gross-Net phức tạp) & gạch nợ theo lô
+        ├── FinanceReportsView.tsx      # Báo cáo P&L đa chiều, tách riêng Công nợ OTA khỏi quỹ tiền mặt, Sổ Quỹ & Bàn giao ca
+        ├── RoomMaintenanceModal.tsx    # Nhật ký bảo trì & sửa chữa từng phòng tự động liên kết Sổ Chi Phí
+        ├── StaffAndAuditView.tsx       # Quản lý CRUD tài khoản NV (Quản lý) hoặc chỉ hồ sơ cá nhân/đổi MK (NV thường) + audit_logs
+        └── SettingsAndAdminView.tsx    # Cấu hình KS/VietQR (SuperAdmin), CRUD Phòng/Loại phòng/OTA (không xóa — Ngừng dùng), Giá giờ 3 bậc, Gemini & Backup
+```
+
+---
+
+## 2. Chi Tiết Các Thuật Toán & Quy Tắc Nghiệp Vụ Cốt Lõi
+
+### 2.1. Phân cấp Xác thực SuperAdmin Firebase Auth vs. Nhân viên Firestore (`v1.1.0`)
+- **File:** `src/context/PmsContext.tsx`, `src/components/LoginScreen.tsx`, `src/lib/crypto.ts`, `src/lib/pmsActions.ts`.
+- **Chỉ duy nhất 1 SuperAdmin gốc (Firebase Auth Email/Password):** Khi tài khoản đầu tiên đăng nhập Firebase Auth, hệ thống khóa vĩnh viễn UID vào `system_meta/bootstrap` (`superAdminUid`). Mọi tài khoản Firebase Auth khác bị từ chối đăng nhập. Chỉ SuperAdmin gốc có quyền cấu hình Gemini API Keys, thông tin khách sạn/VietQR, dọn dẹp ảnh Base64 cũ và xuất Full Backup.
+- **Chủ khách sạn & Nhân viên (Firestore `staff_users` — Username + Password SHA-256):** Không dùng Google Sign-In hay Firebase Auth cho nhân viên lẻ. Mật khẩu được băm bằng `hashPasswordSha256` (`SHA-256` với salt ứng dụng) trước khi lưu/đối chiếu. Phiên đăng nhập lưu cục bộ (`lfpms_staff_session_v11`) và lắng nghe realtime `onSnapshot` để tự động đá đăng xuất ngay khi tài khoản bị khóa hoặc xóa.
+- **Cách ly quyền riêng tư tài khoản:** Quản lý (`superadmin`, `owner` hoặc có `canManageStaff`) có toàn quyền Thêm, Sửa, Đặt lại mật khẩu, Khóa/Mở khóa và Xóa nhân viên. Nhân viên bình thường chỉ subscribe duy nhất document của chính mình và chỉ thấy giao diện tự sửa Họ tên / SĐT / Đổi mật khẩu cá nhân.
+
+### 2.2. Đặt phòng & Tính tiền Theo Giờ — Công thức 3 bậc lũy tiến (`v1.1.0`)
+- **File:** `src/lib/utils.ts` (`calculateHourlyRoomTotal`), `src/components/SettingsAndAdminView.tsx`, `src/components/BookingCreateModal.tsx`, `src/components/BookingDetailModal.tsx`.
+- Mỗi loại phòng (`room_types`) lưu cấu hình `hourlyPricing`:
+  - `firstHourPrice`: Giá giờ đầu tiên (VD: `150.000đ`)
+  - `secondHourPrice`: Giá giờ thứ 2 (VD: `50.000đ`)
+  - `additionalHourPrice`: Đơn giá cố định từ giờ thứ 3 trở đi (giờ 3, 4, 5... đều cộng cùng mức này, VD: `30.000đ/giờ`)
+- **Công thức tự động theo số giờ $h$:**
+  - $h = 1 \Rightarrow \text{Tổng} = \text{firstHourPrice}$
+  - $h = 2 \Rightarrow \text{Tổng} = \text{firstHourPrice} + \text{secondHourPrice}$
+  - $h \ge 3 \Rightarrow \text{Tổng} = \text{firstHourPrice} + \text{secondHourPrice} + (h - 2) \times \text{additionalHourPrice}$
+- Lễ tân vẫn có quyền sửa trực tiếp tổng tiền giờ thỏa thuận trên đơn đặt phòng.
+
+### 2.3. Chuẩn hóa Ngày `dd/mm/YYYY` toàn hệ thống (`v1.1.0`)
+- **File:** `src/components/DateInputVN.tsx`, `src/lib/utils.ts` (`formatDateVN`, `formatDateTimeVN`).
+- Dữ liệu lưu trong Firestore dùng chuẩn ISO `YYYY-MM-DD` (chống sai lệch múi giờ & sắp xếp chuẩn), còn 100% giao diện nhập liệu (`DateInputVN`), bảng, sơ đồ phòng, lịch Timeline, biểu mẫu in/VietQR, nhật ký thao tác và file Excel xuất ra hiển thị thống nhất định dạng **`dd/mm/YYYY`** (và **`HH:mm dd/mm/YYYY`** cho mốc thời gian).
+
+### 2.4. Bảo toàn Dữ liệu Lịch sử (Không Xóa Phòng, Loại Phòng & Kênh OTA/Nguồn)
+- **File:** `src/components/SettingsAndAdminView.tsx`, `firestore.rules`.
+- **Loại phòng (`room_types`), Phòng (`rooms`) và Kênh OTA / Nguồn khách (`hotel_config.bookingSources`):** Gỡ bỏ hoàn toàn nút Xóa trên UI và khóa `allow delete: if false;` trong `firestore.rules` (cho `room_types` & `rooms`). Thay bằng trạng thái **`isActive: false` ("Ngừng sử dụng / Không sử dụng")** để ẩn khỏi màn hình tạo đơn mới nhưng giữ nguyên toàn vẹn lịch sử đơn cũ và báo cáo.
+- **Gói giá ngày (`priceTiers`) bên trong từng Loại phòng:** Cho phép tự do **Thêm, Sửa, Xóa** và chọn 1 mức giá làm **Giá mặc định (`isDefault: true`)**.
+
+### 2.5. Đơn giản hóa OTA, Phương thức "Công nợ OTA" & Bỏ Phân hệ Thuê Tháng Riêng
+- **OTA đơn giản hóa:** Khi chọn nguồn là kênh OTA, ẩn/gỡ hoàn toàn các trường `% hoa hồng OTA`, `Giá Gross`, `Tiền hoa hồng`, `Net`; lễ tân nhập trực tiếp số tiền thực tế khách sạn thu về.
+- **Phương thức thanh toán `Công nợ OTA` (`ota_debt`):** Có mặt trên mọi form tạo đơn, thanh toán và báo cáo. Các khoản `ota_debt` được tách sang **Đối soát OTA** và **không cộng vào quỹ tiền mặt tại quầy / Sổ bàn giao ca**.
+- **Thống nhất luồng dài ngày:** Loại bỏ mọi phân hệ/gói "Khách thuê tháng" riêng biệt; khách ở dài ngày (15, 30, 60+ ngày) xử lý chung trên luồng theo ngày kèm chức năng nhập tổng tiền tự chia đều ngược lại từng đêm (`splitTotalToDailyRates` làm tròn nghìn đồng, dồn phần dư vào đêm cuối).
+
+### 2.6. Nhận diện Khách quay lại & Gắn nhãn "Khách hàng thân quen"
+- **File:** `src/lib/pmsActions.ts` (`findMatchingGuests`, `checkOutBooking`), `src/lib/utils.ts` (`isLoyalGuest`).
+- Tra cứu thời gian thực theo 3 lớp (CCCD/Hộ chiếu/Visa, SĐT chuẩn hóa `84 → 0`, Họ tên bỏ dấu NFD) ngay khi lễ tân gõ, cho phép bấm chọn điền tự động toàn bộ hồ sơ khách cũ.
+- Tự động tăng `totalStays` khi khách hoàn tất trả phòng; mọi khách quay lại từ **lần thứ 2 trở lên** (`totalStays >= 2`) được gắn huy hiệu nổi bật **"Khách hàng thân quen"** trên kho khách, thẻ phòng, danh sách đơn và chi tiết đơn.
+
+### 2.7. Chống trùng lịch, Nén ảnh Canvas Base64, Gemini Vision OCR & Universal Undo
+- **Zero-Overbooking `[checkIn, checkOut)`:** `aStart < bEnd && aEnd > bStart`, cho phép giao ca check-out sáng & check-in chiều cùng ngày; Timeline cuộn ngang vô tận mở rộng động `±21` ngày.
+- **Nén ảnh Canvas 2 luồng (0đ Storage):** Lưu Base64 `<= 800px` JPEG `0.65` (~40–80KB/ảnh, chặn cứng `<= 850KB/doc`) tách riêng trong `guest_documents`; giữ bản `<= 1600px` JPEG `0.90` trong RAM cho Gemini OCR.
+- **Gemini Vision AI OCR:** 4-Layer Model Resolver + Live Auto-Discovery `/v1beta/models` chống 404 + xoay vòng nhiều key trên `429/401/403` + Zero Mock Fallback + **ưu tiên ngày hết hạn trên Dấu mộc nhập cảnh** + cảnh báo quá hạn lưu trú & khai báo ASM.
+- **Universal Undo & `audit_logs`:** Thanh hoàn tác 15 giây + hoàn tác có lý do trong chi tiết đơn/sổ quỹ; không xóa cứng `transactions` (`voided_by_undo`) và `audit_logs` bất biến.
+
+### 2.8. Quy trình Hủy đơn đặt phòng Chuẩn Kế toán & Chống gian lận — 8 Quy tắc (`v2.0.0`)
+- **File:** `src/lib/cancellationActions.ts`, `src/components/CancelBookingModal.tsx`, `src/components/DepositResolutionModal.tsx`, `src/components/UndoCancelModal.tsx`, `src/components/OtaReconciliationView.tsx`, `src/components/FinanceReportsView.tsx`, `firestore.rules`.
+- **Nguyên tắc bất biến:** `firestore.rules` khóa hoàn toàn `allow update, delete: if false;` trên cả `transactions` và `audit_logs`. Mọi hoàn tác giao dịch tiền đều tạo **Bút toán đối ứng mới (`type: 'reversal'`)** ngược chiều thay vì sửa hay xóa giao dịch gốc.
+- **Chi tiết 8 quy tắc bắt buộc:**
+  1. **Hủy một phần đơn nhiều phòng (`Partial Cancellation`):** Trong danh sách Khách đoàn (`BookingsAndGroupsView.tsx`), lễ tân chọn tích từng phòng lẻ cần hủy; chỉ giải phóng các phòng bị hủy, các phòng còn lại giữ nguyên lịch trình & tự tính lại tổng tiền đoàn, hỗ trợ chuyển cọc sang phòng còn lại trong đoàn.
+  2. **Tách biệt `Khách báo hủy` (`customer_cancelled`) và `Khách không đến` (`no_show`):** 2 trạng thái riêng biệt (`cancelled` vs `no_show`), tuyệt đối không tự động chuyển sang `no_show` khi quá giờ Check-in — nhân viên phải xác nhận thủ công sau khi kiểm tra thực tế.
+  3. **Khóa `Hủy do Nhập sai (Void)` khi đã thu tiền:** Nếu `(depositPaid + guestPaid) > 0`, tùy chọn `void_entry_error` bị khóa cứng cả ở UI lẫn `executeAccountingCancellation()`, buộc xử lý theo quy trình hủy khách thực tế.
+  4. **Phương án `Chờ xử lý tiền cọc` (`pending_deposit_resolution`):** Giải phóng phòng ngay nhưng treo khoản cọc chờ chủ khách sạn quyết định; hiển thị banner nhắc toàn hệ thống (`App.tsx`) và **tuyệt đối không tính vào doanh thu P&L**.
+  5. **Độc lập Phương thức hoàn tiền + 3 hướng chốt cọc:** Khi hoàn trả cọc (`refunded`), chọn độc lập **Tiền mặt** hoặc **Chuyển khoản** để tạo Phiếu Chi mới trừ đúng Quỹ tiền mặt hoặc Ngân hàng; giữ đủ **Giữ cọc tính vào doanh thu phí hủy (`forfeited_fee`)** và **Chuyển cọc sang đơn đặt phòng khác (`transferred_to_booking`)**.
+  6. **Kiểm soát chặt Khôi phục đơn (`Undo Cancel` — `UndoCancelModal.tsx`):** Bắt buộc kiểm tra trùng lịch trên phòng cũ `[checkIn, checkOut)`; nếu bị trùng thì chặn khôi phục vào phòng cũ và buộc chọn phòng trống khác. Nếu cọc cũ đã `refunded` hoặc `transferred_to_booking`, khi khôi phục hệ thống tự động đặt `depositPaid = 0, guestPaid = 0` (không tự phục hồi số tiền cọc đã hoàn/chuyển).
+  7. **Quy trình hủy riêng cho Đơn OTA (3 trạng thái):** `ota_cancel_requested` → `ota_cancel_confirmed` → `ota_cancel_reconciled`. Không tự động xóa Công nợ OTA khi hủy; tại mục **Đối soát OTA** cho phép điều chỉnh công nợ về `0đ` (hủy miễn phí) hoặc giữ đúng phần phí phạt thực nhận theo xác nhận từ kênh OTA.
+  8. **Thao tác trực tiếp có Nhật ký kiểm toán:** Không yêu cầu duyệt nhiều cấp rườm rà tại quầy, nhưng 100% thao tác hủy / treo cọc / hoàn tiền / giữ cọc / chuyển cọc / đối soát hủy OTA / khôi phục đơn đều bắt buộc nhập lý do và ghi vết đầy đủ vào `audit_logs`.
+
+### 2.9. Quy trình Hủy, Đảo Trạng Thái & Điều Chỉnh Kế Toán Sau Check-in / Check-out — 9 Quy tắc (`v2.1.0`)
+- **File:** `src/lib/postStayActions.ts`, `src/components/PostStayAccountingModal.tsx`, `src/components/ReclassifyPaymentModal.tsx`, `src/components/BookingDetailModal.tsx`, `src/components/FinanceReportsView.tsx`, `src/components/OtaReconciliationView.tsx`, `src/components/SettingsAndAdminView.tsx`, `src/components/StaffAndAuditView.tsx`, `firestore.rules`.
+- **Chi tiết 9 quy tắc kế toán bất biến:**
+  1. **Đảo Check-in (`reverse_checkin`):** Dành cho thao tác bấm nhầm Check-in. Chuyển đơn từ `in_house` về `reserved`, giữ nguyên vết thời điểm check-in gốc trong `audit_logs`, và **bắt buộc xác nhận hiện trạng phòng thực tế** (chưa sử dụng → `clean` / đã vào phòng → `dirty`).
+  2. **Trả phòng sớm minh bạch (`early_checkout`):** Cắt giảm chính xác số đêm còn lại về ngày trả thực tế; nếu khách đã trả dư tiền, bắt buộc chọn minh bạch 1 trong 3 hướng xử lý số tiền dư: **Hoàn trả ngay** (chọn độc lập Tiền mặt/Chuyển khoản), **Treo chờ xử lý** (`pending_deposit_resolution`, không tính doanh thu), hoặc **Chuyển tiền sang đơn đặt phòng khác**.
+  3. **Chuyển đổi Phương thức thanh toán không tạo dòng tiền giả (`reclassify_payment`):** Thay vì sửa giao dịch gốc (đã khóa bất biến), Chủ KS/Quản lý lập **bút toán 2 chân** (`reclassification_out` trừ PTTT cũ + `reclassification_in` cộng PTTT mới) để cân bằng đúng Quỹ tiền mặt bàn giao ca và Ngân hàng mà **không làm phình tổng thực thu P&L hay biểu đồ dòng tiền**.
+  4. **Hủy ghi nhận đơn đã Check-out (`void_checked_out` — Chỉ Quản lý / Chủ KS / SuperAdmin):** Đánh dấu đơn `cancelled` (`cancelType: 'void_entry_error'`, ghi `voidCheckedOutAt/By/Reason`) loại khỏi doanh thu phòng P&L, **tuyệt đối không tự động tạo phiếu hoàn tiền**; quản trị phải chọn rõ nghiệp vụ tài chính tương ứng: *Không hoàn tiền*, *Hủy phiếu thu nhầm (`void_receipt_entry`)*, *Tạo phiếu chi hoàn tiền thực tế (`actual_refund`)*, hoặc *Lập điều chỉnh Công nợ OTA kỳ sau (`ota_adjustment_only`)*.
+  5. **Mở lại đơn đã Check-out tách 2 chế độ (`reopen_checked_out`):**
+     - **Mở lại để sửa hóa đơn (`billing_only`):** Gắn cờ `isBillingReopened: true` để lập điều chỉnh tiền mà **không chiếm lại phòng** trên Sơ đồ phòng hay Lịch Timeline.
+     - **Mở lại lưu trú (`reopen_stay`):** Kiểm tra bắt buộc trùng lịch trên phòng gốc; nếu phòng đang bận hoặc có khách mới thì **chặn cứng** không cho mở lại.
+  6. **Điều chỉnh sau Check-out (`post_checkout_adjustment`):** Khi khách đã trả phòng nhưng phát sinh thêm phụ thu/minibar hoặc giảm trừ sai sót, lưu lịch sử bất biến vào collection **`post_checkout_adjustments`** (`oldTotal`, `newTotal`, `diffAmount`, `accountingDate`, `relatedTransactionIds`) đồng thời lập phiếu thu/chi bổ sung tách bạch.
+  7. **Điều chỉnh Công nợ OTA sau khi đã gạch nợ (`ota_adjustment`):** Không bao giờ xóa hay sửa lô đối soát `ota_payout_batches` đã hoàn tất. Mọi phát sinh hủy/điều chỉnh đơn OTA đã đối soát được lưu vào collection **`ota_adjustments`** (`status: 'pending_next_payout'`) để khấu trừ/cộng bù vào kỳ thanh toán tiếp theo và đánh dấu `applied` khi hoàn tất đối trừ.
+  8. **Khóa sổ kế toán theo kỳ (`Accounting Period Lock` — `hotel_config.accountingLockDate`):** SuperAdmin hoặc Chủ khách sạn thiết lập ngày khóa sổ chuẩn `dd/mm/YYYY` tại Cài đặt. Mọi giao dịch mới bị chặn ghi lùi ngày `<= accountingLockDate`; mọi bút toán điều chỉnh phát sinh cho đơn/phiếu thuộc kỳ đã khóa sổ tự động hạch toán sang **kỳ đang mở** (`resolveAccountingPostingDate`) và đính kèm tham chiếu ngày gốc (`originalReferenceDate`, `lockedPeriodOverride`).
+  9. **Nhật ký kiểm toán bất khả xâm phạm nâng cấp (`audit_logs`):** Lưu đầy đủ `userId`, `userName`, `timestamp`, `actionType`, `reason`, `relatedTransactionIds[]`, `before_snapshot` và `after_snapshot`; hiển thị trực tiếp thẻ mã bút toán liên quan và bảng xem nhanh `Before / After Snapshot` trong giao diện `StaffAndAuditView.tsx`.
+
+---
+
+## 3. Thông Số Cấu Hình, Schema Firestore & Quy Tắc Bảo Mật
+
+### 3.1. Biến môi trường (`.env`)
+| Biến môi trường | Bắt buộc | Mô tả |
+| :--- | :---: | :--- |
+| `VITE_FIREBASE_API_KEY` | Có | Web API Key của project `likefamilypms` |
+| `VITE_FIREBASE_AUTH_DOMAIN` | Có | `likefamilypms.firebaseapp.com` |
+| `VITE_FIREBASE_PROJECT_ID` | Có | `likefamilypms` |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Có | `410953301554` |
+| `VITE_FIREBASE_APP_ID` | Có | `1:410953301554:web:b10bdf8a7f250863c5062b` |
+| `VITE_GEMINI_API_KEYS` | Tùy chọn | Key Gemini dự phòng (khuyến nghị nhập trong Cài đặt SuperAdmin) |
+| `VITE_VIETQR_BANK_ID` | Tùy chọn | Mặc định `MB` |
+| `VITE_VIETQR_ACCOUNT_NO` | Tùy chọn | Số tài khoản nhận VietQR |
+| `VITE_VIETQR_ACCOUNT_NAME` | Tùy chọn | Mặc định `LE DUC PHUONG` |
+
+### 3.2. Các Collection Cloud Firestore chính
+- `system_meta/bootstrap` — Chốt UID SuperAdmin gốc duy nhất (`superAdminUid`, `ownerUid`).
+- `staff_users` — Tài khoản Chủ khách sạn & Nhân viên (`username`, `passwordHash` SHA-256, `role`, `authSource`, `permissions`, `isActive`).
+- `hotel_config/main` — Cấu hình chung, VietQR, `bookingSources[]` (nguồn trực tiếp & kênh OTA kèm `isActive`), và `accountingLockDate` (Khóa sổ kế toán theo kỳ).
+- `system_config/global_settings` — Danh sách Gemini API Keys xoay vòng & `preferredModel` (chỉ SuperAdmin ghi).
+- `form_templates` — 3 mẫu biểu mẫu động (`booking_confirmation`, `payment_receipt`, `registration_card`).
+- `room_types` — Loại phòng (`isActive`, `priceTiers[]` có `isDefault`, `hourlyPricing` 3 bậc). **Chặn xóa cứng.**
+- `rooms` — Danh sách phòng theo tầng (`isActive`, `hkStatus`). **Chặn xóa cứng.**
+- `guests` — Kho khách hàng (`totalStays`, `guestCategory`, `idNumber`, `stayPermitExpiryDate`...).
+- `guest_documents` — Ảnh giấy tờ nén Base64 tách biệt (`frontImageBase64`, `backImageBase64`, `entryStampImageBase64`, `isCleaned`). **Chỉ SuperAdmin xóa/dọn.**
+- `bookings`, `booking_groups`, `room_maintenances`, `ota_payout_batches`, `shift_handovers`.
+- `post_checkout_adjustments` (**bất biến 100%** — `allow update, delete: if false;` lưu lịch sử chênh lệch hóa đơn sau Check-out).
+- `ota_adjustments` (bút toán điều chỉnh công nợ OTA kỳ sau cho đơn đã đối soát — **chặn xóa cứng** `allow delete: if false;`).
+- `transactions` (**bất biến 100%** — khóa cả sửa & xóa trực tiếp; hỗ trợ bút toán đối ứng `reversal`, chuyển PTTT 2 chân `reclassification_out`/`reclassification_in`, hủy phiếu thu `void_receipt_entry`, điều chỉnh sau Check-out `post_checkout_adjustment`) & `audit_logs` (**bất biến** — chặn sửa & xóa, lưu `before_snapshot`, `after_snapshot`, `relatedTransactionIds`).
+
+---
+
+## 4. Lưu Ý Vận Hành, Bảo Trì & Chuẩn Bị Giai Đoạn 2 (Capacitor Android)
+
+- **Thiết lập lần đầu:** Đăng nhập tab **SuperAdmin gốc** (Email/Password) → Khởi tạo dữ liệu mẫu 16 phòng → Vào **Nhân viên & Nhật ký** để tạo tài khoản `username/password` cho Chủ khách sạn và Lễ tân → Vào **Cài đặt & Sao lưu** để nhập Số tài khoản VietQR và Gemini API Key.
+- **Dọn dẹp ảnh cũ:** Định kỳ 30/60/90 ngày, SuperAdmin gốc vào **Cài đặt & Sao lưu → Dọn ảnh cũ & Sao lưu**, chọn mốc ngày `dd/mm/YYYY` để giải phóng dung lượng `guest_documents` mà vẫn giữ nguyên 100% thông tin văn bản của khách.
+- **Nâng cấp Giai đoạn 2 (Capacitor Android):** Giữ nguyên toàn bộ codebase React + `dist/`, bổ sung `@capacitor/camera` (vẫn đi qua `compressDocumentImage` lưu Base64 0đ Storage) và `@capacitor/push-notifications` (FCM) cho cảnh báo phòng `dirty`, đơn mới và quá hạn lưu trú ASM.
+
+---
+
+## 5. Nhật Ký Tiến Độ (Chronological Log)
+
+- **2026-11-27 (`v1.0.0`):** Xây dựng hoàn chỉnh Giai đoạn 1 Web App Like Family PMS (31 file mã nguồn, 0đ Storage, Gemini OCR, Timeline liên tục, VietQR, Form Customizer, Universal Undo, Backup 1 chạm) và deploy lên `https://likefamilypms.web.app`.
+- **2026-11-27 (`v1.1.0`):** Nâng cấp đồng bộ toàn bộ 11 yêu cầu Phần A (SuperAdmin Firebase Auth + `staff_users` Firestore SHA-256, bỏ Google Login, chuẩn hóa 100% ngày `dd/mm/YYYY`, đặt phòng theo giờ 3 bậc lũy tiến, khóa xóa Phòng/Loại phòng/OTA, gói giá mặc định, đơn giản hóa giá OTA + `Công nợ OTA`, bỏ thuê tháng riêng, huy hiệu `Khách hàng thân quen`).
+- **2026-11-27 (`v2.0.0`):** Triển khai hoàn chỉnh Quy trình Hủy đơn đặt phòng 8 quy tắc chuẩn kế toán & chống gian lận (`CancelBookingModal`, `DepositResolutionModal`, `UndoCancelModal`, `cancellationActions`), khóa bất biến 100% giao dịch gốc `transactions` trong `firestore.rules` (chỉ tạo bút toán đối ứng `reversal`), bổ sung hủy 1 phần đoàn, phân biệt `customer_cancelled`/`no_show`, treo cọc chờ xử lý không tính doanh thu, độc lập phương thức hoàn tiền mặt/chuyển khoản, kiểm tra trùng phòng & reset cọc khi Undo Cancel, quy trình hủy OTA 3 trạng thái và deploy bản `v2.0.0` lên `https://likefamilypms.web.app`.
+- **2026-11-27 (`v2.0.1`):** Khắc phục triệt để lỗi không đăng nhập được SuperAdmin sau khi tạo lại tài khoản Email/Password trên Firebase Console (UID mới lệch với `ownerUid` cũ từ lúc dùng Google Login trong `system_meta/bootstrap`) bằng cơ chế tự động đối chiếu & re-bind theo đúng `ownerEmail`/`superAdminEmail` trong `PmsContext.tsx` và `firestore.rules`; đồng thời tách hoàn toàn trang đăng nhập riêng cho SuperAdmin tại đường dẫn `/superadmin` (`SuperAdminLoginPage.tsx`).
+- **2026-11-27 (`v2.1.0`):** Hoàn thiện trọn bộ **Phần C — 9 quy tắc Hủy, Đảo trạng thái & Điều chỉnh Kế toán Sau Check-in / Check-out**: bổ sung `src/lib/postStayActions.ts`, `PostStayAccountingModal.tsx`, `ReclassifyPaymentModal.tsx`; tích hợp Đảo Check-in (`clean`/`dirty`), Trả phòng sớm xử lý dư tiền 3 hướng, Đổi PTTT 2 chân không tạo thu/chi giả, Hủy ghi nhận sau Check-out không tự hoàn tiền, Mở lại đơn tách 2 chế độ (`billing_only` vs `reopen_stay`), `post_checkout_adjustments`, `ota_adjustments` kỳ sau, Khóa sổ kế toán theo kỳ (`accountingLockDate`), và hiển thị `relatedTransactionIds` + `before_snapshot`/`after_snapshot` trong `audit_logs`; cập nhật `firestore.rules` và deploy lên `https://likefamilypms.web.app`.
+- **2026-11-27 (`v2.1.1` / Bản vá P&L Split-Stay `v2.0.1`):** Sửa triệt để lỗi Báo cáo Lãi/Lỗ (P&L) & KPI (`Occupancy`, `ADR`, `RevPAR`) vẫn cộng nhầm doanh thu/số đêm của chặng `transferred` (`Đã chuyển phòng`) khi chuỗi Split-Stay đã bị hủy và hoàn tiền 100%: bổ sung bộ lọc chuẩn `isBookingEligibleForPnLRevenue()` trong `src/lib/utils.ts` (chỉ tính lưu trú thực tế `in_house`/`checked_out`/`transferred` hợp lệ, loại tuyệt đối `reserved`/`cancelled`/`no_show`/`void_entry_error` và các chặng `transferred` thuộc chuỗi đã void hoặc hoàn tiền ròng ≤ 0đ), đồng thời bổ sung tùy chọn **Hủy riêng chặng hiện tại** vs. **Hủy toàn bộ chuỗi chuyển phòng** trên cả `CancelBookingModal.tsx` và `PostStayAccountingModal.tsx` (`void_checked_out`).

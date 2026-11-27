@@ -1,0 +1,36 @@
+{
+  "entries": [
+    {
+      "path": "G:/VibeCode/AI-Skills/project"
+    },
+    {
+      "path": "G:/VibeCode/AI-Skills",
+      "include_only": [
+        "github-apk-auto-release"
+      ]
+    },
+    {
+      "path": "G:/VibeCode/AI-Skills/global-skills",
+      "include_only": [
+        "build-ui",
+        "ui-states",
+        "ui-a11y",
+        "ui-review",
+        "write-design-md",
+        "kpi-dashboard-design",
+        "frontend-developer",
+        "react-best-practices",
+        "react-patterns",
+        "tailwind-patterns",
+        "shadcn",
+        "typescript-expert",
+        "frontend-api-integration-patterns",
+        "mobile-design",
+        "mobile-developer",
+        "multi-platform-apps-multi-platform",
+        "auth-implementation-patterns",
+        "playwright-skill"
+      ]
+    }
+  ]
+}

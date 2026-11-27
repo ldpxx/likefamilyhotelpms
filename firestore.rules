@@ -1,0 +1,157 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isFirebaseSignedIn() {
+      return request.auth != null;
+    }
+
+    function isBootstrapOpen() {
+      return isFirebaseSignedIn() &&
+        !exists(/databases/$(database)/documents/system_meta/bootstrap);
+    }
+
+    function bootstrapData() {
+      return get(/databases/$(database)/documents/system_meta/bootstrap).data;
+    }
+
+    function isMatchingSuperAdminEmail() {
+      return isFirebaseSignedIn() &&
+        request.auth.token.email != null &&
+        exists(/databases/$(database)/documents/system_meta/bootstrap) && (
+          ('superAdminEmail' in bootstrapData() &&
+            bootstrapData().superAdminEmail.lower() == request.auth.token.email.lower()) ||
+          ('ownerEmail' in bootstrapData() &&
+            bootstrapData().ownerEmail.lower() == request.auth.token.email.lower())
+        );
+    }
+
+    function isSuperAdmin() {
+      return isFirebaseSignedIn() &&
+        exists(/databases/$(database)/documents/system_meta/bootstrap) && (
+          ('superAdminUid' in bootstrapData() && bootstrapData().superAdminUid == request.auth.uid) ||
+          ('ownerUid' in bootstrapData() && bootstrapData().ownerUid == request.auth.uid) ||
+          isMatchingSuperAdminEmail()
+        );
+    }
+
+    // Single Root SuperAdmin bootstrap sentinel (created once; allows UID re-bind if same SuperAdmin email recreates Firebase Auth account)
+    match /system_meta/bootstrap {
+      allow get: if true;
+      allow create: if isBootstrapOpen() &&
+        request.resource.data.superAdminUid == request.auth.uid;
+      allow update: if isMatchingSuperAdminEmail() &&
+        request.resource.data.superAdminUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Gemini AI API Keys — strictly SuperAdmin write/list; operational OCR reads config via get
+    match /system_config/{docId} {
+      allow get: if true;
+      allow list, write: if isSuperAdmin();
+    }
+
+    // Hotel & VietQR global config — SuperAdmin writes (also allows source/OTA toggles & accountingLockDate by Owner/Manager)
+    match /hotel_config/{docId} {
+      allow read: if true;
+      allow write: if isSuperAdmin() ||
+        request.resource.data.keys().hasOnly(['bookingSources', 'updatedAt']) ||
+        request.resource.data.keys().hasOnly(['accountingLockDate', 'updatedAt']);
+    }
+
+    // Staff accounts stored directly in Firestore (`username` + SHA-256 `passwordHash`)
+    match /staff_users/{staffId} {
+      allow read, create, update, delete: if true;
+    }
+
+    // Form templates (Web App Form Customizer)
+    match /form_templates/{templateId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    // Room types & Rooms — HARD DELETE PERMANENTLY BLOCKED to preserve historical bookings & reports
+    match /room_types/{typeId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    match /rooms/{roomId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    // Guest documents (Compressed Base64 ID/Passport/Visa/Entry Stamp images)
+    // Hard delete or Base64 cleanup strictly restricted to SuperAdmin
+    match /guest_documents/{docId} {
+      allow read, create: if true;
+      allow update: if request.resource.data.isCleaned != true || isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Core operational collections (shared by SuperAdmin & Firestore staff_users sessions)
+    match /guests/{guestId} {
+      allow read, create, update: if true;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /bookings/{bookingId} {
+      allow read, create, update: if true;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /booking_groups/{groupId} {
+      allow read, create, update: if true;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /room_maintenances/{maintId} {
+      allow read, create, update: if true;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /ota_payout_batches/{batchId} {
+      allow read, create, update: if true;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /shift_handovers/{handoverId} {
+      allow read, create, update: if true;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /daily_summaries/{summaryId} {
+      allow read, create, update: if true;
+      allow delete: if isSuperAdmin();
+    }
+
+    // Post-checkout adjustments: append-only immutable accounting trail
+    match /post_checkout_adjustments/{adjId} {
+      allow read, create: if true;
+      allow update, delete: if false;
+    }
+
+    // OTA post-reconciliation adjustments carried to next payout period
+    match /ota_adjustments/{adjId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    // Transactions: 100% IMMUTABLE financial ledger (NEVER edited or hard-deleted; use offsetting reversal entries)
+    match /transactions/{txId} {
+      allow read, create: if true;
+      allow update, delete: if false;
+    }
+
+    // Audit logs: append-only anti-fraud trail
+    match /audit_logs/{logId} {
+      allow read, create: if true;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
