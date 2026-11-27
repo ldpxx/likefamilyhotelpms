@@ -45,7 +45,7 @@ import type {
   Transaction,
   UndoBannerState,
 } from '../types/pms';
-import type { ActorInfo } from '../lib/pmsActions';
+import { ensureBookingSourcesConfig, type ActorInfo } from '../lib/pmsActions';
 
 const LS_STAFF_SESSION = 'lfpms_staff_session_v11';
 
@@ -128,6 +128,7 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [staffUsers, setStaffUsers] = useState<StaffUser[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const configMigrationCheckedRef = React.useRef(false);
 
   const [toasts, setToasts] = useState<ToastNotice[]>([]);
   const [undoBanner, setUndoBanner] = useState<UndoBannerState | null>(null);
@@ -644,6 +645,16 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await seedLikeFamilyHotelSampleData(actor.name);
     notify('Đã khởi tạo dữ liệu mẫu 16 phòng (4 tầng, 4 loại phòng, giá ngày & giá theo giờ 3 bậc)');
   }, [actor.name, notify]);
+
+  // v2.2.2 BUG-03: Idempotent auto-migration of `hotel_config/main.bookingSources` (Owner / SuperAdmin only, runs max once/session)
+  useEffect(() => {
+    if (!dataLoaded || !staffProfile || configMigrationCheckedRef.current) return;
+    if (staffProfile.role !== 'owner' && staffProfile.role !== 'superadmin') return;
+    configMigrationCheckedRef.current = true;
+    ensureBookingSourcesConfig(actor).catch(() => {
+      // Non-fatal if offline or read-only
+    });
+  }, [dataLoaded, staffProfile, actor]);
 
   const value: PmsContextValue = {
     firebaseUser,

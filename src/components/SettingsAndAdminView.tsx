@@ -32,6 +32,7 @@ import { VIETNAM_BANKS } from '../lib/vietqr';
 import { saveSystemAiConfig, testGeminiApiKey } from '../lib/geminiOcr';
 import {
   cleanupOldGuestDocumentPhotos,
+  restoreMissingDefaultBookingSources,
   scanOldGuestDocumentPhotos,
   writeAuditLog,
 } from '../lib/pmsActions';
@@ -62,7 +63,9 @@ export const SettingsAndAdminView: React.FC = () => {
   } = usePms();
 
   const canManageRoomsAndSources =
-    isSuperAdmin || Boolean(staffProfile?.permissions?.canManageConfig);
+    isSuperAdmin ||
+    staffProfile?.role === 'owner' ||
+    Boolean(staffProfile?.permissions?.canManageConfig);
   const canManageAccountingLock = isSuperAdmin || staffProfile?.role === 'owner';
 
   const [tab, setTab] = useState<'hotel' | 'rooms' | 'sources' | 'gemini' | 'data'>('hotel');
@@ -410,6 +413,28 @@ export const SettingsAndAdminView: React.FC = () => {
         : `Đã chuyển "${src.name}" sang Không sử dụng`,
       'info'
     );
+  };
+
+  const handleRestoreDefaultSources = async () => {
+    if (!canManageRoomsAndSources) return;
+    if (
+      !window.confirm(
+        'Khôi phục các nguồn đặt phòng & kênh OTA mặc định còn thiếu vào cấu hình khách sạn?\n\n(Chỉ bổ sung nguồn còn thiếu — tuyệt đối không xóa hay ghi đè các nguồn tùy chỉnh hiện có.)'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await restoreMissingDefaultBookingSources(actor);
+      notify(
+        res.addedCount > 0
+          ? `Đã bổ sung ${res.addedCount} nguồn mặc định còn thiếu (tổng ${res.totalCount} nguồn)`
+          : `Danh mục nguồn đã đầy đủ (${res.totalCount} nguồn) — không có thay đổi`,
+        'info'
+      );
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi khôi phục nguồn mặc định', 'error');
+    }
   };
 
   // --- GEMINI AI KEYS (SuperAdmin only) ---
@@ -1208,14 +1233,25 @@ export const SettingsAndAdminView: React.FC = () => {
       {/* TAB 3: OTA CHANNELS & BOOKING SOURCES (NO DELETE — ONLY ADD / EDIT / TOGGLE INACTIVE) */}
       {tab === 'sources' && (
         <div className="bg-white border border-[#E5E2DC] rounded-2xl p-6 space-y-4 max-w-3xl">
-          <div>
-            <h3 className="text-[15px] font-semibold text-[#1C1B18]">
-              Quản lý Kênh OTA & Nguồn đặt phòng
-            </h3>
-            <p className="text-[12px] text-[#57534E]">
-              Chỉ hỗ trợ Thêm, Sửa và chuyển trạng thái "Không sử dụng" (ẩn khỏi danh sách chọn khi
-              tạo đơn mới nhưng giữ nguyên trong báo cáo lịch sử — không xóa).
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-[15px] font-semibold text-[#1C1B18]">
+                Quản lý Kênh OTA & Nguồn đặt phòng
+              </h3>
+              <p className="text-[12px] text-[#57534E]">
+                Chỉ hỗ trợ Thêm, Sửa và chuyển trạng thái "Không sử dụng" (ẩn khỏi danh sách chọn khi
+                tạo đơn mới nhưng giữ nguyên trong báo cáo lịch sử — không xóa).
+              </p>
+            </div>
+            {canManageRoomsAndSources && (
+              <button
+                type="button"
+                onClick={handleRestoreDefaultSources}
+                className="h-8 px-3 rounded-lg border border-[#0F5132]/30 text-[#0F5132] hover:bg-[#E8F3EC] text-[12px] font-medium shrink-0"
+              >
+                Khôi phục danh mục nguồn mặc định
+              </button>
+            )}
           </div>
 
           {canManageRoomsAndSources && (
