@@ -28,6 +28,7 @@ import { bulkCheckInGroup, markOccupantAsmDeclared } from '../lib/pmsActions';
 import { exportAsmForeignerCsv } from '../lib/backupExport';
 import { CancelBookingModal } from './CancelBookingModal';
 import { DepositResolutionModal } from './DepositResolutionModal';
+import { PaginationBar, usePagination } from './PaginationBar';
 
 interface BookingsAndGroupsViewProps {
   onSelectBooking: (booking: Booking) => void;
@@ -119,7 +120,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   const filteredGuests = useMemo(() => {
     const qNorm = normalizeVietnamese(guestSearch);
     const qDigits = normalizePhone(guestSearch);
-    if (!qNorm) return guests.slice(0, 80);
+    if (!qNorm) return guests;
     return guests.filter((g) => {
       return (
         g.normalizedName.includes(qNorm) ||
@@ -128,6 +129,15 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
       );
     });
   }, [guests, guestSearch]);
+
+  const bookingsPag = usePagination(
+    filteredBookings,
+    `${searchText}|${statusFilter}|${sourceFilter}|${onlyAsmAlert}`,
+    20
+  );
+  const groupsPag = usePagination(groups, 'groups', 20);
+  const asmPag = usePagination(foreignerStays, String(asmOnlyPending), 20);
+  const guestsPag = usePagination(filteredGuests, guestSearch, 20);
 
   const handleBulkCheckIn = async (groupId: string, groupName: string) => {
     const groupBookings = bookings.filter((b) => b.groupId === groupId && b.status === 'reserved');
@@ -260,7 +270,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                     </td>
                   </tr>
                 ) : (
-                  filteredBookings.map((b) => {
+                  bookingsPag.pageItems.map((b) => {
                     const balance = getBookingGuestBalance(b);
                     return (
                       <tr
@@ -429,6 +439,15 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
               })()}
             </table>
           </div>
+
+          <PaginationBar
+            testId="bookings-pagination"
+            page={bookingsPag.page}
+            pageSize={bookingsPag.pageSize}
+            totalItems={bookingsPag.totalItems}
+            onPageChange={bookingsPag.setPage}
+            onPageSizeChange={bookingsPag.setPageSize}
+          />
         </div>
       )}
 
@@ -440,7 +459,8 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
               Chưa có hồ sơ khách đoàn nào. Bấm "Đặt khách đoàn" hoặc chọn nhiều phòng từ Tìm phòng trống.
             </div>
           ) : (
-            groups.map((g) => {
+            <>
+              {groupsPag.pageItems.map((g) => {
               const gBookings = bookings.filter((b) => b.groupId === g.id);
               const activeGroupBookings = gBookings.filter(
                 (b) => b.status === 'reserved' || b.status === 'in_house'
@@ -528,7 +548,16 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   </div>
                 </div>
               );
-            })
+            })}
+              <PaginationBar
+                testId="groups-pagination"
+                page={groupsPag.page}
+                pageSize={groupsPag.pageSize}
+                totalItems={groupsPag.totalItems}
+                onPageChange={groupsPag.setPage}
+                onPageSizeChange={groupsPag.setPageSize}
+              />
+            </>
           )}
         </div>
       )}
@@ -574,6 +603,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                 Hiện không có khách nước ngoài nào trong danh sách lọc.
               </p>
             ) : (
+              <>
               <div className="overflow-x-auto border border-[#E5E2DC] rounded-xl">
                 <table className="w-full text-[12px]">
                   <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
@@ -587,7 +617,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#F1EFEA]">
-                    {foreignerStays.map(({ booking, occ }) => {
+                    {asmPag.pageItems.map(({ booking, occ }) => {
                       const overstay =
                         occ.stayPermitExpiryDate && occ.stayPermitExpiryDate < booking.checkOut;
                       return (
@@ -645,6 +675,15 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   </tbody>
                 </table>
               </div>
+              <PaginationBar
+                testId="asm-pagination"
+                page={asmPag.page}
+                pageSize={asmPag.pageSize}
+                totalItems={asmPag.totalItems}
+                onPageChange={asmPag.setPage}
+                onPageSizeChange={asmPag.setPageSize}
+              />
+              </>
             )}
           </div>
 
@@ -676,7 +715,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F1EFEA]">
-                  {filteredGuests.map((g) => (
+                  {guestsPag.pageItems.map((g) => (
                     <tr key={g.id}>
                       <td className="px-3 py-2 font-medium text-[#1C1B18]">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -703,6 +742,15 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                 </tbody>
               </table>
             </div>
+
+            <PaginationBar
+              testId="guests-pagination"
+              page={guestsPag.page}
+              pageSize={guestsPag.pageSize}
+              totalItems={guestsPag.totalItems}
+              onPageChange={guestsPag.setPage}
+              onPageSizeChange={guestsPag.setPageSize}
+            />
           </div>
         </div>
       )}

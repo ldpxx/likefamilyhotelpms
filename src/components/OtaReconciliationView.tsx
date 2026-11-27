@@ -9,6 +9,7 @@ import { createOtaPayoutBatch, writeAuditLog } from '../lib/pmsActions';
 import { updateOtaCancelWorkflow } from '../lib/cancellationActions';
 import { createOtaPostReconciledAdjustment } from '../lib/postStayActions';
 import { DateInputVN } from './DateInputVN';
+import { PaginationBar, usePagination } from './PaginationBar';
 
 interface OtaReconciliationViewProps {
   onSelectBooking: (booking: Booking) => void;
@@ -163,6 +164,10 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
     () => unsettledBookings.filter((b) => selectedIds.includes(b.id)),
     [unsettledBookings, selectedIds]
   );
+
+  const unsettledPag = usePagination(unsettledBookings, channelFilter, 20);
+  const otaAdjPag = usePagination(otaAdjustments, 'ota_adj', 20);
+  const otaBatchesPag = usePagination(otaBatches, 'ota_batches', 20);
   const selectedExpectedTotal = selectedBookings.reduce((s, b) => s + (b.grossRoomTotal || 0), 0);
 
   // v2.2.1 #11b: Auto-suggest matching pending ota_adjustments for the selected OTA channel(s)
@@ -419,7 +424,7 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
                   </td>
                 </tr>
               ) : (
-                unsettledBookings.map((b) => {
+                unsettledPag.pageItems.map((b) => {
                   const checked = selectedIds.includes(b.id);
                   return (
                     <tr key={b.id} className={checked ? 'bg-[#E8F2EE]/40' : 'hover:bg-[#FAF9F6]'}>
@@ -466,6 +471,15 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
             </tbody>
           </table>
         </div>
+
+        <PaginationBar
+          testId="ota-unsettled-pagination"
+          page={unsettledPag.page}
+          pageSize={unsettledPag.pageSize}
+          totalItems={unsettledPag.totalItems}
+          onPageChange={unsettledPag.setPage}
+          onPageSizeChange={unsettledPag.setPageSize}
+        />
 
         {selectedBookings.length > 0 && (
           <form
@@ -675,6 +689,7 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
             Chưa có bút toán điều chỉnh công nợ OTA sau đối soát nào.
           </p>
         ) : (
+          <>
           <div className="overflow-x-auto border border-[#E5E2DC] rounded-xl">
             <table className="w-full text-[12px] min-w-[680px]">
               <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
@@ -687,7 +702,7 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#F1EFEA]">
-                {otaAdjustments.map((adj) => (
+                {otaAdjPag.pageItems.map((adj) => (
                   <tr key={adj.id}>
                     <td className="px-3 py-2 font-mono-num">{formatDateVN(adj.accountingDate)}</td>
                     <td className="px-3 py-2">
@@ -733,6 +748,15 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
               </tbody>
             </table>
           </div>
+          <PaginationBar
+            testId="ota-adj-pagination"
+            page={otaAdjPag.page}
+            pageSize={otaAdjPag.pageSize}
+            totalItems={otaAdjPag.totalItems}
+            onPageChange={otaAdjPag.setPage}
+            onPageSizeChange={otaAdjPag.setPageSize}
+          />
+          </>
         )}
       </div>
 
@@ -743,6 +767,7 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
         {otaBatches.length === 0 ? (
           <p className="text-[13px] text-[#8A847C]">Chưa có lô đối soát OTA nào được lập.</p>
         ) : (
+          <>
           <div className="overflow-x-auto border border-[#E5E2DC] rounded-xl">
             <table className="w-full text-[12px]">
               <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
@@ -757,7 +782,7 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#F1EFEA]">
-                {otaBatches.map((batch) => (
+                {otaBatchesPag.pageItems.map((batch) => (
                   <tr key={batch.id}>
                     <td className="px-3 py-2 font-mono-num font-medium text-[#1B5E4B]">
                       <span className="inline-flex items-center gap-1">
@@ -784,6 +809,15 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
               </tbody>
             </table>
           </div>
+          <PaginationBar
+            testId="ota-batches-pagination"
+            page={otaBatchesPag.page}
+            pageSize={otaBatchesPag.pageSize}
+            totalItems={otaBatchesPag.totalItems}
+            onPageChange={otaBatchesPag.setPage}
+            onPageSizeChange={otaBatchesPag.setPageSize}
+          />
+          </>
         )}
       </div>
     </div>

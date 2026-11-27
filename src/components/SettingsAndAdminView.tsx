@@ -58,6 +58,7 @@ import {
   todayISO,
 } from '../lib/utils';
 import { DateInputVN } from './DateInputVN';
+import { PaginationBar, usePagination } from './PaginationBar';
 
 export const SettingsAndAdminView: React.FC = () => {
   const {
@@ -202,6 +203,21 @@ export const SettingsAndAdminView: React.FC = () => {
   const currentServiceCatalog: ServiceCatalogItem[] = Array.isArray(hotelConfig.serviceCatalog)
     ? hotelConfig.serviceCatalog
     : DEFAULT_SERVICE_CATALOG;
+
+  const filteredServiceCatalogItems = React.useMemo(() => {
+    const normQ = normalizeVietnamese(svcSearch.trim());
+    return currentServiceCatalog.filter((it) => {
+      if (svcGroupFilter !== 'all' && it.category !== svcGroupFilter) return false;
+      if (normQ && !normalizeVietnamese(it.name).includes(normQ)) return false;
+      return true;
+    });
+  }, [currentServiceCatalog, svcGroupFilter, svcSearch]);
+
+  const serviceCatalogPag = usePagination(
+    filteredServiceCatalogItems,
+    `${svcGroupFilter}|${svcSearch}`,
+    20
+  );
 
   const saveServiceCatalog = async (nextList: ServiceCatalogItem[], label: string) => {
     if (!canManageServiceCatalog) return;
@@ -1589,12 +1605,7 @@ export const SettingsAndAdminView: React.FC = () => {
           { id: 'drink', label: 'Đồ uống', badgeClass: 'bg-[#E8F3EC] text-[#0F5132] border border-[#BBF7D0]' },
           { id: 'service', label: 'Dịch vụ', badgeClass: 'bg-[#F0F7F9] text-[#335C67] border border-[#BFD5DA]' },
         ];
-        const normQ = normalizeVietnamese(svcSearch.trim());
-        const filteredItems = currentServiceCatalog.filter((it) => {
-          if (svcGroupFilter !== 'all' && it.category !== svcGroupFilter) return false;
-          if (normQ && !normalizeVietnamese(it.name).includes(normQ)) return false;
-          return true;
-        });
+        const pagedItems = serviceCatalogPag.pageItems;
         const visibleGroups = groupDefs.filter(
           (g) => svcGroupFilter === 'all' || svcGroupFilter === g.id
         );
@@ -1770,7 +1781,13 @@ export const SettingsAndAdminView: React.FC = () => {
             {/* Grouped Catalog List */}
             <div className="space-y-4">
               {visibleGroups.map((g) => {
-                const groupItems = filteredItems.filter((it) => it.category === g.id);
+                const groupItems = pagedItems.filter((it) => it.category === g.id);
+                if (
+                  filteredServiceCatalogItems.length > serviceCatalogPag.pageSize &&
+                  groupItems.length === 0
+                ) {
+                  return null;
+                }
                 return (
                   <div key={g.id} className="border border-[#E5E2DC] rounded-xl overflow-hidden">
                     <div className="px-4 py-2.5 bg-[#FAF9F6] border-b border-[#E5E2DC] flex items-center justify-between">
@@ -1847,6 +1864,17 @@ export const SettingsAndAdminView: React.FC = () => {
                 );
               })}
             </div>
+
+            {filteredServiceCatalogItems.length > 20 && (
+              <PaginationBar
+                testId="settings-service-pagination"
+                page={serviceCatalogPag.page}
+                pageSize={serviceCatalogPag.pageSize}
+                totalItems={serviceCatalogPag.totalItems}
+                onPageChange={serviceCatalogPag.setPage}
+                onPageSizeChange={serviceCatalogPag.setPageSize}
+              />
+            )}
           </div>
         );
       })()}

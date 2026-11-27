@@ -12,6 +12,7 @@ import {
 import { usePms } from '../context/PmsContext';
 import type { StaffPermissions, StaffRole, StaffUser } from '../types/pms';
 import { formatDateTimeVN, getRoleLabel } from '../lib/utils';
+import { PaginationBar, usePagination } from './PaginationBar';
 import {
   createStaffAccount,
   deleteStaffAccount,
@@ -291,6 +292,8 @@ export const StaffAndAuditView: React.FC = () => {
         (l.relatedTransactionIds || []).some((id) => id.toLowerCase().includes(q))
     );
   }, [auditLogs, logSearch]);
+
+  const auditLogsPag = usePagination(filteredLogs, `${logSearch}|${auditViewMode}`, 20);
 
   return (
     <div className="space-y-4">
@@ -806,6 +809,7 @@ export const StaffAndAuditView: React.FC = () => {
                 </table>
               </div>
             ) : (
+              <>
               <div className="overflow-x-auto border border-[#E7E3DA] rounded-xl">
                 <table className="w-full text-[12px]">
                   <thead className="bg-[#FAF9F6] border-b border-[#E7E3DA] text-[#57534E]">
@@ -822,7 +826,7 @@ export const StaffAndAuditView: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#F1EFEA]">
-                    {filteredLogs.map((l) => {
+                    {auditLogsPag.pageItems.map((l) => {
                       const beforeSnap = l.before_snapshot ?? l.previousState;
                       const afterSnap = l.after_snapshot ?? l.newState;
                       const hasSnapshots = Boolean(beforeSnap || afterSnap);
@@ -901,6 +905,15 @@ export const StaffAndAuditView: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+              <PaginationBar
+                testId="audit-logs-pagination"
+                page={auditLogsPag.page}
+                pageSize={auditLogsPag.pageSize}
+                totalItems={auditLogsPag.totalItems}
+                onPageChange={auditLogsPag.setPage}
+                onPageSizeChange={auditLogsPag.setPageSize}
+              />
+              </>
             )}
           </div>
         </div>

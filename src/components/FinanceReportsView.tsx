@@ -28,6 +28,7 @@ import { getRoomRevenueInRange, type RevenueServiceGroup } from '../lib/revenueM
 import { recordTransaction, voidTransactionWithUndo } from '../lib/pmsActions';
 import { DateInputVN } from './DateInputVN';
 import { ReclassifyPaymentModal } from './ReclassifyPaymentModal';
+import { PaginationBar, usePagination } from './PaginationBar';
 
 export const FinanceReportsView: React.FC = () => {
   const {
@@ -106,6 +107,12 @@ export const FinanceReportsView: React.FC = () => {
     [filteredServiceRows]
   );
 
+  const serviceDetailPag = usePagination(
+    filteredServiceRows,
+    `${fromDate}|${toDate}|${sourceFilter}|${roomTypeFilter}|${svcGroupFilter}|${svcRoomFilter}|${svcSearchQuery}`,
+    20
+  );
+
   const handleExportServiceDetailExcel = () => {
     const data = filteredServiceRows.map((r) => ({
       'Ngày phát sinh': formatDateVN(r.businessDate),
@@ -150,6 +157,12 @@ export const FinanceReportsView: React.FC = () => {
       return true;
     });
   }, [transactions, fromDate, toDate, methodFilter]);
+
+  const cashbookPag = usePagination(
+    filteredTransactions,
+    `${fromDate}|${toDate}|${methodFilter}`,
+    20
+  );
 
   const activeTxs = useMemo(
     () => filteredTransactions.filter((t) => t.status === 'active'),
@@ -883,7 +896,7 @@ export const FinanceReportsView: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredServiceRows.slice(0, 120).map((r) => (
+                    serviceDetailPag.pageItems.map((r) => (
                       <tr key={r.id} className="hover:bg-[#FAF9F6]">
                         <td className="px-3 py-2 font-mono-num text-[#57534E]">
                           {formatDateVN(r.businessDate)}
@@ -926,14 +939,16 @@ export const FinanceReportsView: React.FC = () => {
                   <tfoot className="bg-[#FAF9F6] border-t border-[#E7E3DA] font-semibold">
                     <tr>
                       <td colSpan={6} className="px-3 py-2.5 text-[#1C1B18]">
-                        Tổng cộng bộ lọc ({filteredServiceRows.length} dòng
-                        {filteredServiceRows.length > 120 ? ', hiển thị 120 dòng gần nhất' : ''})
+                        Tổng cộng toàn bộ bộ lọc ({filteredServiceRows.length} dòng)
                       </td>
                       <td className="px-3 py-2.5 text-right font-mono-num">
                         {filteredServiceRows.reduce((s, r) => s + r.quantity, 0)}
                       </td>
                       <td className="px-3 py-2.5" />
-                      <td className="px-3 py-2.5 text-right font-mono-num text-[#0F5132]">
+                      <td
+                        data-testid="finance-service-footer-total"
+                        className="px-3 py-2.5 text-right font-mono-num text-[#0F5132]"
+                      >
                         {formatCurrency(filteredServiceTotal)}
                       </td>
                     </tr>
@@ -941,6 +956,15 @@ export const FinanceReportsView: React.FC = () => {
                 )}
               </table>
             </div>
+
+            <PaginationBar
+              testId="finance-service-pagination"
+              page={serviceDetailPag.page}
+              pageSize={serviceDetailPag.pageSize}
+              totalItems={serviceDetailPag.totalItems}
+              onPageChange={serviceDetailPag.setPage}
+              onPageSizeChange={serviceDetailPag.setPageSize}
+            />
           </div>
         </div>
       )}
@@ -1172,7 +1196,14 @@ export const FinanceReportsView: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#F1EFEA]">
-                {filteredTransactions.map((tx) => (
+                {cashbookPag.pageItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-center text-[#8A847C]">
+                      Không có giao dịch thu chi nào trong kỳ đã chọn.
+                    </td>
+                  </tr>
+                ) : (
+                  cashbookPag.pageItems.map((tx) => (
                   <tr
                     key={tx.id}
                     className={tx.status === 'voided_by_undo' ? 'opacity-45 bg-[#FAF9F6]' : ''}
@@ -1258,10 +1289,41 @@ export const FinanceReportsView: React.FC = () => {
                       </div>
                     </td>
                   </tr>
-                ))}
+                ))
+                )}
               </tbody>
+              {filteredTransactions.length > 0 && (
+                <tfoot className="bg-[#FAF9F6] border-t border-[#E5E2DC] font-semibold text-[12px]">
+                  <tr>
+                    <td colSpan={4} className="px-4 py-2.5 text-[#57534E]">
+                      Tổng toàn bộ bộ lọc ({filteredTransactions.length} bút toán • Thực thu:{' '}
+                      <span className="font-mono-num text-[#15803D]">
+                        +{formatCurrency(metrics.totalCashIn)}
+                      </span>{' '}
+                      • Chi phí:{' '}
+                      <span className="font-mono-num text-[#B91C1C]">
+                        -{formatCurrency(metrics.totalExpense)}
+                      </span>
+                      )
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono-num text-[#1C1B18]">
+                      {formatCurrency(metrics.totalCashIn - metrics.totalExpense)}
+                    </td>
+                    <td className="px-4 py-2.5" />
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
+
+          <PaginationBar
+            testId="finance-cashbook-pagination"
+            page={cashbookPag.page}
+            pageSize={cashbookPag.pageSize}
+            totalItems={cashbookPag.totalItems}
+            onPageChange={cashbookPag.setPage}
+            onPageSizeChange={cashbookPag.setPageSize}
+          />
         </div>
       )}
 
