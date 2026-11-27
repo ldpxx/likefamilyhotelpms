@@ -99,6 +99,7 @@ service cloud.firestore {
           'bookingSources',
           'otaChannels',
           'hourlyCleaningBufferMinutes',
+          'configMigrationVersion',
           'updatedAt'
         ])
       );
@@ -166,6 +167,17 @@ service cloud.firestore {
 
     match /bookings/{bookingId} {
       allow read, create, update: if isActiveStaff();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Atomic room occupancy index (`room_occupancy/{roomId}_{YYYY-MM-DD}`) — v2.2.2 BUG-02
+    match /room_occupancy/{occId} {
+      allow read: if isActiveStaff();
+      allow create, update: if isActiveStaff() &&
+        request.resource.data.keys().hasAll(['roomId', 'date', 'intervals', 'updatedAt']) &&
+        request.resource.data.roomId is string &&
+        request.resource.data.date is string &&
+        request.resource.data.intervals is list;
       allow delete: if isSuperAdmin();
     }
 

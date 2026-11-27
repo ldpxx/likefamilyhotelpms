@@ -1,5 +1,12 @@
-import { doc, writeBatch } from 'firebase/firestore';
+import { doc, runTransaction, writeBatch } from 'firebase/firestore';
 import { db } from './firebase';
+import {
+  applyOccupancyPlanInTransaction,
+  buildBookingOccupancyInterval,
+  DEFAULT_CLEANING_BUFFER_MINUTES,
+  getAffectedOccupancyDates,
+  prepareOccupancyPlanInTransaction,
+} from './occupancyService';
 import type {
   Booking,
   DepositResolutionStatus,
@@ -78,16 +85,23 @@ export async function reverseCheckInBooking(params: {
     roomId: booking.roomId,
   };
 
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'bookings', booking.id), {
-    status: 'reserved',
-    updatedAt: now,
+  // v2.2.2 BUG-02: Reverse Check-in keeps reservation interval active in room_occupancy atomically
+  const resIv = buildBookingOccupancyInterval(booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      reserve: [{ roomId: booking.roomId, roomNumber: booking.roomNumber, interval: resIv }],
+      excludeIds: [booking.id],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.update(doc(db, 'bookings', booking.id), {
+      status: 'reserved',
+      updatedAt: now,
+    });
+    tx.update(doc(db, 'rooms', booking.roomId), {
+      currentBookingId: null,
+      hkStatus: nextHkStatus,
+    });
   });
-  batch.update(doc(db, 'rooms', booking.roomId), {
-    currentBookingId: null,
-    hkStatus: nextHkStatus,
-  });
-  await batch.commit();
 
   await writeAuditLog({
     actionType: 'reverse_checkin',
@@ -168,115 +182,122 @@ export async function executeEarlyCheckOut(params: {
     totalPaid,
   };
 
-  const batch = writeBatch(db);
+  // v2.2.2 BUG-02: Release room_occupancy dates atomically on Early Check-out
+  const oldOcc = buildBookingOccupancyInterval(booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+  const oldDates = getAffectedOccupancyDates(oldOcc.startAt, oldOcc.endAt, oldOcc.bufferMinutes);
   const relatedTxIds: string[] = [];
 
-  batch.update(doc(db, 'bookings', booking.id), {
-    status: 'checked_out',
-    checkOut: newCheckOut,
-    dailyRates: effectiveRates,
-    nights: effectiveRates.length,
-    grossRoomTotal: newGross,
-    otaCommissionAmount: 0,
-    netRoomTotal: newGross,
-    depositPaid: nextPaid.depositPaid,
-    guestPaid: nextPaid.guestPaid,
-    earlyCheckoutRefundPending: excessAmount > 0 && excessAction === 'pending_deposit_resolution',
-    actualCheckOutAt: now,
-    depositResolutionStatus: excessAmount > 0 ? excessAction : 'none',
-    pendingDepositAmount:
-      excessAmount > 0 && excessAction === 'pending_deposit_resolution' ? excessAmount : 0,
-    depositTransferredToBookingId:
-      excessAmount > 0 && excessAction === 'transferred_to_booking'
-        ? params.transferTargetBooking?.id || null
-        : null,
-    depositTransferredToBookingCode:
-      excessAmount > 0 && excessAction === 'transferred_to_booking'
-        ? params.transferTargetBooking?.bookingCode || null
-        : null,
-    updatedAt: now,
-  });
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      release: [{ roomId: booking.roomId, id: booking.id, dates: oldDates }],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
 
-  batch.update(doc(db, 'rooms', booking.roomId), {
-    currentBookingId: null,
-    hkStatus: 'dirty',
-  });
+    tx.update(doc(db, 'bookings', booking.id), {
+      status: 'checked_out',
+      checkOut: newCheckOut,
+      dailyRates: effectiveRates,
+      nights: effectiveRates.length,
+      grossRoomTotal: newGross,
+      otaCommissionAmount: 0,
+      netRoomTotal: newGross,
+      depositPaid: nextPaid.depositPaid,
+      guestPaid: nextPaid.guestPaid,
+      earlyCheckoutRefundPending: excessAmount > 0 && excessAction === 'pending_deposit_resolution',
+      actualCheckOutAt: now,
+      depositResolutionStatus: excessAmount > 0 ? excessAction : 'none',
+      pendingDepositAmount:
+        excessAmount > 0 && excessAction === 'pending_deposit_resolution' ? excessAmount : 0,
+      depositTransferredToBookingId:
+        excessAmount > 0 && excessAction === 'transferred_to_booking'
+          ? params.transferTargetBooking?.id || null
+          : null,
+      depositTransferredToBookingCode:
+        excessAmount > 0 && excessAction === 'transferred_to_booking'
+          ? params.transferTargetBooking?.bookingCode || null
+          : null,
+      updatedAt: now,
+    });
 
-  if (excessAmount > 0) {
-    if (excessAction === 'refunded') {
-      const method = params.refundMethod || 'cash';
-      const txId = generateId('tx');
-      relatedTxIds.push(txId);
-      const refundTx: Transaction = {
-        id: txId,
-        bookingId: booking.id,
-        bookingCode: booking.bookingCode,
-        roomNumber: booking.roomNumber,
-        originalReferenceDate: booking.checkIn,
-        lockedPeriodOverride: isLockedOrigin,
-        type: 'refund',
-        direction: 'out',
-        category: 'Phiếu chi hoàn tiền dư trả phòng sớm',
-        amount: excessAmount,
-        method,
-        date: postingDate,
-        status: 'active',
-        createdAt: now,
-        createdByUid: actor.uid,
-        createdByName: actor.name,
-        note: `Hoàn tiền dư ${excessAmount.toLocaleString('vi-VN')}đ trả sớm đơn ${booking.bookingCode} qua ${getPaymentMethodLabel(
-          method
-        )} — ${reason.trim()}`,
-      };
-      batch.set(doc(db, 'transactions', txId), refundTx);
-    } else if (excessAction === 'transferred_to_booking' && params.transferTargetBooking) {
-      const outId = generateId('tx');
-      const inId = generateId('tx');
-      relatedTxIds.push(outId, inId);
-      batch.set(doc(db, 'transactions', outId), {
-        id: outId,
-        bookingId: booking.id,
-        bookingCode: booking.bookingCode,
-        roomNumber: booking.roomNumber,
-        type: 'deposit_transfer_out',
-        direction: 'out',
-        category: `Bảo lưu tiền dư trả sớm sang ${params.transferTargetBooking.bookingCode}`,
-        amount: excessAmount,
-        method: 'bank_transfer',
-        date: postingDate,
-        status: 'active',
-        createdAt: now,
-        createdByUid: actor.uid,
-        createdByName: actor.name,
-        note: reason.trim(),
-      } satisfies Transaction);
-      batch.set(doc(db, 'transactions', inId), {
-        id: inId,
-        bookingId: params.transferTargetBooking.id,
-        bookingCode: params.transferTargetBooking.bookingCode,
-        roomNumber: params.transferTargetBooking.roomNumber,
-        type: 'deposit_transfer_in',
-        direction: 'in',
-        category: `Nhận bảo lưu tiền dư từ ${booking.bookingCode}`,
-        amount: excessAmount,
-        method: 'bank_transfer',
-        date: postingDate,
-        status: 'active',
-        createdAt: now,
-        createdByUid: actor.uid,
-        createdByName: actor.name,
-        note: reason.trim(),
-      } satisfies Transaction);
-      const targetPaid = applyPaymentDelta(params.transferTargetBooking, 'transfer_in', excessAmount);
-      batch.update(doc(db, 'bookings', params.transferTargetBooking.id), {
-        depositPaid: targetPaid.depositPaid,
-        guestPaid: targetPaid.guestPaid,
-        updatedAt: now,
-      });
+    tx.update(doc(db, 'rooms', booking.roomId), {
+      currentBookingId: null,
+      hkStatus: 'dirty',
+    });
+
+    if (excessAmount > 0) {
+      if (excessAction === 'refunded') {
+        const method = params.refundMethod || 'cash';
+        const txId = generateId('tx');
+        relatedTxIds.push(txId);
+        const refundTx: Transaction = {
+          id: txId,
+          bookingId: booking.id,
+          bookingCode: booking.bookingCode,
+          roomNumber: booking.roomNumber,
+          originalReferenceDate: booking.checkIn,
+          lockedPeriodOverride: isLockedOrigin,
+          type: 'refund',
+          direction: 'out',
+          category: 'Phiếu chi hoàn tiền dư trả phòng sớm',
+          amount: excessAmount,
+          method,
+          date: postingDate,
+          status: 'active',
+          createdAt: now,
+          createdByUid: actor.uid,
+          createdByName: actor.name,
+          note: `Hoàn tiền dư ${excessAmount.toLocaleString('vi-VN')}đ trả sớm đơn ${booking.bookingCode} qua ${getPaymentMethodLabel(
+            method
+          )} — ${reason.trim()}`,
+        };
+        tx.set(doc(db, 'transactions', txId), refundTx);
+      } else if (excessAction === 'transferred_to_booking' && params.transferTargetBooking) {
+        const outId = generateId('tx');
+        const inId = generateId('tx');
+        relatedTxIds.push(outId, inId);
+        tx.set(doc(db, 'transactions', outId), {
+          id: outId,
+          bookingId: booking.id,
+          bookingCode: booking.bookingCode,
+          roomNumber: booking.roomNumber,
+          type: 'deposit_transfer_out',
+          direction: 'out',
+          category: `Bảo lưu tiền dư trả sớm sang ${params.transferTargetBooking.bookingCode}`,
+          amount: excessAmount,
+          method: 'bank_transfer',
+          date: postingDate,
+          status: 'active',
+          createdAt: now,
+          createdByUid: actor.uid,
+          createdByName: actor.name,
+          note: reason.trim(),
+        } satisfies Transaction);
+        tx.set(doc(db, 'transactions', inId), {
+          id: inId,
+          bookingId: params.transferTargetBooking.id,
+          bookingCode: params.transferTargetBooking.bookingCode,
+          roomNumber: params.transferTargetBooking.roomNumber,
+          type: 'deposit_transfer_in',
+          direction: 'in',
+          category: `Nhận bảo lưu tiền dư từ ${booking.bookingCode}`,
+          amount: excessAmount,
+          method: 'bank_transfer',
+          date: postingDate,
+          status: 'active',
+          createdAt: now,
+          createdByUid: actor.uid,
+          createdByName: actor.name,
+          note: reason.trim(),
+        } satisfies Transaction);
+        const targetPaid = applyPaymentDelta(params.transferTargetBooking, 'transfer_in', excessAmount);
+        tx.update(doc(db, 'bookings', params.transferTargetBooking.id), {
+          depositPaid: targetPaid.depositPaid,
+          guestPaid: targetPaid.guestPaid,
+          updatedAt: now,
+        });
+      }
     }
-  }
-
-  await batch.commit();
+  });
 
   await writeAuditLog({
     actionType: 'early_checkout',
@@ -617,22 +638,36 @@ export async function reopenCheckedOutBooking(params: {
     );
   }
 
-  batch.update(doc(db, 'bookings', booking.id), {
-    status: 'in_house',
-    roomId: targetRoom.id,
-    roomNumber: targetRoom.roomNumber,
-    floor: targetRoom.floor,
-    roomTypeId: targetRoom.roomTypeId,
-    roomTypeName: targetRoom.roomTypeName,
-    checkOut: nextOut,
-    actualCheckOutAt: null,
-    isBillingReopened: false,
-    updatedAt: now,
+  // v2.2.2 BUG-02: Reserve room_occupancy atomically inside runTransaction when reopening stay
+  const reopenIv = buildBookingOccupancyInterval(
+    { ...booking, checkIn: today, checkOut: nextOut },
+    '14:00',
+    '12:00',
+    DEFAULT_CLEANING_BUFFER_MINUTES,
+    now
+  );
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      reserve: [{ roomId: targetRoom.id, roomNumber: targetRoom.roomNumber, interval: reopenIv }],
+      excludeIds: [booking.id],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.update(doc(db, 'bookings', booking.id), {
+      status: 'in_house',
+      roomId: targetRoom.id,
+      roomNumber: targetRoom.roomNumber,
+      floor: targetRoom.floor,
+      roomTypeId: targetRoom.roomTypeId,
+      roomTypeName: targetRoom.roomTypeName,
+      checkOut: nextOut,
+      actualCheckOutAt: null,
+      isBillingReopened: false,
+      updatedAt: now,
+    });
+    tx.update(doc(db, 'rooms', targetRoom.id), {
+      currentBookingId: booking.id,
+    });
   });
-  batch.update(doc(db, 'rooms', targetRoom.id), {
-    currentBookingId: booking.id,
-  });
-  await batch.commit();
 
   await writeAuditLog({
     actionType: 'reopen_stay_checked_in',
@@ -680,7 +715,7 @@ export async function recordPostCheckoutAdjustment(params: {
   const relatedTxIds: string[] = [];
   const batch = writeBatch(db);
 
-  // Append adjustment as a service/surcharge line on the booking
+  // Append adjustment as a service/surcharge line on the booking with immutable businessDate (BUG-01)
   const nextServices = [
     ...(booking.services || []),
     {
@@ -689,6 +724,10 @@ export async function recordPostCheckoutAdjustment(params: {
       quantity: 1,
       unitPrice: actualDiff,
       total: actualDiff,
+      businessDate: postingDate,
+      category: 'Điều chỉnh sau Check-out',
+      occurredAt: now,
+      status: 'active' as const,
       addedAt: now,
       addedBy: actor.name,
     },

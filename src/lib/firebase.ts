@@ -1,6 +1,7 @@
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
-import { getAuth, type Auth } from 'firebase/auth';
+import { connectAuthEmulator, getAuth, type Auth } from 'firebase/auth';
 import {
+  connectFirestoreEmulator,
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
@@ -32,29 +33,45 @@ export const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
+const USE_EMULATOR = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true';
+
 export const app =
   getApps().find((a) => a.name === '[DEFAULT]') || initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+if (USE_EMULATOR) {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+}
 
 let staffCreatorApp: FirebaseApp | null = null;
+let staffCreatorEmulatorBound = false;
 export function getStaffCreatorAuth(): Auth {
   if (!staffCreatorApp) {
     staffCreatorApp =
       getApps().find((a) => a.name === 'StaffCreator') ||
       initializeApp(firebaseConfig, 'StaffCreator');
   }
-  return getAuth(staffCreatorApp);
+  const scAuth = getAuth(staffCreatorApp);
+  if (USE_EMULATOR && !staffCreatorEmulatorBound) {
+    connectAuthEmulator(scAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
+    staffCreatorEmulatorBound = true;
+  }
+  return scAuth;
 }
 
 let dbInstance: Firestore;
-try {
-  dbInstance = initializeFirestore(app, {
-    localCache: persistentLocalCache({
-      tabManager: persistentMultipleTabManager(),
-    }),
-  });
-} catch {
+if (USE_EMULATOR) {
   dbInstance = getFirestore(app);
+  connectFirestoreEmulator(dbInstance, '127.0.0.1', 8080);
+} else {
+  try {
+    dbInstance = initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    });
+  } catch {
+    dbInstance = getFirestore(app);
+  }
 }
 
 export const db = dbInstance;

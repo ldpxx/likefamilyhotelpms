@@ -1,5 +1,12 @@
-import { doc, writeBatch, type DocumentData, type UpdateData } from 'firebase/firestore';
+import { doc, runTransaction, writeBatch, type DocumentData, type UpdateData } from 'firebase/firestore';
 import { db } from './firebase';
+import {
+  applyOccupancyPlanInTransaction,
+  buildBookingOccupancyInterval,
+  DEFAULT_CLEANING_BUFFER_MINUTES,
+  getAffectedOccupancyDates,
+  prepareOccupancyPlanInTransaction,
+} from './occupancyService';
 import type {
   Booking,
   CancellationType,
@@ -70,175 +77,184 @@ export async function executeAccountingCancellation(
     cancellationType === 'no_show' ? 'no_show' : 'cancelled';
   const refundMethod: PaymentMethod = params.refundMethod || 'cash';
 
-  const batch = writeBatch(db);
-  let totalTransferredToTarget = 0;
-
-  for (const b of bookingsToCancel) {
-    const paidOnBooking = (b.depositPaid || 0) + (b.guestPaid || 0);
-    const isOta = b.source === 'ota' || b.paymentMethod === 'ota_debt';
-
-    const effectiveDepositStatus: DepositResolutionStatus =
-      paidOnBooking > 0 ? depositAction : 'none';
-
-    const prevState = {
-      status: b.status,
+  // v2.2.2 BUG-02: Release room_occupancy intervals for all cancelled / no_show bookings atomically
+  const releaseReqs = bookingsToCancel.map((b) => {
+    const iv = buildBookingOccupancyInterval(b, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+    return {
       roomId: b.roomId,
-      depositPaid: b.depositPaid,
-      guestPaid: b.guestPaid,
-      otaSettlementStatus: b.otaSettlementStatus,
+      id: b.id,
+      dates: getAffectedOccupancyDates(iv.startAt, iv.endAt, iv.bufferMinutes),
     };
+  });
 
-    const bookingUpdate: Record<string, unknown> = {
-      status: nextStatus,
-      cancellationType,
-      cancellationReason: reason.trim(),
-      cancelledAt: now,
-      cancelledBy: actor.name,
-      depositResolutionStatus: effectiveDepositStatus,
-      pendingDepositAmount:
-        effectiveDepositStatus === 'pending_deposit_resolution' ? paidOnBooking : 0,
-      forfeitedFeeAmount: effectiveDepositStatus === 'forfeited_fee' ? paidOnBooking : 0,
-      depositResolvedAt:
-        effectiveDepositStatus === 'refunded' ||
-        effectiveDepositStatus === 'forfeited_fee' ||
-        effectiveDepositStatus === 'transferred_to_booking'
-          ? now
-          : null,
-      depositResolvedBy:
-        effectiveDepositStatus === 'refunded' ||
-        effectiveDepositStatus === 'forfeited_fee' ||
-        effectiveDepositStatus === 'transferred_to_booking'
-          ? actor.name
-          : null,
-      depositResolutionNote: reason.trim(),
-      refundMethod: effectiveDepositStatus === 'refunded' ? refundMethod : null,
-      depositTransferredToBookingId:
-        effectiveDepositStatus === 'transferred_to_booking'
-          ? params.transferTargetBooking?.id || null
-          : null,
-      depositTransferredToBookingCode:
-        effectiveDepositStatus === 'transferred_to_booking'
-          ? params.transferTargetBooking?.bookingCode || null
-          : null,
-      // Rule 7: OTA cancel keeps debt unsettled for reconciliation across 3 states
-      otaCancelStatus: isOta
-        ? params.otaInitialCancelStatus || 'ota_cancel_requested'
-        : 'none',
-      otaSettlementStatus: isOta ? 'unsettled' : b.otaSettlementStatus,
-      lastActionSnapshot: { action: 'accounting_cancel', prevState },
-      updatedAt: now,
-    };
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, { release: releaseReqs });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
 
-    batch.update(doc(db, 'bookings', b.id), bookingUpdate as UpdateData<DocumentData>);
+    let totalTransferredToTarget = 0;
 
-    // Release room immediately if currently occupying
-    if (b.status === 'in_house') {
-      batch.update(doc(db, 'rooms', b.roomId), { currentBookingId: null });
-    }
+    for (const b of bookingsToCancel) {
+      const paidOnBooking = (b.depositPaid || 0) + (b.guestPaid || 0);
+      const isOta = b.source === 'ota' || b.paymentMethod === 'ota_debt';
 
-    // Rule 5: Append immutable offsetting accounting entries (NEVER touch original tx)
-    if (paidOnBooking > 0) {
-      if (effectiveDepositStatus === 'refunded') {
-        const txId = generateId('tx');
-        const refundTx: Transaction = {
-          id: txId,
-          bookingId: b.id,
-          bookingCode: b.bookingCode,
-          roomNumber: b.roomNumber,
-          groupId: b.groupId || null,
-          type: 'refund',
-          direction: 'out',
-          category: 'Phiếu chi hoàn tiền cọc hủy đơn',
-          amount: paidOnBooking,
-          method: refundMethod,
-          date: today,
-          status: 'active',
-          createdAt: now,
-          createdByUid: actor.uid,
-          createdByName: actor.name,
-          note: `Hoàn cọc đơn ${b.bookingCode} (P.${b.roomNumber}) qua ${getPaymentMethodLabel(
-            refundMethod
-          )} — Lý do: ${reason.trim()}`,
-        };
-        batch.set(doc(db, 'transactions', txId), refundTx);
-      } else if (effectiveDepositStatus === 'forfeited_fee') {
-        const txId = generateId('tx');
-        const feeTx: Transaction = {
-          id: txId,
-          bookingId: b.id,
-          bookingCode: b.bookingCode,
-          roomNumber: b.roomNumber,
-          groupId: b.groupId || null,
-          type: 'cancellation_fee',
-          direction: 'in',
-          category: 'Ghi nhận doanh thu phí hủy (Giữ cọc)',
-          amount: paidOnBooking,
-          method: b.paymentMethod || 'cash',
-          date: today,
-          status: 'active',
-          createdAt: now,
-          createdByUid: actor.uid,
-          createdByName: actor.name,
-          note: `Kết chuyển tiền cọc giữ lại thành doanh thu phí hủy đơn ${b.bookingCode} — Lý do: ${reason.trim()}`,
-        };
-        batch.set(doc(db, 'transactions', txId), feeTx);
-      } else if (
-        effectiveDepositStatus === 'transferred_to_booking' &&
-        params.transferTargetBooking
-      ) {
-        totalTransferredToTarget += paidOnBooking;
-        const outTxId = generateId('tx');
-        const outTx: Transaction = {
-          id: outTxId,
-          bookingId: b.id,
-          bookingCode: b.bookingCode,
-          roomNumber: b.roomNumber,
-          groupId: b.groupId || null,
-          type: 'deposit_transfer_out',
-          direction: 'out',
-          category: `Chuyển cọc sang đơn ${params.transferTargetBooking.bookingCode}`,
-          amount: paidOnBooking,
-          method: 'bank_transfer',
-          date: today,
-          status: 'active',
-          createdAt: now,
-          createdByUid: actor.uid,
-          createdByName: actor.name,
-          note: `Chuyển cọc từ đơn hủy ${b.bookingCode} sang ${params.transferTargetBooking.bookingCode} (P.${params.transferTargetBooking.roomNumber})`,
-        };
-        const inTxId = generateId('tx');
-        const inTx: Transaction = {
-          id: inTxId,
-          bookingId: params.transferTargetBooking.id,
-          bookingCode: params.transferTargetBooking.bookingCode,
-          roomNumber: params.transferTargetBooking.roomNumber,
-          groupId: params.transferTargetBooking.groupId || null,
-          type: 'deposit_transfer_in',
-          direction: 'in',
-          category: `Nhận cọc chuyển từ đơn hủy ${b.bookingCode}`,
-          amount: paidOnBooking,
-          method: 'bank_transfer',
-          date: today,
-          status: 'active',
-          createdAt: now,
-          createdByUid: actor.uid,
-          createdByName: actor.name,
-          note: `Nhận kết chuyển tiền cọc từ đơn hủy ${b.bookingCode} — Lý do: ${reason.trim()}`,
-        };
-        batch.set(doc(db, 'transactions', outTxId), outTx);
-        batch.set(doc(db, 'transactions', inTxId), inTx);
+      const effectiveDepositStatus: DepositResolutionStatus =
+        paidOnBooking > 0 ? depositAction : 'none';
+
+      const prevState = {
+        status: b.status,
+        roomId: b.roomId,
+        depositPaid: b.depositPaid,
+        guestPaid: b.guestPaid,
+        otaSettlementStatus: b.otaSettlementStatus,
+      };
+
+      const bookingUpdate: Record<string, unknown> = {
+        status: nextStatus,
+        cancellationType,
+        cancellationReason: reason.trim(),
+        cancelledAt: now,
+        cancelledBy: actor.name,
+        depositResolutionStatus: effectiveDepositStatus,
+        pendingDepositAmount:
+          effectiveDepositStatus === 'pending_deposit_resolution' ? paidOnBooking : 0,
+        forfeitedFeeAmount: effectiveDepositStatus === 'forfeited_fee' ? paidOnBooking : 0,
+        depositResolvedAt:
+          effectiveDepositStatus === 'refunded' ||
+          effectiveDepositStatus === 'forfeited_fee' ||
+          effectiveDepositStatus === 'transferred_to_booking'
+            ? now
+            : null,
+        depositResolvedBy:
+          effectiveDepositStatus === 'refunded' ||
+          effectiveDepositStatus === 'forfeited_fee' ||
+          effectiveDepositStatus === 'transferred_to_booking'
+            ? actor.name
+            : null,
+        depositResolutionNote: reason.trim(),
+        refundMethod: effectiveDepositStatus === 'refunded' ? refundMethod : null,
+        depositTransferredToBookingId:
+          effectiveDepositStatus === 'transferred_to_booking'
+            ? params.transferTargetBooking?.id || null
+            : null,
+        depositTransferredToBookingCode:
+          effectiveDepositStatus === 'transferred_to_booking'
+            ? params.transferTargetBooking?.bookingCode || null
+            : null,
+        otaCancelStatus: isOta
+          ? params.otaInitialCancelStatus || 'ota_cancel_requested'
+          : 'none',
+        otaSettlementStatus: isOta ? 'unsettled' : b.otaSettlementStatus,
+        lastActionSnapshot: { action: 'accounting_cancel', prevState },
+        updatedAt: now,
+      };
+
+      tx.update(doc(db, 'bookings', b.id), bookingUpdate as UpdateData<DocumentData>);
+
+      if (b.status === 'in_house') {
+        tx.update(doc(db, 'rooms', b.roomId), { currentBookingId: null });
+      }
+
+      if (paidOnBooking > 0) {
+        if (effectiveDepositStatus === 'refunded') {
+          const txId = generateId('tx');
+          const refundTx: Transaction = {
+            id: txId,
+            bookingId: b.id,
+            bookingCode: b.bookingCode,
+            roomNumber: b.roomNumber,
+            groupId: b.groupId || null,
+            type: 'refund',
+            direction: 'out',
+            category: 'Phiếu chi hoàn tiền cọc hủy đơn',
+            amount: paidOnBooking,
+            method: refundMethod,
+            date: today,
+            status: 'active',
+            createdAt: now,
+            createdByUid: actor.uid,
+            createdByName: actor.name,
+            note: `Hoàn cọc đơn ${b.bookingCode} (P.${b.roomNumber}) qua ${getPaymentMethodLabel(
+              refundMethod
+            )} — Lý do: ${reason.trim()}`,
+          };
+          tx.set(doc(db, 'transactions', txId), refundTx);
+        } else if (effectiveDepositStatus === 'forfeited_fee') {
+          const txId = generateId('tx');
+          const feeTx: Transaction = {
+            id: txId,
+            bookingId: b.id,
+            bookingCode: b.bookingCode,
+            roomNumber: b.roomNumber,
+            groupId: b.groupId || null,
+            type: 'cancellation_fee',
+            direction: 'in',
+            category: 'Ghi nhận doanh thu phí hủy (Giữ cọc)',
+            amount: paidOnBooking,
+            method: b.paymentMethod || 'cash',
+            date: today,
+            status: 'active',
+            createdAt: now,
+            createdByUid: actor.uid,
+            createdByName: actor.name,
+            note: `Kết chuyển tiền cọc giữ lại thành doanh thu phí hủy đơn ${b.bookingCode} — Lý do: ${reason.trim()}`,
+          };
+          tx.set(doc(db, 'transactions', txId), feeTx);
+        } else if (
+          effectiveDepositStatus === 'transferred_to_booking' &&
+          params.transferTargetBooking
+        ) {
+          totalTransferredToTarget += paidOnBooking;
+          const outTxId = generateId('tx');
+          const outTx: Transaction = {
+            id: outTxId,
+            bookingId: b.id,
+            bookingCode: b.bookingCode,
+            roomNumber: b.roomNumber,
+            groupId: b.groupId || null,
+            type: 'deposit_transfer_out',
+            direction: 'out',
+            category: `Chuyển cọc sang đơn ${params.transferTargetBooking.bookingCode}`,
+            amount: paidOnBooking,
+            method: 'bank_transfer',
+            date: today,
+            status: 'active',
+            createdAt: now,
+            createdByUid: actor.uid,
+            createdByName: actor.name,
+            note: `Chuyển cọc từ đơn hủy ${b.bookingCode} sang ${params.transferTargetBooking.bookingCode} (P.${params.transferTargetBooking.roomNumber})`,
+          };
+          const inTxId = generateId('tx');
+          const inTx: Transaction = {
+            id: inTxId,
+            bookingId: params.transferTargetBooking.id,
+            bookingCode: params.transferTargetBooking.bookingCode,
+            roomNumber: params.transferTargetBooking.roomNumber,
+            groupId: params.transferTargetBooking.groupId || null,
+            type: 'deposit_transfer_in',
+            direction: 'in',
+            category: `Nhận cọc chuyển từ đơn hủy ${b.bookingCode}`,
+            amount: paidOnBooking,
+            method: 'bank_transfer',
+            date: today,
+            status: 'active',
+            createdAt: now,
+            createdByUid: actor.uid,
+            createdByName: actor.name,
+            note: `Nhận kết chuyển tiền cọc từ đơn hủy ${b.bookingCode} — Lý do: ${reason.trim()}`,
+          };
+          tx.set(doc(db, 'transactions', outTxId), outTx);
+          tx.set(doc(db, 'transactions', inTxId), inTx);
+        }
       }
     }
-  }
 
-  if (totalTransferredToTarget > 0 && params.transferTargetBooking) {
-    batch.update(doc(db, 'bookings', params.transferTargetBooking.id), {
-      depositPaid: (params.transferTargetBooking.depositPaid || 0) + totalTransferredToTarget,
-      updatedAt: now,
-    });
-  }
-
-  await batch.commit();
+    if (totalTransferredToTarget > 0 && params.transferTargetBooking) {
+      tx.update(doc(db, 'bookings', params.transferTargetBooking.id), {
+        depositPaid: (params.transferTargetBooking.depositPaid || 0) + totalTransferredToTarget,
+        updatedAt: now,
+      });
+    }
+  });
 
   // Rule 8: Immutable Audit Trail
   await writeAuditLog({
@@ -514,29 +530,41 @@ export async function restoreCancelledBooking(params: {
     booking.depositResolutionStatus === 'transferred_to_booking';
 
   const now = new Date().toISOString();
-  const batch = writeBatch(db);
+  // v2.2.2 BUG-02: Atomically re-reserve room_occupancy when restoring a cancelled booking
+  const restoreIv = buildBookingOccupancyInterval(
+    booking,
+    '14:00',
+    '12:00',
+    DEFAULT_CLEANING_BUFFER_MINUTES,
+    now
+  );
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      reserve: [{ roomId: targetRoom.id, roomNumber: targetRoom.roomNumber, interval: restoreIv }],
+      excludeIds: [booking.id],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
 
-  batch.update(doc(db, 'bookings', booking.id), {
-    status: 'reserved',
-    roomId: targetRoom.id,
-    roomNumber: targetRoom.roomNumber,
-    floor: targetRoom.floor,
-    roomTypeId: targetRoom.roomTypeId,
-    roomTypeName: targetRoom.roomTypeName,
-    cancellationType: null,
-    cancellationReason: null,
-    cancelledAt: null,
-    cancelledBy: null,
-    depositPaid: depositGone ? 0 : booking.depositPaid,
-    guestPaid: depositGone ? 0 : booking.guestPaid,
-    depositResolutionStatus: 'none',
-    pendingDepositAmount: 0,
-    forfeitedFeeAmount: 0,
-    otaCancelStatus: 'none',
-    updatedAt: now,
+    tx.update(doc(db, 'bookings', booking.id), {
+      status: 'reserved',
+      roomId: targetRoom.id,
+      roomNumber: targetRoom.roomNumber,
+      floor: targetRoom.floor,
+      roomTypeId: targetRoom.roomTypeId,
+      roomTypeName: targetRoom.roomTypeName,
+      cancellationType: null,
+      cancellationReason: null,
+      cancelledAt: null,
+      cancelledBy: null,
+      depositPaid: depositGone ? 0 : booking.depositPaid,
+      guestPaid: depositGone ? 0 : booking.guestPaid,
+      depositResolutionStatus: 'none',
+      pendingDepositAmount: 0,
+      forfeitedFeeAmount: 0,
+      otaCancelStatus: 'none',
+      updatedAt: now,
+    });
   });
-
-  await batch.commit();
 
   await writeAuditLog({
     actionType: 'undo_cancel',

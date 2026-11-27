@@ -12,6 +12,7 @@ import {
   getDoc,
   getDocs,
   query,
+  runTransaction,
   setDoc,
   updateDoc,
   where,
@@ -20,6 +21,17 @@ import {
   type UpdateData,
 } from 'firebase/firestore';
 import { auth, db, getStaffCreatorAuth, usernameToInternalEmail } from './firebase';
+import {
+  applyOccupancyPlanInTransaction,
+  buildBookingOccupancyInterval,
+  buildMaintenanceOccupancyInterval,
+  DEFAULT_CLEANING_BUFFER_MINUTES,
+  getAffectedOccupancyDates,
+  prepareOccupancyPlanInTransaction,
+  type OccupancyReservationRequest,
+} from './occupancyService';
+import { toVietnamISODate } from './revenueMetrics';
+import { DEFAULT_HOTEL_CONFIG } from './seedData';
 import type {
   AuditLog,
   Booking,
@@ -410,39 +422,55 @@ export async function createBooking(
     createdBy: actor.name,
   };
 
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'bookings', bookingId), booking);
-
-  if (payload.checkInImmediately) {
-    batch.update(doc(db, 'rooms', payload.room.id), { currentBookingId: bookingId });
-  }
-
   if (booking.depositPaid > 0 && payload.depositMethod !== 'ota_debt') {
-    const depDate = todayISO();
-    assertPeriodOpen(depDate, payload.accountingLockDate);
-    const txId = generateId('tx');
-    const tx: Transaction = {
-      id: txId,
-      bookingId,
-      bookingCode,
-      roomNumber: payload.room.roomNumber,
-      groupId: payload.groupId || null,
-      type: 'deposit',
-      direction: 'in',
-      category: 'Tiền đặt cọc phòng',
-      amount: booking.depositPaid,
-      method: payload.depositMethod,
-      date: depDate,
-      status: 'active',
-      createdAt: now,
-      createdByUid: actor.uid,
-      createdByName: actor.name,
-      note: `Đặt cọc đơn ${bookingCode} - P.${payload.room.roomNumber}`,
-    };
-    batch.set(doc(db, 'transactions', txId), tx);
+    assertPeriodOpen(todayISO(), payload.accountingLockDate);
   }
 
-  await batch.commit();
+  // v2.2.2 BUG-02: Atomic room_occupancy reservation inside runTransaction() (Phương án A + 5-min cleaning buffer)
+  const occInterval = buildBookingOccupancyInterval(
+    booking,
+    '14:00',
+    '12:00',
+    DEFAULT_CLEANING_BUFFER_MINUTES,
+    now
+  );
+
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      reserve: [{ roomId: payload.room.id, roomNumber: payload.room.roomNumber, interval: occInterval }],
+    });
+
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.set(doc(db, 'bookings', bookingId), booking);
+
+    if (payload.checkInImmediately) {
+      tx.update(doc(db, 'rooms', payload.room.id), { currentBookingId: bookingId });
+    }
+
+    if (booking.depositPaid > 0 && payload.depositMethod !== 'ota_debt') {
+      const depDate = todayISO();
+      const txId = generateId('tx');
+      const depTx: Transaction = {
+        id: txId,
+        bookingId,
+        bookingCode,
+        roomNumber: payload.room.roomNumber,
+        groupId: payload.groupId || null,
+        type: 'deposit',
+        direction: 'in',
+        category: 'Tiền đặt cọc phòng',
+        amount: booking.depositPaid,
+        method: payload.depositMethod,
+        date: depDate,
+        status: 'active',
+        createdAt: now,
+        createdByUid: actor.uid,
+        createdByName: actor.name,
+        note: `Đặt cọc đơn ${bookingCode} - P.${payload.room.roomNumber}`,
+      };
+      tx.set(doc(db, 'transactions', txId), depTx);
+    }
+  });
   await writeAuditLog({
     actionType: payload.checkInImmediately ? 'create_and_check_in' : 'create_booking',
     targetId: bookingId,
@@ -516,40 +544,131 @@ export async function createGroupBooking(
     createdBy: actor.name,
   };
 
-  await setDoc(doc(db, 'booking_groups', groupId), group);
+  if (group.depositAmount > 0 && payload.depositMethod !== 'ota_debt') {
+    assertPeriodOpen(todayISO(), payload.accountingLockDate);
+  }
 
+  // v2.2.2 BUG-02: Atomic all-or-nothing group reservation inside ONE runTransaction()
   const createdBookings: Booking[] = [];
+  const reserveReqs: OccupancyReservationRequest[] = [];
+  const isOtaDebt = payload.source === 'ota' || payload.depositMethod === 'ota_debt';
+
   for (let i = 0; i < payload.roomItems.length; i++) {
     const item = payload.roomItems[i];
     const roomDeposit = i === 0 ? group.depositAmount : 0;
-    const b = await createBooking(
-      {
-        room: item.room,
-        bookingMode: 'daily',
-        checkIn: item.checkIn,
-        checkOut: item.checkOut,
-        guestName: payload.leaderName,
-        guestPhone: payload.leaderPhone,
-        guestCategory: payload.guestCategory,
-        existingGuestId: guestId,
-        source: payload.source || 'group',
-        sourceLabel: payload.sourceLabel || 'Khách đoàn',
-        otaChannel: payload.source === 'ota' ? payload.otaChannel || payload.sourceLabel || 'OTA' : null,
-        selectedPriceTierId: item.selectedPriceTierId,
-        dailyRates: item.dailyRates,
-        paymentMethod: payload.source === 'ota' ? 'ota_debt' : payload.depositMethod,
-        depositPaid: roomDeposit,
-        depositMethod: payload.depositMethod,
-        accountingLockDate: payload.accountingLockDate,
-        note: payload.note,
-        groupId,
-        groupName: group.groupName,
-      },
-      existingGuests,
-      actor
-    );
+    const bookingId = generateId('bkg');
+    const bookingCode = generateCode('LF');
+    const nights = Math.max(1, diffDays(item.checkIn, item.checkOut));
+    const roomTotal = sumDailyRates(item.dailyRates);
+    const primaryOccupant: Occupant = {
+      occupantId: generateId('occ'),
+      guestId,
+      guestCategory: payload.guestCategory,
+      fullName: payload.leaderName.trim(),
+      phone: payload.leaderPhone.trim(),
+      gender: '',
+      dob: '',
+      nationality: payload.guestCategory === 'vietnamese' ? 'Việt Nam' : '',
+      idType: payload.guestCategory === 'vietnamese' ? 'cccd' : 'visa_passport',
+      idNumber: '',
+      idIssueDate: '',
+      address: '',
+      asmStatus: payload.guestCategory === 'foreigner' ? 'pending_asm' : 'not_applicable',
+      isPrimary: true,
+    };
+    const flags = computeOccupantFlags([primaryOccupant], item.checkOut);
+    const b: Booking = {
+      id: bookingId,
+      bookingCode,
+      bookingMode: 'daily',
+      bookingChainId: null,
+      chainSequence: 1,
+      mergedIntoBookingId: null,
+      mergedFromBookingIds: [],
+      groupId,
+      groupName: group.groupName,
+      checkIn: item.checkIn,
+      checkOut: item.checkOut,
+      actualCheckInAt: null,
+      actualCheckOutAt: null,
+      primaryGuestId: guestId,
+      primaryGuestName: payload.leaderName.trim(),
+      primaryGuestNormalizedName: normalizeVietnamese(payload.leaderName),
+      primaryGuestPhone: payload.leaderPhone.trim(),
+      primaryGuestIdNumber: '',
+      occupants: [primaryOccupant],
+      ...flags,
+      isReturningGuest: false,
+      guestStayCount: 1,
+      source: payload.source || 'group',
+      sourceLabel: payload.sourceLabel || 'Khách đoàn',
+      otaChannel: payload.source === 'ota' ? payload.otaChannel || payload.sourceLabel || 'OTA' : null,
+      otaBookingRef: payload.source === 'ota' ? '' : null,
+      roomId: item.room.id,
+      roomNumber: item.room.roomNumber,
+      floor: item.room.floor,
+      roomTypeId: item.room.roomTypeId,
+      roomTypeName: item.room.roomTypeName,
+      selectedPriceTierId: item.selectedPriceTierId || null,
+      dailyRates: item.dailyRates,
+      nights,
+      grossRoomTotal: roomTotal,
+      otaCommissionAmount: 0,
+      netRoomTotal: roomTotal,
+      serviceTotal: 0,
+      services: [],
+      hourlySurcharge: 0,
+      hourlySurchargeNote: '',
+      depositPaid: roomDeposit,
+      guestPaid: 0,
+      paymentMethod: payload.source === 'ota' ? 'ota_debt' : payload.depositMethod,
+      otaSettlementStatus: isOtaDebt ? 'unsettled' : 'not_applicable',
+      payoutBatchId: null,
+      status: 'reserved',
+      note: payload.note?.trim() || '',
+      lastActionSnapshot: null,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: actor.name,
+    };
     createdBookings.push(b);
+    reserveReqs.push({
+      roomId: item.room.id,
+      roomNumber: item.room.roomNumber,
+      interval: buildBookingOccupancyInterval(b, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now),
+    });
   }
+
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, { reserve: reserveReqs });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.set(doc(db, 'booking_groups', groupId), group);
+    for (const b of createdBookings) {
+      tx.set(doc(db, 'bookings', b.id), b);
+      if (b.depositPaid > 0 && payload.depositMethod !== 'ota_debt') {
+        const txId = generateId('tx');
+        const depTx: Transaction = {
+          id: txId,
+          bookingId: b.id,
+          bookingCode: b.bookingCode,
+          roomNumber: b.roomNumber,
+          groupId,
+          type: 'deposit',
+          direction: 'in',
+          category: 'Tiền đặt cọc khách đoàn',
+          amount: b.depositPaid,
+          method: payload.depositMethod,
+          date: todayISO(),
+          status: 'active',
+          createdAt: now,
+          createdByUid: actor.uid,
+          createdByName: actor.name,
+          note: `Đặt cọc đoàn ${groupCode} - P.${b.roomNumber}`,
+        };
+        tx.set(doc(db, 'transactions', txId), depTx);
+      }
+    }
+  });
 
   await writeAuditLog({
     actionType: 'create_group_booking',
@@ -644,51 +763,59 @@ export async function checkOutBooking(
     nextGross = sumDailyRates(nextDailyRates);
   }
 
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'bookings', booking.id), {
-    status: 'checked_out',
-    checkOut: nextCheckOut,
-    dailyRates: nextDailyRates,
-    nights: nextNights,
-    grossRoomTotal: nextGross,
-    otaCommissionAmount: 0,
-    netRoomTotal: nextGross,
-    actualCheckOutAt: now,
-    lastActionSnapshot: {
-      action: opts?.earlyCheckOut ? 'early_checkout' : 'check_out',
-      prevState,
-    },
-    updatedAt: now,
-  });
-  batch.update(doc(db, 'rooms', booking.roomId), {
-    currentBookingId: null,
-    hkStatus: 'dirty',
-  });
+  // v2.2.2 BUG-02: Release freed future occupancy dates when earlyCheckOut shortens stay
+  const oldOccInterval = buildBookingOccupancyInterval(booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+  const oldOccDates = getAffectedOccupancyDates(oldOccInterval.startAt, oldOccInterval.endAt, oldOccInterval.bufferMinutes);
 
-  if (opts?.refundAmount && opts.refundAmount > 0) {
-    const txId = generateId('tx');
-    const tx: Transaction = {
-      id: txId,
-      bookingId: booking.id,
-      bookingCode: booking.bookingCode,
-      roomNumber: booking.roomNumber,
-      groupId: booking.groupId || null,
-      type: 'refund',
-      direction: 'out',
-      category: 'Hoàn tiền trả phòng sớm',
-      amount: Math.round(opts.refundAmount),
-      method: opts.refundMethod || 'cash',
-      date: today,
-      status: 'active',
-      createdAt: now,
-      createdByUid: actor.uid,
-      createdByName: actor.name,
-      note: `Hoàn tiền trả phòng sớm đơn ${booking.bookingCode}`,
-    };
-    batch.set(doc(db, 'transactions', txId), tx);
-  }
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      release: [{ roomId: booking.roomId, id: booking.id, dates: oldOccDates }],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
 
-  await batch.commit();
+    tx.update(doc(db, 'bookings', booking.id), {
+      status: 'checked_out',
+      checkOut: nextCheckOut,
+      dailyRates: nextDailyRates,
+      nights: nextNights,
+      grossRoomTotal: nextGross,
+      otaCommissionAmount: 0,
+      netRoomTotal: nextGross,
+      actualCheckOutAt: now,
+      lastActionSnapshot: {
+        action: opts?.earlyCheckOut ? 'early_checkout' : 'check_out',
+        prevState,
+      },
+      updatedAt: now,
+    });
+    tx.update(doc(db, 'rooms', booking.roomId), {
+      currentBookingId: null,
+      hkStatus: 'dirty',
+    });
+
+    if (opts?.refundAmount && opts.refundAmount > 0) {
+      const txId = generateId('tx');
+      const refTx: Transaction = {
+        id: txId,
+        bookingId: booking.id,
+        bookingCode: booking.bookingCode,
+        roomNumber: booking.roomNumber,
+        groupId: booking.groupId || null,
+        type: 'refund',
+        direction: 'out',
+        category: 'Hoàn tiền trả phòng sớm',
+        amount: Math.round(opts.refundAmount),
+        method: opts.refundMethod || 'cash',
+        date: today,
+        status: 'active',
+        createdAt: now,
+        createdByUid: actor.uid,
+        createdByName: actor.name,
+        note: `Hoàn tiền trả phòng sớm đơn ${booking.bookingCode}`,
+      };
+      tx.set(doc(db, 'transactions', txId), refTx);
+    }
+  });
 
   // Increment completed stay count for primary guest so >= 2 stays auto-earn "Khách hàng thân quen"
   if (booking.primaryGuestId) {
@@ -735,16 +862,23 @@ export async function cancelBooking(
 ): Promise<Record<string, unknown>> {
   const now = new Date().toISOString();
   const prevState = { status: booking.status, roomId: booking.roomId };
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'bookings', booking.id), {
-    status: 'cancelled',
-    lastActionSnapshot: { action: 'cancel_booking', prevState },
-    updatedAt: now,
+  const oldOcc = buildBookingOccupancyInterval(booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+  const oldDates = getAffectedOccupancyDates(oldOcc.startAt, oldOcc.endAt, oldOcc.bufferMinutes);
+
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      release: [{ roomId: booking.roomId, id: booking.id, dates: oldDates }],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.update(doc(db, 'bookings', booking.id), {
+      status: 'cancelled',
+      lastActionSnapshot: { action: 'cancel_booking', prevState },
+      updatedAt: now,
+    });
+    if (booking.status === 'in_house') {
+      tx.update(doc(db, 'rooms', booking.roomId), { currentBookingId: null });
+    }
   });
-  if (booking.status === 'in_house') {
-    batch.update(doc(db, 'rooms', booking.roomId), { currentBookingId: null });
-  }
-  await batch.commit();
 
   await writeAuditLog({
     actionType: 'cancel_booking',
@@ -792,18 +926,50 @@ export async function updateBookingPricing(
     checkOut: booking.checkOut,
   };
 
-  await updateDoc(doc(db, 'bookings', booking.id), {
-    checkIn: nextCheckIn,
-    checkOut: nextCheckOut,
-    nights: isHourly ? 0 : nextDailyRates.length,
-    hourlyHours: isHourly ? params.hourlyHours ?? booking.hourlyHours ?? 1 : null,
-    dailyRates: nextDailyRates,
-    selectedPriceTierId: params.selectedPriceTierId ?? booking.selectedPriceTierId ?? null,
-    grossRoomTotal,
-    otaCommissionAmount: 0,
-    netRoomTotal: grossRoomTotal,
-    updatedAt: now,
-  });
+  const scheduleChanged = nextCheckIn !== booking.checkIn || nextCheckOut !== booking.checkOut;
+  if (scheduleChanged && (booking.status === 'reserved' || booking.status === 'in_house')) {
+    const oldIv = buildBookingOccupancyInterval(booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+    const oldDates = getAffectedOccupancyDates(oldIv.startAt, oldIv.endAt, oldIv.bufferMinutes);
+    const newIv = buildBookingOccupancyInterval(
+      { ...booking, checkIn: nextCheckIn, checkOut: nextCheckOut, hourlyHours: isHourly ? params.hourlyHours ?? booking.hourlyHours ?? 1 : undefined },
+      '14:00',
+      '12:00',
+      DEFAULT_CLEANING_BUFFER_MINUTES,
+      now
+    );
+    await runTransaction(db, async (tx) => {
+      const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+        release: [{ roomId: booking.roomId, id: booking.id, dates: oldDates }],
+        reserve: [{ roomId: booking.roomId, roomNumber: booking.roomNumber, interval: newIv }],
+      });
+      applyOccupancyPlanInTransaction(tx, db, occPlan);
+      tx.update(doc(db, 'bookings', booking.id), {
+        checkIn: nextCheckIn,
+        checkOut: nextCheckOut,
+        nights: isHourly ? 0 : nextDailyRates.length,
+        hourlyHours: isHourly ? params.hourlyHours ?? booking.hourlyHours ?? 1 : null,
+        dailyRates: nextDailyRates,
+        selectedPriceTierId: params.selectedPriceTierId ?? booking.selectedPriceTierId ?? null,
+        grossRoomTotal,
+        otaCommissionAmount: 0,
+        netRoomTotal: grossRoomTotal,
+        updatedAt: now,
+      });
+    });
+  } else {
+    await updateDoc(doc(db, 'bookings', booking.id), {
+      checkIn: nextCheckIn,
+      checkOut: nextCheckOut,
+      nights: isHourly ? 0 : nextDailyRates.length,
+      hourlyHours: isHourly ? params.hourlyHours ?? booking.hourlyHours ?? 1 : null,
+      dailyRates: nextDailyRates,
+      selectedPriceTierId: params.selectedPriceTierId ?? booking.selectedPriceTierId ?? null,
+      grossRoomTotal,
+      otaCommissionAmount: 0,
+      netRoomTotal: grossRoomTotal,
+      updatedAt: now,
+    });
+  }
 
   await writeAuditLog({
     actionType: 'price_override',
@@ -818,16 +984,22 @@ export async function updateBookingPricing(
 
 export async function addBookingService(
   booking: Booking,
-  item: { name: string; quantity: number; unitPrice: number },
+  item: { name: string; quantity: number; unitPrice: number; businessDate?: string; category?: string },
   actor: ActorInfo
 ): Promise<void> {
   const now = new Date().toISOString();
+  // v2.2.2 BUG-01: Persist immutable businessDate (YYYY-MM-DD, Asia/Ho_Chi_Minh) on every new service line
+  const businessDate = toVietnamISODate(item.businessDate) || toVietnamISODate(now) || todayISO();
   const newItem: BookingServiceItem = {
     id: generateId('srv'),
     name: item.name.trim(),
     quantity: Math.max(1, item.quantity),
     unitPrice: Math.max(0, Math.round(item.unitPrice)),
     total: Math.max(1, item.quantity) * Math.max(0, Math.round(item.unitPrice)),
+    businessDate,
+    category: item.category || 'Dịch vụ phòng',
+    occurredAt: now,
+    status: 'active',
     addedAt: now,
     addedBy: actor.name,
   };
@@ -976,25 +1148,35 @@ export async function transferBookingRoom(params: {
       updatedAt: now,
     };
 
-    const batch = writeBatch(db);
-    batch.update(doc(db, 'bookings', booking.id), {
-      roomId: targetRoom.id,
-      roomNumber: targetRoom.roomNumber,
-      floor: targetRoom.floor,
-      roomTypeId: targetRoom.roomTypeId,
-      roomTypeName: targetRoom.roomTypeName,
-      dailyRates: newDailyRates,
-      grossRoomTotal: gross,
-      otaCommissionAmount: 0,
-      netRoomTotal: gross,
-      lastActionSnapshot: { action: 'room_transfer_simple', prevState },
-      updatedAt: now,
+    // v2.2.2 BUG-02: Reserve target room BEFORE releasing old room atomically inside runTransaction()
+    const oldIv = buildBookingOccupancyInterval(booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+    const oldDates = getAffectedOccupancyDates(oldIv.startAt, oldIv.endAt, oldIv.bufferMinutes);
+    const newIv = buildBookingOccupancyInterval(updated, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+
+    await runTransaction(db, async (tx) => {
+      const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+        release: [{ roomId: booking.roomId, id: booking.id, dates: oldDates }],
+        reserve: [{ roomId: targetRoom.id, roomNumber: targetRoom.roomNumber, interval: newIv }],
+      });
+      applyOccupancyPlanInTransaction(tx, db, occPlan);
+      tx.update(doc(db, 'bookings', booking.id), {
+        roomId: targetRoom.id,
+        roomNumber: targetRoom.roomNumber,
+        floor: targetRoom.floor,
+        roomTypeId: targetRoom.roomTypeId,
+        roomTypeName: targetRoom.roomTypeName,
+        dailyRates: newDailyRates,
+        grossRoomTotal: gross,
+        otaCommissionAmount: 0,
+        netRoomTotal: gross,
+        lastActionSnapshot: { action: 'room_transfer_simple', prevState },
+        updatedAt: now,
+      });
+      if (booking.status === 'in_house') {
+        tx.update(doc(db, 'rooms', booking.roomId), { currentBookingId: null, hkStatus: 'dirty' });
+        tx.update(doc(db, 'rooms', targetRoom.id), { currentBookingId: booking.id });
+      }
     });
-    if (booking.status === 'in_house') {
-      batch.update(doc(db, 'rooms', booking.roomId), { currentBookingId: null, hkStatus: 'dirty' });
-      batch.update(doc(db, 'rooms', targetRoom.id), { currentBookingId: booking.id });
-    }
-    await batch.commit();
 
     await writeAuditLog({
       actionType: 'room_transfer',
@@ -1055,23 +1237,33 @@ export async function transferBookingRoom(params: {
     updatedAt: now,
   };
 
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'bookings', booking.id), {
-    bookingChainId: chainId,
-    checkOut: transferDate,
-    dailyRates: oldLegRates,
-    nights: oldLegRates.length,
-    grossRoomTotal: oldLegGross,
-    otaCommissionAmount: 0,
-    netRoomTotal: oldLegGross,
-    status: 'transferred',
-    actualCheckOutAt: now,
-    updatedAt: now,
+  // v2.2.2 BUG-02: Split-Stay atomic transaction — release old room future dates & reserve leg 2 on targetRoom
+  const oldIv = buildBookingOccupancyInterval(booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+  const oldDates = getAffectedOccupancyDates(oldIv.startAt, oldIv.endAt, oldIv.bufferMinutes);
+  const newLegIv = buildBookingOccupancyInterval(newBooking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      release: [{ roomId: booking.roomId, id: booking.id, dates: oldDates }],
+      reserve: [{ roomId: targetRoom.id, roomNumber: targetRoom.roomNumber, interval: newLegIv }],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.update(doc(db, 'bookings', booking.id), {
+      bookingChainId: chainId,
+      checkOut: transferDate,
+      dailyRates: oldLegRates,
+      nights: oldLegRates.length,
+      grossRoomTotal: oldLegGross,
+      otaCommissionAmount: 0,
+      netRoomTotal: oldLegGross,
+      status: 'transferred',
+      actualCheckOutAt: now,
+      updatedAt: now,
+    });
+    tx.set(doc(db, 'bookings', newBookingId), newBooking);
+    tx.update(doc(db, 'rooms', booking.roomId), { currentBookingId: null, hkStatus: 'dirty' });
+    tx.update(doc(db, 'rooms', targetRoom.id), { currentBookingId: newBookingId });
   });
-  batch.set(doc(db, 'bookings', newBookingId), newBooking);
-  batch.update(doc(db, 'rooms', booking.roomId), { currentBookingId: null, hkStatus: 'dirty' });
-  batch.update(doc(db, 'rooms', targetRoom.id), { currentBookingId: newBookingId });
-  await batch.commit();
 
   await writeAuditLog({
     actionType: 'room_transfer',
@@ -1229,29 +1421,36 @@ export async function consolidateRoomIntoTarget(
   const flags = computeOccupantFlags(mergedOccupants, targetBooking.checkOut);
   const nextTransferredBalance = (targetBooking.transferredBalance || 0) + carriedBalance;
 
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'bookings', sourceBooking.id), {
-    status: 'checked_out',
-    mergedIntoBookingId: targetBooking.id,
-    consolidatedInto: targetBooking.id,
-    balanceTransferredOut: (sourceBooking.balanceTransferredOut || 0) + carriedBalance,
-    actualCheckOutAt: now,
-    note: `Đã dồn khách & kết chuyển công nợ ${carriedBalance.toLocaleString('vi-VN')}đ sang P.${targetBooking.roomNumber} (${targetBooking.bookingCode}).`,
-    updatedAt: now,
+  const srcOcc = buildBookingOccupancyInterval(sourceBooking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+  const srcDates = getAffectedOccupancyDates(srcOcc.startAt, srcOcc.endAt, srcOcc.bufferMinutes);
+
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      release: [{ roomId: sourceBooking.roomId, id: sourceBooking.id, dates: srcDates }],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.update(doc(db, 'bookings', sourceBooking.id), {
+      status: 'checked_out',
+      mergedIntoBookingId: targetBooking.id,
+      consolidatedInto: targetBooking.id,
+      balanceTransferredOut: (sourceBooking.balanceTransferredOut || 0) + carriedBalance,
+      actualCheckOutAt: now,
+      note: `Đã dồn khách & kết chuyển công nợ ${carriedBalance.toLocaleString('vi-VN')}đ sang P.${targetBooking.roomNumber} (${targetBooking.bookingCode}).`,
+      updatedAt: now,
+    });
+    tx.update(doc(db, 'rooms', sourceBooking.roomId), {
+      currentBookingId: null,
+      hkStatus: 'dirty',
+    });
+    tx.update(doc(db, 'bookings', targetBooking.id), {
+      occupants: mergedOccupants,
+      ...flags,
+      transferredBalance: nextTransferredBalance,
+      mergedFromBookingIds: [...(targetBooking.mergedFromBookingIds || []), sourceBooking.id],
+      note: `${targetBooking.note ? `${targetBooking.note} | ` : ''}Nhận kết chuyển công nợ ${carriedBalance.toLocaleString('vi-VN')}đ từ P.${sourceBooking.roomNumber} (${sourceBooking.bookingCode})`.trim(),
+      updatedAt: now,
+    });
   });
-  batch.update(doc(db, 'rooms', sourceBooking.roomId), {
-    currentBookingId: null,
-    hkStatus: 'dirty',
-  });
-  batch.update(doc(db, 'bookings', targetBooking.id), {
-    occupants: mergedOccupants,
-    ...flags,
-    transferredBalance: nextTransferredBalance,
-    mergedFromBookingIds: [...(targetBooking.mergedFromBookingIds || []), sourceBooking.id],
-    note: `${targetBooking.note ? `${targetBooking.note} | ` : ''}Nhận kết chuyển công nợ ${carriedBalance.toLocaleString('vi-VN')}đ từ P.${sourceBooking.roomNumber} (${sourceBooking.bookingCode})`.trim(),
-    updatedAt: now,
-  });
-  await batch.commit();
 
   await writeAuditLog({
     actionType: 'room_merge_consolidate',
@@ -1636,29 +1835,6 @@ export async function createRoomMaintenance(params: {
     assertPeriodOpen(today, params.accountingLockDate);
   }
 
-  const batch = writeBatch(db);
-
-  if (cleanCost > 0) {
-    txId = generateId('tx');
-    const tx: Transaction = {
-      id: txId,
-      roomNumber: params.room.roomNumber,
-      roomMaintenanceId: id,
-      type: 'expense',
-      direction: 'out',
-      category: 'Sửa chữa & Bảo trì',
-      amount: cleanCost,
-      method: params.paymentMethod,
-      date: today,
-      status: 'active',
-      createdAt: now,
-      createdByUid: params.actor.uid,
-      createdByName: params.actor.name,
-      note: `Bảo trì P.${params.room.roomNumber}: ${params.issueTitle}`,
-    };
-    batch.set(doc(db, 'transactions', txId), tx);
-  }
-
   const maint: RoomMaintenance = {
     id,
     roomId: params.room.id,
@@ -1674,15 +1850,50 @@ export async function createRoomMaintenance(params: {
     completedAt: params.isCompletedNow ? now : null,
     performedBy: params.actor.name,
   };
-  batch.set(doc(db, 'room_maintenances', id), maint);
 
-  if (params.markRoomAsMaintenance && !params.isCompletedNow) {
-    batch.update(doc(db, 'rooms', params.room.id), { hkStatus: 'maintenance' });
-  } else if (params.isCompletedNow && params.room.hkStatus === 'maintenance') {
-    batch.update(doc(db, 'rooms', params.room.id), { hkStatus: 'clean' });
+  if (cleanCost > 0) {
+    txId = generateId('tx');
+    maint.transactionId = txId;
   }
 
-  await batch.commit();
+  // v2.2.2 BUG-02: Reserve room_occupancy atomically when maintenance is active (!isCompletedNow)
+  await runTransaction(db, async (tx) => {
+    if (!params.isCompletedNow) {
+      const mIv = buildMaintenanceOccupancyInterval(maint, now);
+      const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+        reserve: [{ roomId: params.room.id, roomNumber: params.room.roomNumber, interval: mIv }],
+      });
+      applyOccupancyPlanInTransaction(tx, db, occPlan);
+    }
+
+    if (cleanCost > 0 && txId) {
+      const expTx: Transaction = {
+        id: txId,
+        roomNumber: params.room.roomNumber,
+        roomMaintenanceId: id,
+        type: 'expense',
+        direction: 'out',
+        category: 'Sửa chữa & Bảo trì',
+        amount: cleanCost,
+        method: params.paymentMethod,
+        date: today,
+        status: 'active',
+        createdAt: now,
+        createdByUid: params.actor.uid,
+        createdByName: params.actor.name,
+        note: `Bảo trì P.${params.room.roomNumber}: ${params.issueTitle}`,
+      };
+      tx.set(doc(db, 'transactions', txId), expTx);
+    }
+
+    tx.set(doc(db, 'room_maintenances', id), maint);
+
+    if (params.markRoomAsMaintenance && !params.isCompletedNow) {
+      tx.update(doc(db, 'rooms', params.room.id), { hkStatus: 'maintenance' });
+    } else if (params.isCompletedNow && params.room.hkStatus === 'maintenance') {
+      tx.update(doc(db, 'rooms', params.room.id), { hkStatus: 'clean' });
+    }
+  });
 
   await writeAuditLog({
     actionType: 'room_maintenance',
@@ -1702,15 +1913,22 @@ export async function completeRoomMaintenance(
   actor: ActorInfo
 ): Promise<void> {
   const now = new Date().toISOString();
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'room_maintenances', maint.id), {
-    status: 'completed',
-    completedAt: now,
+  const mIv = buildMaintenanceOccupancyInterval(maint, now);
+  const mDates = getAffectedOccupancyDates(mIv.startAt, mIv.endAt, 0);
+
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      release: [{ roomId: maint.roomId, id: maint.id, dates: mDates }],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.update(doc(db, 'room_maintenances', maint.id), {
+      status: 'completed',
+      completedAt: now,
+    });
+    if (room && room.hkStatus === 'maintenance') {
+      tx.update(doc(db, 'rooms', room.id), { hkStatus: 'clean' });
+    }
   });
-  if (room && room.hkStatus === 'maintenance') {
-    batch.update(doc(db, 'rooms', room.id), { hkStatus: 'clean' });
-  }
-  await batch.commit();
 
   await writeAuditLog({
     actionType: 'complete_maintenance',
@@ -1986,4 +2204,169 @@ export async function updateOwnProfileAndPassword(params: {
     reason: params.newPassword ? 'Cập nhật hồ sơ & đổi mật khẩu cá nhân (Firebase Auth)' : 'Cập nhật hồ sơ cá nhân',
     actor: params.actor,
   });
+}
+
+/**
+ * v2.2.2 BUG-02 (Flow #15): Update maintenance date window atomically in `room_occupancy`.
+ */
+export async function updateRoomMaintenanceSchedule(params: {
+  maint: RoomMaintenance;
+  nextFrom: string;
+  nextTo: string;
+  actor: ActorInfo;
+}): Promise<void> {
+  const { maint, nextFrom, nextTo, actor } = params;
+  const safeTo = nextTo >= nextFrom ? nextTo : nextFrom;
+  const now = new Date().toISOString();
+  const oldIv = buildMaintenanceOccupancyInterval(maint, now);
+  const oldDates = getAffectedOccupancyDates(oldIv.startAt, oldIv.endAt, 0);
+  const newIv = buildMaintenanceOccupancyInterval(
+    { ...maint, maintenanceFrom: nextFrom, maintenanceTo: safeTo },
+    now
+  );
+
+  await runTransaction(db, async (tx) => {
+    const isCompleted = maint.status === 'completed' || maint.status === 'done';
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      release: [{ roomId: maint.roomId, id: maint.id, dates: oldDates }],
+      reserve: isCompleted
+        ? []
+        : [{ roomId: maint.roomId, roomNumber: maint.roomNumber, interval: newIv }],
+    });
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
+    tx.update(doc(db, 'room_maintenances', maint.id), {
+      maintenanceFrom: nextFrom,
+      maintenanceTo: safeTo,
+    });
+  });
+
+  await writeAuditLog({
+    actionType: 'room_maintenance_update',
+    targetId: maint.id,
+    targetLabel: `Cập nhật lịch bảo trì P.${maint.roomNumber} (${nextFrom} -> ${safeTo})`,
+    reason: 'Cập nhật ngày bảo trì đồng bộ room_occupancy',
+    actor,
+  });
+}
+
+/**
+ * v2.2.2 BUG-03: Idempotent migration for `hotel_config/main.bookingSources`.
+ * - Reads `hotel_config/main` inside `runTransaction()`.
+ * - If `bookingSources` already exists and is a non-empty array -> NO WRITE (idempotent!).
+ * - If missing/empty -> persists default direct + existing `otaChannels` (preserving custom OTA channels
+ *   and NEVER overwriting `otaChannels` or any other field) with `configMigrationVersion: 1`.
+ */
+export async function ensureBookingSourcesConfig(actor?: ActorInfo): Promise<{
+  migrated: boolean;
+  reason: 'already_present' | 'migrated_defaults' | 'config_missing';
+  sourceCount: number;
+}> {
+  const cfgRef = doc(db, 'hotel_config', 'main');
+  const now = new Date().toISOString();
+  const result = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(cfgRef);
+    if (!snap.exists()) {
+      return { migrated: false, reason: 'config_missing' as const, sourceCount: 0 };
+    }
+    const data = snap.data() as {
+      bookingSources?: unknown;
+      otaChannels?: Array<{ id: string; name: string; color?: string; isActive?: boolean }>;
+      configMigrationVersion?: number;
+    };
+    if (Array.isArray(data.bookingSources) && data.bookingSources.length > 0) {
+      return {
+        migrated: false,
+        reason: 'already_present' as const,
+        sourceCount: data.bookingSources.length,
+      };
+    }
+
+    const directs = DEFAULT_HOTEL_CONFIG.bookingSources
+      .filter((s) => s.kind === 'direct')
+      .map((s, idx) => ({ ...s, order: idx + 1 }));
+    const existingOtas =
+      Array.isArray(data.otaChannels) && data.otaChannels.length > 0
+        ? data.otaChannels.map((c, idx) => ({
+            id: c.id,
+            name: c.name,
+            kind: 'ota' as const,
+            color: c.color,
+            isActive: c.isActive !== false,
+            order: directs.length + idx + 1,
+          }))
+        : DEFAULT_HOTEL_CONFIG.bookingSources
+            .filter((s) => s.kind === 'ota')
+            .map((s, idx) => ({ ...s, order: directs.length + idx + 1 }));
+
+    const mergedSources = [...directs, ...existingOtas];
+    tx.update(cfgRef, {
+      bookingSources: mergedSources,
+      configMigrationVersion: Math.max(1, data.configMigrationVersion || 0),
+      updatedAt: now,
+    });
+    return {
+      migrated: true,
+      reason: 'migrated_defaults' as const,
+      sourceCount: mergedSources.length,
+    };
+  });
+
+  if (result.migrated && actor) {
+    await writeAuditLog({
+      actionType: 'config_migration_booking_sources',
+      targetId: 'hotel_config/main',
+      targetLabel: `Khởi tạo danh mục bookingSources (${result.sourceCount} nguồn)`,
+      newState: { configMigrationVersion: 1, sourceCount: result.sourceCount },
+      reason: 'Migration idempotent bổ sung trường bookingSources chuẩn v2.2.2',
+      actor,
+    });
+  }
+  return result;
+}
+
+/**
+ * v2.2.2 BUG-03: Merge-only restore for standard booking sources.
+ * Appends missing standard `DEFAULT_HOTEL_CONFIG.bookingSources` by `id` WITHOUT deleting
+ * or overwriting custom hotel sources or changing inactive flags on existing sources.
+ */
+export async function restoreMissingDefaultBookingSources(actor: ActorInfo): Promise<{
+  addedCount: number;
+  totalCount: number;
+}> {
+  const cfgRef = doc(db, 'hotel_config', 'main');
+  const now = new Date().toISOString();
+  const res = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(cfgRef);
+    const data = snap.exists()
+      ? (snap.data() as { bookingSources?: Array<{ id: string; name: string; kind: 'direct' | 'ota'; color?: string; isActive: boolean; order?: number }>; configMigrationVersion?: number })
+      : {};
+    const existing = Array.isArray(data.bookingSources) ? [...data.bookingSources] : [];
+    const existingIds = new Set(existing.map((s) => s.id));
+    let addedCount = 0;
+    for (const def of DEFAULT_HOTEL_CONFIG.bookingSources) {
+      if (!existingIds.has(def.id)) {
+        existing.push({ ...def, isActive: true, order: existing.length + 1 });
+        addedCount++;
+      }
+    }
+    if (addedCount > 0 || !Array.isArray(data.bookingSources)) {
+      tx.update(cfgRef, {
+        bookingSources: existing,
+        configMigrationVersion: Math.max(1, data.configMigrationVersion || 0),
+        updatedAt: now,
+      });
+    }
+    return { addedCount, totalCount: existing.length };
+  });
+
+  if (res.addedCount > 0) {
+    await writeAuditLog({
+      actionType: 'restore_default_booking_sources',
+      targetId: 'hotel_config/main',
+      targetLabel: `Bổ sung ${res.addedCount} nguồn mặc định còn thiếu (tổng ${res.totalCount})`,
+      reason: 'Khôi phục danh mục nguồn mặc định (không xóa nguồn tùy chỉnh)',
+      actor,
+    });
+  }
+  return res;
 }
