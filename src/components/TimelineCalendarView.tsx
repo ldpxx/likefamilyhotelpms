@@ -679,13 +679,13 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
       {/* HOURLY DAY VIEW (Trục 2 giờ 00:00–22:00 cho Nghỉ giờ & Bàn giao trong ngày) */}
       {zoomDays === 'day' ? (
         <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-250px)] select-none">
+          <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-250px)] select-none isolate">
             <div style={{ width: stickyWidth + DAY_SLOTS.length * colWidth }}>
-              <div className="sticky top-0 z-20 bg-[#FAF9F6] border-b border-[#E7E3DA]">
+              <div className="sticky top-0 z-30 bg-[#FAF9F6] border-b border-[#E7E3DA]">
                 <div className="flex">
                   <div
                     style={{ width: stickyWidth }}
-                    className="sticky left-0 z-30 bg-[#FAF9F6] border-r border-[#E7E3DA] px-3 py-2 shrink-0"
+                    className="sticky left-0 z-40 bg-[#FAF9F6] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-2 shrink-0"
                   >
                     <div className="text-[12px] font-semibold text-[#1C1B18]">
                       {formatDateVN(jumpDate)}
@@ -719,7 +719,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                     <div className="flex bg-[#F3F0E9]/90 border-b border-[#E7E3DA]">
                       <div
                         style={{ width: stickyWidth }}
-                        className="sticky left-0 z-10 bg-[#F3F0E9] border-r border-[#E7E3DA] px-3 py-1 text-[11px] font-semibold text-[#57534E]"
+                        className="sticky left-0 z-20 bg-[#F3F0E9] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-1 text-[11px] font-semibold text-[#57534E]"
                       >
                         {group.label} ({group.rooms.length} phòng)
                       </div>
@@ -741,7 +741,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                       >
                         <div
                           style={{ width: stickyWidth }}
-                          className="sticky left-0 z-10 bg-white border-r border-[#E7E3DA] px-3 flex items-center justify-between gap-2 shrink-0"
+                          className="sticky left-0 z-20 bg-white border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 flex items-center justify-between gap-2 shrink-0"
                         >
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5">
@@ -758,7 +758,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="relative flex flex-1">
+                        <div className="relative flex flex-1 overflow-hidden">
                           {DAY_SLOTS.map((h) => (
                             <div
                               key={h}
@@ -778,7 +778,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                           {jumpDate === today && (
                             <div
                               style={{ left: nowDayLinePx }}
-                              className="absolute top-0 bottom-0 w-0.5 bg-[#0F5132] z-20 pointer-events-none"
+                              className="absolute top-0 bottom-0 w-0.5 bg-[#0F5132] z-[8] pointer-events-none"
                             />
                           )}
 
@@ -804,7 +804,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                                 onMouseEnter={(e) => handleBarHover(e, b)}
                                 onMouseLeave={() => setHoveredInfo(null)}
                                 style={{ left: leftPx, width: widthPx }}
-                                className={`absolute ${barHeightClass} rounded-md px-2 flex items-center justify-between gap-1 text-[11px] font-medium cursor-pointer overflow-hidden shadow-xs z-10 ${getBarClasses(
+                                className={`absolute ${barHeightClass} rounded-md px-2 flex items-center justify-between gap-1 text-[11px] font-medium cursor-pointer overflow-hidden shadow-xs z-[5] ${getBarClasses(
                                   b
                                 )}`}
                               >
@@ -835,15 +835,15 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
           <div
             ref={scrollRef}
             onScroll={handleScroll}
-            className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-250px)] select-none"
+            className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-250px)] select-none isolate"
           >
             <div style={{ width: stickyWidth + dates.length * colWidth }}>
               {/* Sticky Date Header + Availability Summary Row */}
-              <div className="sticky top-0 z-20 bg-[#FAF9F6] border-b border-[#E7E3DA]">
+              <div className="sticky top-0 z-30 bg-[#FAF9F6] border-b border-[#E7E3DA]">
                 <div className="flex">
                   <div
                     style={{ width: stickyWidth }}
-                    className="sticky left-0 z-30 bg-[#FAF9F6] border-r border-[#E7E3DA] px-3 py-2 flex flex-col justify-center shrink-0"
+                    className="sticky left-0 z-40 bg-[#FAF9F6] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-2 flex flex-col justify-center shrink-0"
                   >
                     <span className="text-[12px] font-semibold text-[#1C1B18]">
                       Phòng ({visibleRooms.length})
@@ -883,7 +883,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                   <div className="flex border-t border-[#E7E3DA] bg-white">
                     <div
                       style={{ width: stickyWidth }}
-                      className="sticky left-0 z-30 bg-[#FAF9F6] border-r border-[#E7E3DA] px-3 py-1 text-[11px] font-medium text-[#57534E] shrink-0"
+                      className="sticky left-0 z-40 bg-[#FAF9F6] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-1 text-[11px] font-medium text-[#57534E] shrink-0"
                     >
                       Trống / Lấp đầy
                     </div>
@@ -918,7 +918,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                     <div className="flex bg-[#F3F0E9]/85 border-b border-[#E7E3DA]">
                       <div
                         style={{ width: stickyWidth }}
-                        className="sticky left-0 z-10 bg-[#F3F0E9] border-r border-[#E7E3DA] px-3 py-1 text-[11px] font-semibold text-[#57534E]"
+                        className="sticky left-0 z-20 bg-[#F3F0E9] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-1 text-[11px] font-semibold text-[#57534E]"
                       >
                         {group.label} ({group.rooms.length} phòng)
                       </div>
@@ -955,7 +955,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                         {/* Sticky Left Room Cell */}
                         <div
                           style={{ width: stickyWidth }}
-                          className="sticky left-0 z-10 bg-white border-r border-[#E7E3DA] px-3 flex items-center justify-between gap-2 shrink-0"
+                          className="sticky left-0 z-20 bg-white border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 flex items-center justify-between gap-2 shrink-0"
                         >
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5">
@@ -988,7 +988,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                         </div>
 
                         {/* Grid Cells + Overlay Bars */}
-                        <div className="relative flex flex-1">
+                        <div className="relative flex flex-1 overflow-hidden">
                           {dates.map((d) => {
                             const isSelected =
                               dragSelect &&
@@ -1082,7 +1082,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                                   onSelectBooking(b);
                                 }}
                                 style={{ left: leftPx, width: widthPx }}
-                                className={`group absolute ${barHeightClass} rounded-md px-2 flex items-center justify-between gap-1 text-[11px] font-medium cursor-pointer overflow-hidden shadow-xs z-10 ${getBarClasses(
+                                className={`group absolute ${barHeightClass} rounded-md px-2 flex items-center justify-between gap-1 text-[11px] font-medium cursor-pointer overflow-hidden shadow-xs z-[5] ${getBarClasses(
                                   b
                                 )}`}
                               >
