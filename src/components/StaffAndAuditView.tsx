@@ -15,7 +15,7 @@ import { formatDateTimeVN, getRoleLabel } from '../lib/utils';
 import {
   createStaffAccount,
   deleteStaffAccount,
-  resetStaffPassword,
+  replaceForgottenStaffAccount,
   updateOwnProfileAndPassword,
   updateStaffMember,
 } from '../lib/pmsActions';
@@ -51,8 +51,84 @@ export const StaffAndAuditView: React.FC = () => {
   const [myNewPass, setMyNewPass] = useState('');
   const [savingSelf, setSavingSelf] = useState(false);
 
-  // Audit filter
+  // Audit filter & GoHost-inspired Staff Activity Summary view
   const [logSearch, setLogSearch] = useState('');
+  const [auditViewMode, setAuditViewMode] = useState<'by_staff' | 'all'>('by_staff');
+
+  const auditSummary = useMemo(() => {
+    const priceEdits = auditLogs.filter(
+      (l) => l.actionType.includes('price') || l.actionType.includes('adjustment')
+    ).length;
+    const cancelsOrVoids = auditLogs.filter(
+      (l) =>
+        l.actionType.includes('cancel') ||
+        l.actionType.includes('void') ||
+        l.actionType.includes('no_show')
+    ).length;
+    const moneyReversals = auditLogs.filter(
+      (l) =>
+        l.actionType.includes('refund') ||
+        l.actionType.includes('reclassify') ||
+        l.actionType.includes('undo') ||
+        l.actionType.includes('reverse')
+    ).length;
+
+    const byStaffMap = new Map<
+      string,
+      {
+        name: string;
+        total: number;
+        bookings: number;
+        priceEdits: number;
+        cancels: number;
+        reversals: number;
+        firstTs: string;
+        lastTs: string;
+      }
+    >();
+
+    for (const l of auditLogs) {
+      const name = l.userName || l.performedByName || 'Hệ thống';
+      const cur = byStaffMap.get(name) || {
+        name,
+        total: 0,
+        bookings: 0,
+        priceEdits: 0,
+        cancels: 0,
+        reversals: 0,
+        firstTs: l.timestamp,
+        lastTs: l.timestamp,
+      };
+      cur.total += 1;
+      if (l.actionType.includes('booking') || l.actionType.includes('check_')) cur.bookings += 1;
+      if (l.actionType.includes('price') || l.actionType.includes('adjustment'))
+        cur.priceEdits += 1;
+      if (
+        l.actionType.includes('cancel') ||
+        l.actionType.includes('void') ||
+        l.actionType.includes('no_show')
+      )
+        cur.cancels += 1;
+      if (
+        l.actionType.includes('refund') ||
+        l.actionType.includes('reclassify') ||
+        l.actionType.includes('undo') ||
+        l.actionType.includes('reverse')
+      )
+        cur.reversals += 1;
+      if (l.timestamp < cur.firstTs) cur.firstTs = l.timestamp;
+      if (l.timestamp > cur.lastTs) cur.lastTs = l.timestamp;
+      byStaffMap.set(name, cur);
+    }
+
+    return {
+      total: auditLogs.length,
+      priceEdits,
+      cancelsOrVoids,
+      moneyReversals,
+      byStaff: Array.from(byStaffMap.values()).sort((a, b) => b.total - a.total),
+    };
+  }, [auditLogs]);
 
   const handleCreateStaff = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,15 +165,30 @@ export const StaffAndAuditView: React.FC = () => {
 
   const handleResetPassword = async (staff: StaffUser) => {
     if (!canManageStaff || staff.role === 'superadmin') return;
-    const pwd = window.prompt(
-      `Nhập mật khẩu mới để đặt lại cho ${staff.fullName} (@${staff.username}):`
+    const newUsernamePrompt = window.prompt(
+      `Do tài khoản dùng Firebase Auth bảo mật (không lưu mật khẩu trên Firestore), thao tác này sẽ KHÓA @${staff.username} cũ và cấp tài khoản mới với cùng phân quyền.\n\nNhập tên đăng nhập mới (ví dụ: ${staff.username}2):`,
+      `${staff.username}2`
     );
-    if (!pwd) return;
+    if (!newUsernamePrompt || !newUsernamePrompt.trim()) return;
+    const tempPwd = window.prompt(
+      `Nhập mật khẩu tạm (tối thiểu 6 ký tự) cho @${newUsernamePrompt.trim()} (nhân viên sẽ bắt buộc đổi khi đăng nhập lần đầu):`
+    );
+    if (!tempPwd || tempPwd.trim().length < 6) {
+      notify('Mật khẩu tạm cần ít nhất 6 ký tự.', 'error');
+      return;
+    }
     try {
-      await resetStaffPassword(staff, pwd, actor);
-      notify(`Đã đặt lại mật khẩu cho @${staff.username}`);
+      const replacement = await replaceForgottenStaffAccount({
+        oldStaff: staff,
+        newUsername: newUsernamePrompt.trim(),
+        tempPassword: tempPwd,
+        actor,
+      });
+      notify(
+        `Đã khóa @${staff.username} và cấp tài khoản mới @${replacement.username} (bắt buộc đổi MK lần đầu)`
+      );
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Lỗi đặt lại mật khẩu', 'error');
+      notify(err instanceof Error ? err.message : 'Lỗi cấp lại tài khoản', 'error');
     }
   };
 
@@ -237,20 +328,22 @@ export const StaffAndAuditView: React.FC = () => {
                   placeholder="Số điện thoại"
                   className="h-9 px-3 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
                 />
-                {staffProfile.authSource === 'firestore_staff' && (
+                {(staffProfile.authSource === 'firebase_staff' ||
+                  staffProfile.authSource === 'firestore_staff') && (
                   <>
                     <input
                       type="password"
                       value={myCurPass}
                       onChange={(e) => setMyCurPass(e.target.value)}
-                      placeholder="Mật khẩu hiện tại (nếu đổi)"
+                      placeholder="Mật khẩu hiện tại (bắt buộc khi đổi)"
                       className="h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
                     />
                     <input
                       type="password"
+                      minLength={6}
                       value={myNewPass}
                       onChange={(e) => setMyNewPass(e.target.value)}
-                      placeholder="Mật khẩu mới (tùy chọn)"
+                      placeholder="Mật khẩu mới ≥ 6 ký tự (tùy chọn)"
                       className="h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
                     />
                   </>
@@ -291,10 +384,10 @@ export const StaffAndAuditView: React.FC = () => {
                   <input
                     type="password"
                     required
-                    minLength={4}
+                    minLength={6}
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Mật khẩu *"
+                    placeholder="Mật khẩu tạm ≥ 6 ký tự *"
                     className="h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
                   />
                   <input
@@ -331,8 +424,7 @@ export const StaffAndAuditView: React.FC = () => {
                   </button>
                 </div>
                 <p className="text-[11px] text-[#8A847C]">
-                  Mật khẩu được mã hóa SHA-256 an toàn trong Cloud Firestore (`staff_users`), không
-                  cần tạo tài khoản Google hay Firebase Auth cho từng nhân viên.
+                  Tài khoản được xác thực trực tiếp bởi Firebase Auth (không lưu mật khẩu trong Firestore, tạo qua Secondary App để không ngắt phiên Chủ KS). Nhân viên mới sẽ bắt buộc đổi mật khẩu ở lần đăng nhập đầu tiên.
                 </p>
               </form>
 
@@ -410,9 +502,14 @@ export const StaffAndAuditView: React.FC = () => {
                             <span className="font-mono-num text-[12px] text-[#57534E]">
                               @{st.username}
                             </span>
-                            <span className="px-2 py-0.5 rounded bg-[#E8F2EE] text-[#1B5E4B] text-[11px] font-medium">
+                            <span className="px-2 py-0.5 rounded bg-[#E8F3EC] text-[#0F5132] text-[11px] font-medium">
                               {getRoleLabel(st.role)}
                             </span>
+                            {st.mustChangePassword && (
+                              <span className="px-2 py-0.5 rounded bg-[#FEF3C7] text-[#92400E] text-[11px] font-medium">
+                                Chờ đổi MK lần đầu
+                              </span>
+                            )}
                             {!st.isActive && (
                               <span className="px-2 py-0.5 rounded bg-[#FEF2F2] text-[#B91C1C] text-[11px] font-medium">
                                 Đang bị khóa
@@ -420,7 +517,9 @@ export const StaffAndAuditView: React.FC = () => {
                             )}
                           </div>
                           <div className="text-[12px] text-[#57534E] font-mono-num mt-0.5">
-                            {isRoot ? `Firebase Auth: ${st.email}` : `Tài khoản Firestore`}
+                            {isRoot
+                              ? `Firebase Auth (SuperAdmin): ${st.email}`
+                              : `Firebase Auth nội bộ: ${st.email || `${st.username}@likefamilypms.local`}`}
                             {st.phone ? ` • SĐT: ${st.phone}` : ''}
                           </div>
                         </div>
@@ -441,7 +540,7 @@ export const StaffAndAuditView: React.FC = () => {
                               className="h-8 px-2.5 rounded-lg border border-[#E5E2DC] hover:bg-[#F7F6F3] text-[12px] inline-flex items-center gap-1"
                             >
                               <KeyRound className="w-3.5 h-3.5" strokeWidth={1.5} />
-                              Đặt lại MK
+                              Cấp lại TK
                             </button>
                             {st.uid !== actor.uid && (
                               <>
@@ -509,115 +608,247 @@ export const StaffAndAuditView: React.FC = () => {
       )}
 
       {subTab === 'audit' && (
-        <div className="bg-white border border-[#E5E2DC] rounded-2xl p-5 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="text-[15px] font-semibold text-[#1C1B18]">
-                Nhật ký Kiểm toán & Hoàn tác chống gian lận (`audit_logs`)
-              </h3>
-              <p className="text-[12px] text-[#57534E]">
-                Lưu vết bất biến chuẩn ngày giờ Việt Nam (HH:mm dd/mm/YYYY)
-              </p>
+        <div className="space-y-4">
+          {/* 4 Anti-Fraud Audit Anomaly KPI Cards (GoHost-inspired) */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4">
+              <div className="text-[11px] font-medium text-[#8A847C] uppercase">Tổng thao tác</div>
+              <div className="mt-1 text-[22px] font-bold font-mono-num text-[#1C1B18]">
+                {auditSummary.total}
+              </div>
             </div>
-            <input
-              type="text"
-              value={logSearch}
-              onChange={(e) => setLogSearch(e.target.value)}
-              placeholder="Lọc theo hành động, nhân viên, mã đơn..."
-              className="h-8 px-3 rounded-lg border border-[#E5E2DC] text-[12px] w-72"
-            />
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4">
+              <div className="text-[11px] font-medium text-[#8A847C] uppercase">
+                Thao tác đụng giá / Điều chỉnh
+              </div>
+              <div className="mt-1 text-[22px] font-bold font-mono-num text-[#D97706]">
+                {auditSummary.priceEdits}
+              </div>
+            </div>
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4">
+              <div className="text-[11px] font-medium text-[#8A847C] uppercase">
+                Đơn bị hủy / Void / No-show
+              </div>
+              <div className="mt-1 text-[22px] font-bold font-mono-num text-[#B91C1C]">
+                {auditSummary.cancelsOrVoids}
+              </div>
+            </div>
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4">
+              <div className="text-[11px] font-medium text-[#8A847C] uppercase">
+                Hoàn tác / Đổi PTTT / Đảo CI
+              </div>
+              <div className="mt-1 text-[22px] font-bold font-mono-num text-[#0F5132]">
+                {auditSummary.moneyReversals}
+              </div>
+            </div>
           </div>
 
-          <div className="overflow-x-auto border border-[#E5E2DC] rounded-xl">
-            <table className="w-full text-[12px]">
-              <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
-                <tr>
-                  <th className="text-left px-3 py-2 font-medium">Thời gian</th>
-                  <th className="text-left px-3 py-2 font-medium">Thao tác</th>
-                  <th className="text-left px-3 py-2 font-medium">Đối tượng & Bút toán liên quan</th>
-                  <th className="text-left px-3 py-2 font-medium">Lý do & Snapshot kiểm toán</th>
-                  <th className="text-left px-3 py-2 font-medium">Nhân viên</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#F1EFEA]">
-                {filteredLogs.map((l) => {
-                  const beforeSnap = l.before_snapshot ?? l.previousState;
-                  const afterSnap = l.after_snapshot ?? l.newState;
-                  const hasSnapshots = Boolean(beforeSnap || afterSnap);
-                  return (
-                    <tr key={l.id} className="align-top">
-                      <td className="px-3 py-2 font-mono-num text-[11px] text-[#57534E] whitespace-nowrap">
-                        {formatDateTimeVN(l.timestamp)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[11px] font-mono-num inline-block ${
-                            l.actionType.includes('undo') ||
-                            l.actionType.includes('void') ||
-                            l.actionType.includes('reverse') ||
-                            l.actionType.includes('reopen')
-                              ? 'bg-[#FFFBEB] text-[#92400E]'
-                              : l.actionType.includes('reclassify') ||
-                                l.actionType.includes('adjustment') ||
-                                l.actionType.includes('lock')
-                              ? 'bg-[#EFF6FF] text-[#1D4ED8]'
-                              : 'bg-[#F1EFEA] text-[#1C1B18]'
+          <div className="bg-white border border-[#E7E3DA] rounded-2xl p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="inline-flex p-0.5 rounded-lg bg-[#F3F0E9]">
+                  <button
+                    type="button"
+                    onClick={() => setAuditViewMode('by_staff')}
+                    className={`h-8 px-3 rounded-md text-[12px] font-medium ${
+                      auditViewMode === 'by_staff'
+                        ? 'bg-[#0F5132] text-white'
+                        : 'text-[#57534E] hover:text-[#1C1B18]'
+                    }`}
+                  >
+                    Theo nhân viên ({auditSummary.byStaff.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAuditViewMode('all')}
+                    className={`h-8 px-3 rounded-md text-[12px] font-medium ${
+                      auditViewMode === 'all'
+                        ? 'bg-[#0F5132] text-white'
+                        : 'text-[#57534E] hover:text-[#1C1B18]'
+                    }`}
+                  >
+                    Tất cả hoạt động ({auditLogs.length})
+                  </button>
+                </div>
+                <p className="text-[12px] text-[#8A847C]">
+                  {auditViewMode === 'by_staff'
+                    ? 'Bấm một dòng nhân viên để lọc nhanh chi tiết dòng thời gian kiểm toán'
+                    : 'Lưu vết bất biến chuẩn HH:mm dd/mm/YYYY kèm Before/After Snapshot'}
+                </p>
+              </div>
+              {auditViewMode === 'all' && (
+                <input
+                  type="text"
+                  value={logSearch}
+                  onChange={(e) => setLogSearch(e.target.value)}
+                  placeholder="Lọc theo hành động, nhân viên, mã đơn, mã bút toán..."
+                  className="h-8 px-3 rounded-lg border border-[#E7E3DA] text-[12px] w-72 focus:outline-none focus:border-[#0F5132]"
+                />
+              )}
+            </div>
+
+            {auditViewMode === 'by_staff' ? (
+              <div className="overflow-x-auto border border-[#E7E3DA] rounded-xl">
+                <table className="w-full text-[12px] min-w-[680px]">
+                  <thead className="bg-[#FAF9F6] border-b border-[#E7E3DA] text-[#57534E]">
+                    <tr>
+                      <th className="text-left px-3.5 py-2 font-medium">Nhân viên</th>
+                      <th className="text-left px-3.5 py-2 font-medium">Hoạt động gần nhất</th>
+                      <th className="text-right px-3.5 py-2 font-medium">Tổng thao tác</th>
+                      <th className="text-right px-3.5 py-2 font-medium">Đơn phòng</th>
+                      <th className="text-right px-3.5 py-2 font-medium">Đụng giá</th>
+                      <th className="text-right px-3.5 py-2 font-medium">Hủy / Void</th>
+                      <th className="text-right px-3.5 py-2 font-medium">Hoàn tác / Đổi PTTT</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#F1EFEA]">
+                    {auditSummary.byStaff.map((row) => (
+                      <tr
+                        key={row.name}
+                        onClick={() => {
+                          setLogSearch(row.name);
+                          setAuditViewMode('all');
+                        }}
+                        className="hover:bg-[#FAF9F6] cursor-pointer"
+                      >
+                        <td className="px-3.5 py-2.5 font-semibold text-[#1C1B18]">
+                          <span className="inline-flex items-center gap-2">
+                            <span className="w-7 h-7 rounded-full bg-[#E8F3EC] text-[#0F5132] font-bold text-[11px] inline-flex items-center justify-center uppercase">
+                              {row.name.slice(0, 1)}
+                            </span>
+                            {row.name}
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-2.5 font-mono-num text-[11px] text-[#57534E]">
+                          {formatDateTimeVN(row.lastTs)}
+                        </td>
+                        <td className="px-3.5 py-2.5 text-right font-mono-num font-semibold">
+                          {row.total}
+                        </td>
+                        <td className="px-3.5 py-2.5 text-right font-mono-num">{row.bookings}</td>
+                        <td
+                          className={`px-3.5 py-2.5 text-right font-mono-num ${
+                            row.priceEdits > 0 ? 'text-[#D97706] font-semibold' : 'text-[#8A847C]'
                           }`}
                         >
-                          {l.actionType}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="font-medium text-[#1C1B18]">{l.targetLabel}</div>
-                        {l.relatedTransactionIds && l.relatedTransactionIds.length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {l.relatedTransactionIds.map((txId) => (
-                              <span
-                                key={txId}
-                                className="px-1.5 py-0.5 rounded bg-[#FAF9F6] border border-[#E5E2DC] font-mono-num text-[10px] text-[#57534E]"
-                              >
-                                {txId}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-[#57534E] max-w-md">
-                        <div>{l.reason}</div>
-                        {hasSnapshots && (
-                          <details className="mt-1">
-                            <summary className="cursor-pointer text-[11px] text-[#1B5E4B] hover:underline select-none">
-                              Xem before / after snapshot
-                            </summary>
-                            <div className="mt-1.5 grid grid-cols-1 gap-1.5 text-[10px] font-mono-num bg-[#FAF9F6] border border-[#E5E2DC] rounded-lg p-2">
-                              {beforeSnap && (
-                                <div>
-                                  <span className="font-semibold text-[#92400E]">Before: </span>
-                                  <span className="break-all text-[#57534E]">
-                                    {JSON.stringify(beforeSnap)}
-                                  </span>
-                                </div>
-                              )}
-                              {afterSnap && (
-                                <div>
-                                  <span className="font-semibold text-[#1B5E4B]">After: </span>
-                                  <span className="break-all text-[#1C1B18]">
-                                    {JSON.stringify(afterSnap)}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          </details>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-[#57534E] whitespace-nowrap">
-                        {l.userName || l.performedByName}
-                      </td>
+                          {row.priceEdits}
+                        </td>
+                        <td
+                          className={`px-3.5 py-2.5 text-right font-mono-num ${
+                            row.cancels > 0 ? 'text-[#B91C1C] font-semibold' : 'text-[#8A847C]'
+                          }`}
+                        >
+                          {row.cancels}
+                        </td>
+                        <td
+                          className={`px-3.5 py-2.5 text-right font-mono-num ${
+                            row.reversals > 0 ? 'text-[#0F5132] font-semibold' : 'text-[#8A847C]'
+                          }`}
+                        >
+                          {row.reversals}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-[#E7E3DA] rounded-xl">
+                <table className="w-full text-[12px]">
+                  <thead className="bg-[#FAF9F6] border-b border-[#E7E3DA] text-[#57534E]">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium">Thời gian</th>
+                      <th className="text-left px-3 py-2 font-medium">Thao tác</th>
+                      <th className="text-left px-3 py-2 font-medium">
+                        Đối tượng &amp; Bút toán liên quan
+                      </th>
+                      <th className="text-left px-3 py-2 font-medium">
+                        Lý do &amp; Snapshot kiểm toán
+                      </th>
+                      <th className="text-left px-3 py-2 font-medium">Nhân viên</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody className="divide-y divide-[#F1EFEA]">
+                    {filteredLogs.map((l) => {
+                      const beforeSnap = l.before_snapshot ?? l.previousState;
+                      const afterSnap = l.after_snapshot ?? l.newState;
+                      const hasSnapshots = Boolean(beforeSnap || afterSnap);
+                      return (
+                        <tr key={l.id} className="align-top">
+                          <td className="px-3 py-2 font-mono-num text-[11px] text-[#57534E] whitespace-nowrap">
+                            {formatDateTimeVN(l.timestamp)}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] font-mono-num inline-block ${
+                                l.actionType.includes('undo') ||
+                                l.actionType.includes('void') ||
+                                l.actionType.includes('reverse') ||
+                                l.actionType.includes('reopen')
+                                  ? 'bg-[#FFFBEB] text-[#92400E]'
+                                  : l.actionType.includes('reclassify') ||
+                                    l.actionType.includes('adjustment') ||
+                                    l.actionType.includes('lock')
+                                  ? 'bg-[#E8F3EC] text-[#0F5132]'
+                                  : 'bg-[#F3F0E9] text-[#1C1B18]'
+                              }`}
+                            >
+                              {l.actionType}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="font-medium text-[#1C1B18]">{l.targetLabel}</div>
+                            {l.relatedTransactionIds && l.relatedTransactionIds.length > 0 && (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {l.relatedTransactionIds.map((txId) => (
+                                  <span
+                                    key={txId}
+                                    className="px-1.5 py-0.5 rounded bg-[#FAF9F6] border border-[#E7E3DA] font-mono-num text-[10px] text-[#57534E]"
+                                  >
+                                    {txId}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-[#57534E] max-w-md">
+                            <div>{l.reason}</div>
+                            {hasSnapshots && (
+                              <details className="mt-1">
+                                <summary className="cursor-pointer text-[11px] text-[#0F5132] hover:underline select-none">
+                                  Xem before / after snapshot
+                                </summary>
+                                <div className="mt-1.5 grid grid-cols-1 gap-1.5 text-[10px] font-mono-num bg-[#FAF9F6] border border-[#E7E3DA] rounded-lg p-2">
+                                  {beforeSnap && (
+                                    <div>
+                                      <span className="font-semibold text-[#B45309]">Before: </span>
+                                      <span className="break-all text-[#57534E]">
+                                        {JSON.stringify(beforeSnap)}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {afterSnap && (
+                                    <div>
+                                      <span className="font-semibold text-[#0F5132]">After: </span>
+                                      <span className="break-all text-[#1C1B18]">
+                                        {JSON.stringify(afterSnap)}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              </details>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-[#57534E] whitespace-nowrap">
+                            {l.userName || l.performedByName}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}

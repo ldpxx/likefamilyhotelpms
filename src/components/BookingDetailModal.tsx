@@ -3,11 +3,13 @@ import {
   ArrowRightLeft,
   Award,
   Clock,
+  Copy,
   CreditCard,
   FileText,
   LogIn,
   LogOut,
   Merge,
+  MoreHorizontal,
   Plus,
   RotateCcw,
   Trash2,
@@ -130,6 +132,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
   // Undo prompt & v2.0.0 Cancellation / Part C Post-Stay Modals
   const [showUndoBox, setShowUndoBox] = useState(false);
   const [undoReason, setUndoReason] = useState('');
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showInlineQr, setShowInlineQr] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [showDepositResModal, setShowDepositResModal] = useState(false);
   const [showUndoCancelModal, setShowUndoCancelModal] = useState(false);
@@ -209,14 +213,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
   const handleCheckIn = async () => {
     setBusy(true);
     try {
-      const prevState = await checkInBooking(booking, actor);
+      await checkInBooking(booking, actor);
       notify(`Đã Check-in P.${booking.roomNumber} (${booking.primaryGuestName})`);
-      triggerUndoBanner({
-        label: `Đã nhận phòng P.${booking.roomNumber}`,
-        bookingId: booking.id,
-        actionType: 'check_in',
-        previousState: prevState,
-      });
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi Check-in', 'error');
     } finally {
@@ -227,7 +225,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
   const handleCheckOut = async (early = false) => {
     setBusy(true);
     try {
-      const prevState = await checkOutBooking(booking, actor, {
+      await checkOutBooking(booking, actor, {
         earlyCheckOut: early,
         refundAmount: early ? earlySuggestedRefund : 0,
         refundMethod: 'cash',
@@ -237,14 +235,6 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
           ? `Đã chốt trả phòng sớm P.${booking.roomNumber} (${earlyStayedNights} đêm)`
           : `Đã trả phòng P.${booking.roomNumber} — Phòng chuyển sang Chờ dọn`
       );
-      triggerUndoBanner({
-        label: early
-          ? `Đã chốt trả sớm P.${booking.roomNumber}`
-          : `Đã trả phòng P.${booking.roomNumber}`,
-        bookingId: booking.id,
-        actionType: early ? 'early_checkout' : 'check_out',
-        previousState: prevState,
-      });
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi trả phòng', 'error');
     } finally {
@@ -338,11 +328,14 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
         amount: payMethod === 'ota_debt' ? booking.grossRoomTotal : amount,
         method: payMethod,
         note: payNote || `Đơn ${booking.bookingCode} - P.${booking.roomNumber}`,
+        accountingLockDate: hotelConfig.accountingLockDate,
         actor,
       });
       setPayAmount(0);
       setPayNote('');
       notify(`Đã ghi nhận giao dịch (${getPaymentMethodLabel(payMethod)})`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi ghi nhận thanh toán', 'error');
     } finally {
       setBusy(false);
     }
@@ -416,70 +409,112 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white border border-[#E5E2DC] rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-xl overflow-hidden">
-        {/* Top Header */}
-        <div className="px-6 py-4 border-b border-[#E5E2DC] flex flex-wrap items-center justify-between gap-3 bg-white">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono-num text-[15px] font-semibold text-[#1B5E4B]">
-                P.{booking.roomNumber}
-              </span>
-              <span className="font-mono-num text-[13px] text-[#57534E]">
-                {booking.bookingCode}
-              </span>
-              <span className="px-2 py-0.5 rounded-md bg-[#F1EFEA] text-[11px] font-medium text-[#1C1B18]">
-                {getStatusLabel(booking.status)}
-              </span>
-              {isHourly && (
-                <span className="px-2 py-0.5 rounded-md bg-[#EFF6FF] text-[11px] font-medium text-[#1D4ED8] inline-flex items-center gap-1">
-                  <Clock className="w-3 h-3" strokeWidth={1.5} />
-                  Nghỉ giờ ({booking.hourlyHours || 1}h)
-                </span>
-              )}
-              <span className="px-2 py-0.5 rounded-md bg-[#E8F2EE] text-[11px] font-medium text-[#1B5E4B]">
-                {getSourceLabel(booking.source, booking.otaChannel, booking.sourceLabel)}
-              </span>
-              {showLoyalBadge && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#FEF3C7] text-[#92400E] text-[11px] font-semibold">
-                  <Award className="w-3 h-3" strokeWidth={1.5} />
-                  Khách hàng thân quen
-                </span>
-              )}
-              {booking.groupName && (
-                <span className="px-2 py-0.5 rounded-md bg-[#EFF6FF] text-[11px] font-medium text-[#1D4ED8]">
-                  Đoàn: {booking.groupName}
-                </span>
-              )}
-              {booking.isBillingReopened && (
-                <span className="px-2 py-0.5 rounded-md bg-[#FFFBEB] border border-[#FDE68A] text-[11px] font-medium text-[#92400E]">
-                  Mở lại sửa hóa đơn (không chiếm phòng)
-                </span>
-              )}
-              {booking.voidCheckedOutAt && (
-                <span className="px-2 py-0.5 rounded-md bg-[#FEF2F2] border border-[#FECACA] text-[11px] font-medium text-[#B91C1C]">
-                  Đã hủy ghi nhận sau Check-out
-                </span>
-              )}
+    <div
+      className="fixed inset-0 z-50 bg-black/40 flex justify-end"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-white border-l border-[#E7E3DA] w-full max-w-3xl h-full flex flex-col shadow-2xl overflow-hidden">
+        {/* Top Drawer Header with Initials Avatar & 1-Click Copy */}
+        <div className="px-6 py-4 border-b border-[#E7E3DA] flex flex-wrap items-center justify-between gap-3 bg-white shrink-0">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-[#E8F3EC] text-[#0F5132] font-bold text-[13px] flex items-center justify-center shrink-0 uppercase">
+              {(booking.primaryGuestName || 'KH')
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(-2)
+                .map((w) => w[0])
+                .join('')}
             </div>
-            <p className="text-[13px] text-[#57534E] mt-0.5">
-              {booking.primaryGuestName} • {booking.primaryGuestPhone || 'Chưa có SĐT'} •{' '}
-              <span className="font-mono-num">
-                {isHourly
-                  ? `${formatDateVN(booking.checkIn)} (${booking.checkInTime || ''} → ${
-                      booking.checkOutTime || ''
-                    } • ${booking.hourlyHours || 1} giờ)`
-                  : `${formatDateVN(booking.checkIn)} → ${formatDateVN(booking.checkOut)} (${
-                      booking.nights
-                    } đêm / ${booking.nights} ngày)`}
-              </span>
-            </p>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-mono-num text-[15px] font-bold text-[#0F5132]">
+                  P.{booking.roomNumber}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(booking.bookingCode);
+                    notify(`Đã sao chép mã đơn ${booking.bookingCode}`, 'info');
+                  }}
+                  title="Sao chép mã đặt phòng"
+                  className="inline-flex items-center gap-1 font-mono-num text-[12px] text-[#57534E] hover:text-[#0F5132]"
+                >
+                  {booking.bookingCode}
+                  <Copy className="w-3 h-3" strokeWidth={1.5} />
+                </button>
+                <span className="px-2 py-0.5 rounded-full bg-[#E8F3EC] text-[11px] font-semibold text-[#0F5132]">
+                  {getStatusLabel(booking.status)}
+                </span>
+                {isHourly && (
+                  <span className="px-2 py-0.5 rounded-full bg-[#FFFBEB] text-[11px] font-medium text-[#B45309] inline-flex items-center gap-1">
+                    <Clock className="w-3 h-3" strokeWidth={1.5} />
+                    Nghỉ giờ ({booking.hourlyHours || 1}h)
+                  </span>
+                )}
+                <span className="px-2 py-0.5 rounded-full bg-[#FAF9F6] border border-[#E7E3DA] text-[11px] font-medium text-[#57534E]">
+                  {getSourceLabel(booking.source, booking.otaChannel, booking.sourceLabel)}
+                </span>
+                {showLoyalBadge && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#FEF3C7] text-[#B45309] text-[11px] font-semibold">
+                    <Award className="w-3 h-3" strokeWidth={1.5} />
+                    Khách hàng thân quen
+                  </span>
+                )}
+                {booking.groupName && (
+                  <span className="px-2 py-0.5 rounded-full bg-[#F3F0E9] text-[11px] font-medium text-[#1C1B18]">
+                    Đoàn: {booking.groupName}
+                  </span>
+                )}
+                {booking.isBillingReopened && (
+                  <span className="px-2 py-0.5 rounded-full bg-[#FFFBEB] border border-[#FDE68A] text-[11px] font-medium text-[#92400E]">
+                    Mở lại sửa hóa đơn (không chiếm phòng)
+                  </span>
+                )}
+                {booking.voidCheckedOutAt && (
+                  <span className="px-2 py-0.5 rounded-full bg-[#FEF2F2] border border-[#FECACA] text-[11px] font-medium text-[#B91C1C]">
+                    Đã hủy ghi nhận sau Check-out
+                  </span>
+                )}
+              </div>
+              <p className="text-[13px] text-[#57534E] mt-0.5 flex flex-wrap items-center gap-1.5">
+                <strong className="text-[#1C1B18]">{booking.primaryGuestName}</strong>
+                {booking.primaryGuestPhone && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(booking.primaryGuestPhone);
+                      notify(`Đã sao chép SĐT ${booking.primaryGuestPhone}`, 'info');
+                    }}
+                    className="inline-flex items-center gap-1 font-mono-num text-[12px] hover:text-[#0F5132]"
+                    title="Sao chép SĐT"
+                  >
+                    • {booking.primaryGuestPhone}
+                    <Copy className="w-3 h-3" strokeWidth={1.5} />
+                  </button>
+                )}
+                <span className="font-mono-num text-[12px]">
+                  •{' '}
+                  {isHourly
+                    ? `${formatDateVN(booking.checkIn)} (${booking.checkInTime || ''} → ${
+                        booking.checkOutTime || ''
+                      } • ${booking.hourlyHours || 1} giờ)`
+                    : `${formatDateVN(booking.checkIn)} → ${formatDateVN(booking.checkOut)} (${
+                        booking.nights
+                      } đêm)`}
+                </span>
+              </p>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
             {booking.status !== 'cancelled' &&
               booking.status !== 'no_show' &&
               booking.lastActionSnapshot &&
+              !['check_in', 'check_out', 'early_checkout'].includes(
+                String(booking.lastActionSnapshot.action || '')
+              ) &&
               staffProfile?.permissions.canUndoAction && (
                 <button
                   type="button"
@@ -493,7 +528,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="w-8 h-8 rounded-lg hover:bg-[#F1EFEA] flex items-center justify-center text-[#57534E]"
+              className="w-8 h-8 rounded-lg hover:bg-[#FAF9F6] flex items-center justify-center text-[#57534E]"
             >
               <X className="w-4 h-4" strokeWidth={1.5} />
             </button>
@@ -627,6 +662,16 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   >
                     {formatCurrency(Math.max(0, guestBalance))}
                   </div>
+                  {(booking.transferredBalance || 0) > 0 && (
+                    <div className="text-[11px] text-[#0F5132] mt-0.5 font-mono-num">
+                      Gồm công nợ nhận chuyển: +{formatCurrency(booking.transferredBalance || 0)}
+                    </div>
+                  )}
+                  {booking.consolidatedInto && (
+                    <div className="text-[11px] text-[#57534E] mt-0.5">
+                      Đã chuyển công nợ ({formatCurrency(booking.balanceTransferredOut || 0)}) sang đơn ghép
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -790,20 +835,51 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                 </button>
               </div>
 
-              {/* Record Payment Form (includes Công nợ OTA) */}
+              {/* Record Payment Form (Quick 50% / 100% + Inline VietQR + Công nợ OTA) */}
               <form
                 onSubmit={handleRecordPayment}
-                className="rounded-xl border border-[#E5E2DC] p-4 space-y-3"
+                className="rounded-xl border border-[#E7E3DA] bg-[#FAF9F6]/60 p-4 space-y-3"
               >
-                <div className="flex items-center gap-2 text-[13px] font-semibold text-[#1C1B18]">
-                  <CreditCard className="w-4 h-4 text-[#1B5E4B]" strokeWidth={1.5} />
-                  Thu tiền / Đặt cọc / Công nợ OTA / Hoàn tiền
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[13px] font-semibold text-[#1C1B18]">
+                    <CreditCard className="w-4 h-4 text-[#0F5132]" strokeWidth={1.5} />
+                    Thu tiền / Đặt cọc / Công nợ OTA / Hoàn tiền
+                  </div>
+                  {guestBalance > 0 && (
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span className="text-[#8A847C]">Nhập nhanh:</span>
+                      <button
+                        type="button"
+                        onClick={() => setPayAmount(Math.round(guestBalance * 0.5))}
+                        className="h-6 px-2 rounded-md border border-[#E7E3DA] bg-white hover:border-[#0F5132] hover:text-[#0F5132] font-mono-num font-medium"
+                      >
+                        50%
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPayAmount(guestBalance)}
+                        className="h-6 px-2 rounded-md border border-[#0F5132]/30 bg-[#E8F3EC] text-[#0F5132] hover:bg-[#0F5132] hover:text-white font-mono-num font-semibold"
+                      >
+                        100%
+                      </button>
+                      {vietQrUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setShowInlineQr((v) => !v)}
+                          className="h-6 px-2 rounded-md border border-[#FDE68A] bg-[#FFFBEB] text-[#B45309] font-medium"
+                        >
+                          {showInlineQr ? 'Ẩn QR' : 'Hiện VietQR'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
                   <select
                     value={payType}
                     onChange={(e) => setPayType(e.target.value as typeof payType)}
-                    className="h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+                    className="h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px]"
                   >
                     <option value="payment">Thu thanh toán</option>
                     <option value="deposit">Thu tiền cọc</option>
@@ -815,13 +891,13 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                     step={10000}
                     value={payAmount || ''}
                     onChange={(e) => setPayAmount(Number(e.target.value) || 0)}
-                    placeholder={`Mặc định: ${Math.max(0, guestBalance)}`}
-                    className="h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px] font-mono-num"
+                    placeholder={`Còn lại: ${Math.max(0, guestBalance)}`}
+                    className="h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px] font-mono-num"
                   />
                   <select
                     value={payMethod}
                     onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
-                    className="h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+                    className="h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px]"
                   >
                     <option value="bank_transfer">Chuyển khoản (VietQR)</option>
                     <option value="cash">Tiền mặt</option>
@@ -831,7 +907,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   <button
                     type="submit"
                     disabled={busy}
-                    className="h-9 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[13px] font-medium"
+                    className="h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium"
                   >
                     Ghi nhận giao dịch
                   </button>
@@ -841,8 +917,21 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   value={payNote}
                   onChange={(e) => setPayNote(e.target.value)}
                   placeholder="Ghi chú phiếu thu (tùy chọn)..."
-                  className="w-full h-8 px-3 rounded-lg border border-[#E5E2DC] text-[12px]"
+                  className="w-full h-8 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
                 />
+                {showInlineQr && vietQrUrl && (
+                  <div className="pt-2 flex flex-col items-center gap-1 border-t border-[#E7E3DA]">
+                    <img
+                      src={vietQrUrl}
+                      alt="VietQR"
+                      className="w-44 h-auto rounded-xl border border-[#E7E3DA] bg-white p-2"
+                    />
+                    <span className="text-[11px] font-mono-num text-[#57534E]">
+                      {hotelConfig.bankAccount.bankId} • {hotelConfig.bankAccount.accountNo} •{' '}
+                      {formatCurrency(Math.max(0, payAmount || guestBalance))}
+                    </span>
+                  </div>
+                )}
               </form>
 
               {bookingTransactions.length > 0 && (
@@ -1290,6 +1379,196 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
               </div>
             </div>
           )}
+        </div>
+
+        {/* GoHost-Inspired Sticky Bottom Action Bar (4 Priority Buttons + "... Khác" Menu) */}
+        <div className="shrink-0 px-6 py-3 border-t border-[#E7E3DA] bg-white flex flex-wrap items-center justify-between gap-2 relative">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setTab('pricing');
+                setEditRates(booking.dailyRates);
+                setEditHourlyHours(booking.hourlyHours || 2);
+                setEditHourlyTotal(booking.grossRoomTotal);
+              }}
+              className="h-9 px-3.5 rounded-lg border border-[#E7E3DA] hover:bg-[#FAF9F6] text-[13px] font-medium text-[#1C1B18]"
+            >
+              Sửa giá / DV
+            </button>
+
+            {booking.status === 'reserved' && (
+              <button
+                type="button"
+                onClick={handleCheckIn}
+                disabled={busy}
+                className="h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5"
+              >
+                <LogIn className="w-4 h-4" strokeWidth={1.5} />
+                Nhận phòng
+              </button>
+            )}
+
+            {booking.status === 'in_house' && (
+              <button
+                type="button"
+                onClick={() => handleCheckOut(false)}
+                disabled={busy}
+                className="h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5"
+              >
+                <LogOut className="w-4 h-4" strokeWidth={1.5} />
+                Trả phòng
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                setTab('overview');
+                if (guestBalance > 0) setPayAmount(guestBalance);
+              }}
+              className="h-9 px-3.5 rounded-lg border border-[#0F5132]/30 bg-[#E8F3EC] hover:bg-[#0F5132] text-[#0F5132] hover:text-white text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors"
+            >
+              <CreditCard className="w-4 h-4" strokeWidth={1.5} />
+              Thanh toán
+            </button>
+
+            {/* Grouped "... Khác" Popover Menu */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowMoreMenu((v) => !v)}
+                className="h-9 px-3 rounded-lg border border-[#E7E3DA] hover:bg-[#FAF9F6] text-[13px] font-medium text-[#57534E] inline-flex items-center gap-1"
+              >
+                <MoreHorizontal className="w-4 h-4" strokeWidth={1.5} />
+                Khác
+              </button>
+
+              {showMoreMenu && (
+                <div className="absolute bottom-11 left-0 w-60 bg-white border border-[#E7E3DA] rounded-xl shadow-xl py-1.5 z-50 text-[12px]">
+                  {booking.status === 'in_house' && canEarlyCheckout && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        setPostStayMode('early_checkout');
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#B45309] font-medium"
+                    >
+                      Trả phòng sớm ({earlyStayedNights}đ)
+                    </button>
+                  )}
+                  {booking.status === 'in_house' && staffProfile?.permissions.canUndoAction && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        setPostStayMode('reverse_checkin');
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
+                    >
+                      Đảo Check-in nhầm
+                    </button>
+                  )}
+                  {(booking.status === 'reserved' || booking.status === 'in_house') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        setTab('transfer');
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
+                    >
+                      Đổi phòng (Split-Stay) / Ghép đơn
+                    </button>
+                  )}
+                  {booking.status === 'checked_out' && isAdmin && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowMoreMenu(false);
+                          setPostStayMode('reopen_checked_out');
+                        }}
+                        className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#0F5132] font-medium"
+                      >
+                        Mở lại đơn (Hóa đơn / Lưu trú)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowMoreMenu(false);
+                          setPostStayMode('post_checkout_adjustment');
+                        }}
+                        className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
+                      >
+                        Điều chỉnh / Phụ thu sau Check-out
+                      </button>
+                    </>
+                  )}
+
+                  <div className="my-1 border-t border-[#F1EFEA]" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      onOpenFormPreview(booking, 'payment_receipt');
+                    }}
+                    className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
+                  >
+                    Phiếu thanh toán &amp; VietQR
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      onOpenFormPreview(booking, 'booking_confirmation');
+                    }}
+                    className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
+                  >
+                    Phiếu xác nhận đặt phòng
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      onOpenFormPreview(booking, 'registration_card');
+                    }}
+                    className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
+                  >
+                    Phiếu đăng ký nhận phòng
+                  </button>
+
+                  {(booking.status === 'reserved' ||
+                    (booking.status === 'checked_out' && isAdmin)) && (
+                    <>
+                      <div className="my-1 border-t border-[#F1EFEA]" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowMoreMenu(false);
+                          if (booking.status === 'reserved') handleCancel();
+                          else setPostStayMode('void_checked_out');
+                        }}
+                        className="w-full px-3.5 py-2 text-left hover:bg-[#FEF2F2] text-[#B91C1C] font-medium"
+                      >
+                        {booking.status === 'reserved'
+                          ? 'Hủy đặt phòng'
+                          : 'Hủy đơn đã trả phòng (Void)'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="text-[12px] font-mono-num text-[#57534E]">
+            Còn lại:{' '}
+            <strong className={guestBalance > 0 ? 'text-[#B45309]' : 'text-[#0F5132]'}>
+              {formatCurrency(Math.max(0, guestBalance))}
+            </strong>
+          </div>
         </div>
       </div>
 

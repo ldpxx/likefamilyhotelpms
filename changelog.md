@@ -7,6 +7,70 @@ Tất cả các thay đổi quan trọng của dự án **Like Family PMS** đ�
 
 ---
 
+## [2.2.1] - 27/11/2026
+
+Bản vá **Bảo mật, Kế toán lõi & Đồng bộ Vận hành** toàn diện 4 đợt (`Đợt 0 → Đợt 1 P0 → Đợt 2 P1 → Đợt 3 P2`) theo tài liệu kỹ thuật [`Phuong_An_Khac_Phuc_Loi_Like_Family_PMS_v2_2_1_rev3.md`](./Phuong_An_Khac_Phuc_Loi_Like_Family_PMS_v2_2_1_rev3.md) (duy trì 0đ Firebase: không Cloud Functions, không Storage, không Google Sign-In), kèm báo cáo rà soát dữ liệu cũ [`legacy_data_audit_v2.2.1.md`](./legacy_data_audit_v2.2.1.md), deploy lên **https://likefamilypms.web.app**.
+
+### Security (P0)
+- **#8 — Chuyển xác thực Nhân viên sang Firebase Auth Email/Password & khóa triệt để `staff_users`:**
+  - Chuyển toàn bộ tài khoản Chủ KS & Nhân viên sang Firebase Auth với email nội bộ `<username>@likefamilypms.local` (không cần hộp thư thật), dùng **Secondary Firebase App (`StaffCreator`)** trong [src/lib/firebase.ts](./src/lib/firebase.ts) để Chủ KS/Quản lý tạo tài khoản mới mà không bị văng phiên đăng nhập.
+  - Bổ sung cờ `mustChangePassword: true` và màn hình bắt buộc đổi mật khẩu lần đầu đăng nhập trong [src/App.tsx](./src/App.tsx); cập nhật [src/components/StaffAndAuditView.tsx](./src/components/StaffAndAuditView.tsx) với luồng **Khóa & Cấp lại tài khoản mới** (`replaceForgottenStaffAccount`) và tự đổi mật khẩu bằng `reauthenticateWithCredential` + `updatePassword`.
+  - Xóa hoàn toàn trường `passwordHash`, migrate tài khoản Chủ KS `@likefamilyhotel` sang UID Firebase Auth mới và siết chặt [firestore.rules](./firestore.rules) chặn 100% truy cập `unauthenticated` trên toàn bộ collection (`staff_users`, `bookings`, `transactions`...).
+- **#3 — Sửa quyền Chủ khách sạn trên `hotel_config/main`:**
+  - Sửa [firestore.rules](./firestore.rules) dùng `request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accountingLockDate', 'bookingSources', 'otaChannels', 'hourlyCleaningBufferMinutes', 'updatedAt'])` cho vai trò `owner` (đã xác minh trực tiếp: cập nhật `accountingLockDate` thành công, ghi `hotelName` bị chặn `permission-denied`).
+
+### Fixed (P0 & P1 Accounting / Operations)
+- **#1 — Sửa sai lệch doanh thu P&L & KPI (Single Source of Truth):**
+  - Tạo [src/lib/revenueMetrics.ts](./src/lib/revenueMetrics.ts) với hàm `getRoomRevenueInRange()` phân bổ chính xác từng đêm `dailyRates` nằm trong `[from, to]`, cộng doanh thu nghỉ giờ vào ngày `checkIn` nhưng không cộng vào `soldNights`, áp dụng đồng nhất cho [DashboardView.tsx](./src/components/DashboardView.tsx), [FinanceReportsView.tsx](./src/components/FinanceReportsView.tsx) (P&L, Công suất theo loại phòng và Báo cáo 12 tháng).
+  - Khớp tuyệt đối dữ liệu nghiệm thu: ngày `27/11/2026` = **`2.260.000đ / 5 đêm / 33,3%`**, tuần `21–27/11/2026` = **`11.410.000đ / 29 đêm`**.
+- **#2 — Chống trùng doanh thu khi ghép phòng (`consolidateRoomIntoTarget`):**
+  - Tách khoản kết chuyển nợ từ Phòng A sang Phòng B sang trường riêng `transferredBalance` (cộng vào công nợ thu khách của Phòng B trong `getBookingGuestBalance()`, loại khỏi doanh thu P&L); Phòng A lưu `consolidatedInto` và `balanceTransferredOut` để công nợ về `0đ`.
+- **#4 & #5 — Đồng bộ `depositPaid`/`guestPaid` cho Hoàn tiền & Trả phòng sớm:**
+  - Tạo hàm duy nhất `applyPaymentDelta()` trong [src/lib/pmsActions.ts](./src/lib/pmsActions.ts) và áp dụng nguyên tử trong cùng `writeBatch` cho `recordTransaction()` (`deposit`, `payment`, `refund`, chặn hoàn vượt đã thu) và `executeEarlyCheckOut()` ([src/lib/postStayActions.ts](./src/lib/postStayActions.ts): `refunded`, `transferred_to_booking`, `pending_deposit_resolution`).
+- **#6 — Gỡ bỏ Undo 15 giây cho Check-in & Check-out:**
+  - Loại bỏ `triggerUndoBanner` và khóa `undoBookingAction()` cho `check_in`/`check_out`/`early_checkout` trên [BookingDetailModal.tsx](./src/components/BookingDetailModal.tsx) và [RoomGridView.tsx](./src/components/RoomGridView.tsx), bắt buộc dùng luồng **Đảo Check-in nhầm** (`clean`/`dirty`) và **Mở lại đơn đã Check-out**.
+- **#7 — Hỗ trợ nhiều lượt nghỉ giờ trong ngày kèm đệm dọn phòng 5 phút:**
+  - Chuẩn hóa đơn nghỉ giờ lưu `checkIn == checkOut`, `nights = 0`; kiểm tra trùng lịch bằng dấu thời gian `[startMs, endMs + buffer)` (`getBookingInterval` / `doBookingIntervalsOverlap`, mặc định `hourlyCleaningBufferMinutes = 5`) xử lý chuẩn cả va chạm giờ-với-giờ và giờ-với-qua-đêm trên [BookingCreateModal.tsx](./src/components/BookingCreateModal.tsx), [TimelineCalendarView.tsx](./src/components/TimelineCalendarView.tsx) và [AvailabilityFinder.tsx](./src/components/AvailabilityFinder.tsx).
+- **#9 — Loại đơn hủy/no-show khỏi chân bảng Tổng công nợ:**
+  - Cập nhật `<tfoot>` trong [BookingsAndGroupsView.tsx](./src/components/BookingsAndGroupsView.tsx) chỉ cộng đơn hoạt động (khớp **`3.710.000đ`**) và hiển thị tách bạch pill **Phí giữ cọc** (`200.000đ`).
+- **#11a — Khóa sổ kế toán 2 lớp (App + Firestore Rules):**
+  - Chặn mọi giao dịch `date <= accountingLockDate` tại `assertPeriodOpen()` trong [pmsActions.ts](./src/lib/pmsActions.ts)/[postStayActions.ts](./src/lib/postStayActions.ts) và `isPeriodOpenForDate()` trong [firestore.rules](./firestore.rules).
+
+### Improved (P2)
+- **#10 — Loại phòng ngừng sử dụng:** Tra cứu tên & giá từ toàn bộ `roomTypes` (gắn nhãn `(Ngừng SD)` nếu đã tắt), bổ sung cảnh báo xác nhận trong [SettingsAndAdminView.tsx](./src/components/SettingsAndAdminView.tsx) khi tắt loại phòng còn phòng con đang hoạt động, và khôi phục `rt_family` (`isActive: true`) cho P.204, P.304, P.404.
+- **#11b — Đối soát lô OTA cấn trừ tự động `ota_adjustments`:** [OtaReconciliationView.tsx](./src/components/OtaReconciliationView.tsx) tự động gợi ý các bút toán điều chỉnh `pending_next_payout` cùng kênh và gạch trừ nguyên tử trong cùng `writeBatch` của `createOtaPayoutBatch()`.
+- **#12a & #12b — Bảo trì phòng dùng chung & Nguồn đặt đoàn:** Bổ sung ngày `maintenanceFrom` / `maintenanceTo` trong [RoomMaintenanceModal.tsx](./src/components/RoomMaintenanceModal.tsx) và dùng chung `isRoomBlockedByMaintenance()` trên cả 3 màn hình; bổ sung chọn **Nguồn đặt phòng** và đồng bộ màu `#0F5132` trong [GroupBookingModal.tsx](./src/components/GroupBookingModal.tsx).
+
+---
+
+## [2.2.0] - 27/11/2026
+
+Phiên bản nâng cấp toàn diện **UI/UX 3 đợt** theo báo cáo tham chiếu [`gohost_ui_reference.md`](./gohost_ui_reference.md) kết hợp bản sắc thương hiệu ấm áp **Like Family Hotel** (**Xanh Rừng Sâu `#0F5132` – `#1B5E20`**, **Vàng Cát `#FAF9F6`**, **Vàng Hổ Phách `#D97706`**), bảo toàn 100% 28 quy tắc nghiệp vụ & kế toán bất biến, deploy lên **https://likefamilypms.web.app**.
+
+### Added
+- **Trang Tổng Quan Vận Hành (`src/components/DashboardView.tsx`):**
+  - 4 thẻ KPI chính (`Doanh thu thực tế`, `Tỷ lệ lấp đầy`, `ADR`, `RevPAR`) kèm `%` so sánh kỳ trước và 5 chỉ số vận hành phụ theo chu kỳ chọn nhanh (`Hôm nay`, `Hôm qua`, `7 ngày`, `30 ngày`, `Tháng này`).
+  - Biểu đồ Doanh thu phòng 14 ngày + Thanh tỷ trọng Theo kênh đặt phòng + **Dải dự báo công suất 30 ngày tới** (30 ô nhiệt độ Forest Emerald).
+  - Bảng tác vụ hôm nay với 5 tab đếm (`Sắp nhận phòng`, `Sắp trả phòng`, `Đang lưu trú`, `Cọc treo`, `Cảnh báo ASM`) và dòng `Tổng còn phải thu`.
+- **Sơ đồ phòng Pro (`src/components/RoomGridView.tsx`):**
+  - Dải 7 ô đếm vận hành + tổng `Còn phải thu hôm nay` + thanh tìm kiếm tức thì hỗ trợ phím tắt `/`.
+  - 4 chế độ gom nhóm (`Trạng thái` | `Loại phòng` | `Tầng` | `Tất cả`), thẻ phòng dùng **vạch màu 3px ở cạnh trên**, icon chổi cho phòng bẩn, hiển thị trực tiếp **`Hạn lưu trú dd/mm/YYYY`** lấy từ OCR/hồ sơ khách nước ngoài và nút thao tác **1-click `Nhận phòng` / `Đánh dấu sạch`**.
+- **Lịch Timeline Pro (`src/components/TimelineCalendarView.tsx`):**
+  - Bổ sung chế độ xem **`Ngày (Giờ)`** theo trục 24 giờ (`00:00 – 22:00`) kèm vạch giờ hiện tại trực quan cho đơn Nghỉ giờ 3 bậc & giao ca trong ngày.
+  - Bổ sung **Hover Popover xem nhanh** khi rê chuột vào thanh đơn, **Popover `Hiển thị`** (Mật độ Đầy đủ/Thu gọn, Nhóm theo Tầng/Loại phòng/Chỉ phòng, Tô màu theo Trạng thái/Nguồn đặt phòng), thanh tìm kiếm phím tắt `/`, và micro-badge `✓✓` / `[G]` / chổi phòng bẩn.
+- **Right Slide-Over Drawers & Thanh toán nhanh (`BookingCreateModal.tsx`, `BookingDetailModal.tsx`):**
+  - Chuyển Tạo đơn & Chi tiết đơn sang ngăn kéo trượt phải giữ ngữ cảnh lịch bên trái; bổ sung ô gõ trực tiếp **`Số đêm`** tự cập nhật ngày trả phòng.
+  - Chi tiết đơn bổ sung Avatar chữ cái đầu, **Copy 1-click** Mã ĐP & SĐT, nút **`Nhập nhanh [50%] [100%]`** + bật nhanh VietQR ngay trong form thu tiền, và **Sticky Footer 4 nút (`Sửa giá / DV` | `Nhận/Trả phòng` | `Thanh toán` | `... Khác`)** gom gọn toàn bộ thao tác kế toán & in biểu mẫu.
+- **Báo cáo 12 tháng, Công suất theo Loại phòng & Nhật ký theo Nhân viên:**
+  - [FinanceReportsView.tsx](./src/components/FinanceReportsView.tsx): Thêm Preset chọn kỳ nhanh, sub-tab **`Báo cáo 12 tháng`** xuất Excel 1-click, và bảng **Công suất theo Loại phòng & Nghỉ giờ** (đều lọc qua `isBookingEligibleForPnLRevenue()`).
+  - [StaffAndAuditView.tsx](./src/components/StaffAndAuditView.tsx): Bổ sung 4 thẻ thống kê chống gian lận (`Tổng thao tác`, `Đụng giá / Điều chỉnh`, `Hủy / Void`, `Hoàn tác / Đổi PTTT`) và tab **`Theo nhân viên`** bấm vào để lọc thẳng dòng thời gian kiểm toán kèm `Before/After Snapshot`.
+  - [BookingsAndGroupsView.tsx](./src/components/BookingsAndGroupsView.tsx): Bổ sung chân bảng tổng cộng (`Tổng tiền`, `Đã thu`, `Còn lại`) cho danh sách đơn đang lọc.
+
+### Changed
+- Đồng bộ toàn bộ design tokens ([src/index.css](./src/index.css), [src/App.tsx](./src/App.tsx)) sang bộ màu thương hiệu **Like Family Hotel** (`#0F5132` Forest Emerald, `#FAF9F6` Warm Cream, `#D97706` Amber, `#E7E3DA` Warm Sand Hairline).
+
+---
+
 ## [2.1.1] - 27/11/2026 (Bản vá P&L Split-Stay / v2.0.1-hotfix)
 
 Bản vá logic tính doanh thu **Tài chính & P&L** cùng tùy chọn hủy đồng bộ **Chuỗi chuyển phòng (Split-Stay Chain)**, deploy lên **https://likefamilypms.web.app**.

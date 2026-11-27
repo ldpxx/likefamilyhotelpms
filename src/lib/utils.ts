@@ -228,13 +228,20 @@ export function getBookingTotalReceivable(b: Booking): number {
 }
 
 export function getBookingGuestBalance(b: Booking): number {
+  // Bug #9: Cancelled / No-Show bookings carry zero open guest receivable balance
+  if (b.status === 'cancelled' || b.status === 'no_show') return 0;
+
+  const carriedIn = Math.max(0, Math.round(b.transferredBalance || 0));
+  const carriedOut = Math.max(0, Math.round(b.balanceTransferredOut || 0));
+
   if (b.source === 'ota' && b.paymentMethod === 'ota_debt') {
-    // Room total is tracked under OTA Receivable Debt; guest only pays services & hourly surcharge at desk
-    const guestCharge = (b.serviceTotal || 0) + (b.hourlySurcharge || 0);
-    return Math.round(guestCharge - (b.guestPaid || 0));
+    // Room total is tracked under OTA Receivable Debt; guest only pays services, surcharge & carried-in balance at desk
+    const guestCharge = (b.serviceTotal || 0) + (b.hourlySurcharge || 0) + carriedIn;
+    return Math.round(guestCharge - (b.guestPaid || 0) - carriedOut);
   }
-  const total = (b.grossRoomTotal || 0) + (b.serviceTotal || 0) + (b.hourlySurcharge || 0);
-  return Math.round(total - (b.depositPaid || 0) - (b.guestPaid || 0));
+  const total =
+    (b.grossRoomTotal || 0) + (b.serviceTotal || 0) + (b.hourlySurcharge || 0) + carriedIn;
+  return Math.round(total - (b.depositPaid || 0) - (b.guestPaid || 0) - carriedOut);
 }
 
 export function getDefaultPermissionsForRole(role: StaffRole): StaffPermissions {

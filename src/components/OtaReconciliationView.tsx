@@ -20,6 +20,7 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
   const { bookings, otaBatches, otaAdjustments, hotelConfig, isAdmin, actor, notify } = usePms();
   const [channelFilter, setChannelFilter] = useState('all');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [excludedAdjIds, setExcludedAdjIds] = useState<string[]>([]);
   const [payoutDate, setPayoutDate] = useState(todayISO());
   const [actualReceived, setActualReceived] = useState<string>('');
   const [note, setNote] = useState('');
@@ -164,6 +165,33 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
   );
   const selectedExpectedTotal = selectedBookings.reduce((s, b) => s + (b.grossRoomTotal || 0), 0);
 
+  // v2.2.1 #11b: Auto-suggest matching pending ota_adjustments for the selected OTA channel(s)
+  const matchingPendingAdjustments = useMemo(() => {
+    const chSet = new Set(
+      selectedBookings.map((b) => (b.otaChannel || b.sourceLabel || '').trim().toLowerCase())
+    );
+    return pendingOtaAdjustments.filter((a) =>
+      chSet.has((a.otaChannel || '').trim().toLowerCase())
+    );
+  }, [selectedBookings, pendingOtaAdjustments]);
+
+  const appliedAdjustments = useMemo(
+    () => matchingPendingAdjustments.filter((a) => !excludedAdjIds.includes(a.id)),
+    [matchingPendingAdjustments, excludedAdjIds]
+  );
+
+  const appliedAdjustmentsSum = appliedAdjustments.reduce(
+    (s, a) => s + (a.adjustmentAmount || 0),
+    0
+  );
+  const netExpectedTotal = Math.max(0, selectedExpectedTotal + appliedAdjustmentsSum);
+
+  const toggleAdjInclude = (adjId: string) => {
+    setExcludedAdjIds((prev) =>
+      prev.includes(adjId) ? prev.filter((x) => x !== adjId) : [...prev, adjId]
+    );
+  };
+
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
@@ -178,7 +206,7 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
     const channelLabel = channels.size === 1 ? Array.from(channels)[0] : 'Nhiều kênh OTA';
     const actualAmount =
       actualReceived.trim() === ''
-        ? selectedExpectedTotal
+        ? netExpectedTotal
         : Math.max(0, Number(actualReceived) || 0);
 
     setSubmitting(true);
@@ -188,16 +216,19 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
         payoutDate,
         bookings: selectedBookings,
         actualReceivedAmount: actualAmount,
+        appliedAdjustments,
+        accountingLockDate: hotelConfig.accountingLockDate,
         note,
         actor,
       });
       setSelectedIds([]);
+      setExcludedAdjIds([]);
       setActualReceived('');
       setNote('');
       notify(
-        `Đã gạch nợ lô ${batch.batchCode} (${batch.bookingIds.length} đơn) — Thực nhận ${formatCurrency(
-          batch.actualReceivedAmount
-        )}`
+        `Đã gạch nợ lô ${batch.batchCode} (${batch.bookingIds.length} đơn${
+          appliedAdjustments.length > 0 ? `, cấn trừ ${appliedAdjustments.length} bút toán ĐC` : ''
+        }) — Thực nhận ${formatCurrency(batch.actualReceivedAmount)}`
       );
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi gạch nợ OTA', 'error');
@@ -439,17 +470,67 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
         {selectedBookings.length > 0 && (
           <form
             onSubmit={handleSettleBatch}
-            className="p-4 rounded-xl bg-[#FAF9F6] border border-[#1B5E4B]/30 space-y-3"
+            className="p-4 rounded-xl bg-[#FAF9F6] border border-[#0F5132]/30 space-y-3"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-[13px] font-semibold text-[#1B5E4B]">
+              <div className="flex items-center gap-2 text-[13px] font-semibold text-[#0F5132]">
                 <Landmark className="w-4 h-4" strokeWidth={1.5} />
                 Gạch nợ theo lô ({selectedBookings.length} đơn đã chọn)
               </div>
-              <div className="text-[13px] font-mono-num">
-                Tổng công nợ dự kiến: <strong>{formatCurrency(selectedExpectedTotal)}</strong>
+              <div className="text-[13px] font-mono-num flex flex-wrap items-center gap-2">
+                <span>
+                  Tiền đơn: <strong>{formatCurrency(selectedExpectedTotal)}</strong>
+                </span>
+                {appliedAdjustments.length > 0 && (
+                  <>
+                    <span className={appliedAdjustmentsSum < 0 ? 'text-[#B91C1C]' : 'text-[#0F5132]'}>
+                      {appliedAdjustmentsSum >= 0 ? '+' : ''}
+                      {formatCurrency(appliedAdjustmentsSum)} ĐC
+                    </span>
+                    <span>
+                      = Dự kiến: <strong className="text-[#0F5132]">{formatCurrency(netExpectedTotal)}</strong>
+                    </span>
+                  </>
+                )}
               </div>
             </div>
+
+            {matchingPendingAdjustments.length > 0 && (
+              <div className="p-3 rounded-lg bg-[#FFFBEB] border border-[#FDE68A] space-y-1.5 text-[12px]">
+                <div className="font-semibold text-[#92400E]">
+                  Tự động gợi ý cấn trừ {matchingPendingAdjustments.length} bút toán điều chỉnh OTA chờ kỳ sau:
+                </div>
+                {matchingPendingAdjustments.map((adj) => {
+                  const checked = !excludedAdjIds.includes(adj.id);
+                  return (
+                    <label
+                      key={adj.id}
+                      className="flex items-center justify-between gap-2 cursor-pointer py-0.5"
+                    >
+                      <span className="inline-flex items-center gap-2 text-[#1C1B18]">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleAdjInclude(adj.id)}
+                          className="accent-[#0F5132]"
+                        />
+                        <span className="font-mono-num font-medium">{adj.bookingCode}</span>
+                        <span className="text-[#57534E]">— {adj.reason}</span>
+                      </span>
+                      <span
+                        className={`font-mono-num font-semibold shrink-0 ${
+                          adj.adjustmentAmount < 0 ? 'text-[#B91C1C]' : 'text-[#0F5132]'
+                        }`}
+                      >
+                        {adj.adjustmentAmount > 0 ? '+' : ''}
+                        {formatCurrency(adj.adjustmentAmount)}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
               <div>
                 <label className="block text-[11px] text-[#57534E] mb-1">Ngày tiền về ngân hàng</label>
@@ -464,7 +545,7 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
                   min={0}
                   value={actualReceived}
                   onChange={(e) => setActualReceived(e.target.value)}
-                  placeholder={String(selectedExpectedTotal)}
+                  placeholder={String(netExpectedTotal)}
                   className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[12px]"
                 />
               </div>
@@ -629,8 +710,8 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
                       {formatCurrency(adj.adjustmentAmount)}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      {adj.status === 'applied' ? (
-                        <span className="px-2 py-0.5 rounded bg-[#E8F2EE] text-[#1B5E4B] text-[11px] font-medium">
+                      {adj.status === 'applied' || adj.status === 'settled' ? (
+                        <span className="px-2 py-0.5 rounded bg-[#E8F3EC] text-[#0F5132] text-[11px] font-medium">
                           Đã đối trừ kỳ sau
                         </span>
                       ) : isAdmin ? (

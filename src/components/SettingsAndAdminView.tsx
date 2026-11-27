@@ -231,6 +231,23 @@ export const SettingsAndAdminView: React.FC = () => {
   const handleToggleRoomTypeActive = async (rt: RoomType) => {
     if (!canManageRoomsAndSources) return;
     const nextActive = rt.isActive === false;
+    if (!nextActive) {
+      const activeChildren = rooms.filter((r) => r.roomTypeId === rt.id && r.isActive !== false);
+      if (activeChildren.length > 0) {
+        const listStr = activeChildren.map((r) => `P.${r.roomNumber}`).join(', ');
+        const proceedDisableChildren = window.confirm(
+          `Loại phòng "${rt.name}" hiện còn ${activeChildren.length} phòng con đang hoạt động (${listStr}).\n\n` +
+            `• Bấm OK để chuyển loại phòng "${rt.name}" VÀ toàn bộ ${activeChildren.length} phòng con sang "Ngừng sử dụng".\n` +
+            `• Bấm Hủy để giữ nguyên (bạn có thể đổi loại phòng cho các phòng trên trước).`
+        );
+        if (!proceedDisableChildren) return;
+        await Promise.all(
+          activeChildren.map((r) =>
+            setDoc(doc(db, 'rooms', r.id), { ...r, isActive: false }, { merge: true })
+          )
+        );
+      }
+    }
     await setDoc(doc(db, 'room_types', rt.id), { ...rt, isActive: nextActive }, { merge: true });
     notify(
       nextActive

@@ -1,20 +1,24 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { onAuthStateChanged, signOut, type User as FirebaseUser } from 'firebase/auth';
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  updatePassword,
+  type User as FirebaseUser,
+} from 'firebase/auth';
 import {
   collection,
   deleteDoc,
   doc,
   getDoc,
-  getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
   setDoc,
-  where,
+  updateDoc,
 } from 'firebase/firestore';
-import { auth, db } from '../lib/firebase';
-import { hashPasswordSha256 } from '../lib/crypto';
+import { auth, db, usernameToInternalEmail } from '../lib/firebase';
 import {
   DEFAULT_FORM_TEMPLATES,
   DEFAULT_HOTEL_CONFIG,
@@ -62,6 +66,7 @@ interface PmsContextValue {
   isAdmin: boolean;
   canManageStaff: boolean;
   loginWithStaffCredentials: (username: string, password: string) => Promise<void>;
+  completeFirstLoginPasswordChange: (newPassword: string) => Promise<void>;
   logout: () => Promise<void>;
 
   hotelConfig: HotelConfig;
@@ -215,11 +220,28 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const emailMatches = Boolean(rootEmail && currentEmail && rootEmail === currentEmail);
 
           if (!uidMatches && !emailMatches) {
-            await signOut(auth);
-            setStaffProfile(null);
-            setAuthBlockReason(
-              `Hệ thống chỉ cho phép duy nhất 1 tài khoản SuperAdmin gốc (${rootEmail || 'đã cố định'}) đăng nhập qua Firebase Auth. Nhân viên & Chủ khách sạn vui lòng đăng nhập bằng Tên đăng nhập + Mật khẩu tại trang đăng nhập chính.`
-            );
+            // Bug #8: Authenticated Owner / Manager / Staff via Firebase Auth Email/Password (`<username>@likefamilypms.local`)
+            const staffSnap = await getDoc(doc(db, 'staff_users', user.uid));
+            if (!staffSnap.exists()) {
+              await signOut(auth);
+              setStaffProfile(null);
+              setAuthBlockReason(
+                'Tài khoản này chưa được cấp hồ sơ nhân viên trong hệ thống. Vui lòng liên hệ Chủ khách sạn hoặc SuperAdmin.'
+              );
+              setAuthLoading(false);
+              return;
+            }
+            const staffData = staffSnap.data() as StaffUser;
+            if (!staffData.isActive) {
+              await signOut(auth);
+              setStaffProfile(null);
+              setAuthBlockReason(
+                'Tài khoản này đang bị tạm khóa. Vui lòng liên hệ Chủ khách sạn hoặc SuperAdmin.'
+              );
+              setAuthLoading(false);
+              return;
+            }
+            setStaffProfile(staffData);
             setAuthLoading(false);
             return;
           }
@@ -281,28 +303,8 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
 
-      // No Firebase Auth user -> attempt restoring Firestore `staff_users` session
-      try {
-        const raw = localStorage.getItem(LS_STAFF_SESSION);
-        if (raw) {
-          const saved = JSON.parse(raw) as { uid?: string };
-          if (saved.uid) {
-            const snap = await getDoc(doc(db, 'staff_users', saved.uid));
-            if (snap.exists()) {
-              const st = snap.data() as StaffUser;
-              if (st.isActive && st.authSource !== 'firebase_superadmin') {
-                setStaffProfile(st);
-                setAuthLoading(false);
-                return;
-              }
-            }
-          }
-          localStorage.removeItem(LS_STAFF_SESSION);
-        }
-      } catch {
-        localStorage.removeItem(LS_STAFF_SESSION);
-      }
-
+      // No Firebase Auth user -> clear session cleanly (Bug #8: zero unauthenticated staff_users access)
+      localStorage.removeItem(LS_STAFF_SESSION);
       setStaffProfile(null);
       setAuthLoading(false);
     });
@@ -310,38 +312,68 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => unsub();
   }, []);
 
+  // Bug #8: Authenticate Owner & Staff via Firebase Auth Email/Password (`<username>@likefamilypms.local`)
   const loginWithStaffCredentials = useCallback(async (username: string, password: string) => {
     const cleanUser = username.trim().toLowerCase();
     if (!cleanUser || !password) {
       throw new Error('Vui lòng nhập đầy đủ Tên đăng nhập và Mật khẩu.');
     }
 
-    const q = query(collection(db, 'staff_users'), where('username', '==', cleanUser));
-    const snap = await getDocs(q);
-    if (snap.empty) {
-      throw new Error('Tên đăng nhập hoặc mật khẩu không đúng.');
+    const internalEmail = usernameToInternalEmail(cleanUser);
+    try {
+      const cred = await signInWithEmailAndPassword(auth, internalEmail, password);
+      const staffSnap = await getDoc(doc(db, 'staff_users', cred.user.uid));
+      if (!staffSnap.exists()) {
+        await signOut(auth);
+        throw new Error('Tài khoản chưa được phân quyền trong hồ sơ nhân viên.');
+      }
+      const matched = staffSnap.data() as StaffUser;
+      if (matched.authSource === 'firebase_superadmin' || matched.role === 'superadmin') {
+        await signOut(auth);
+        throw new Error('Tài khoản SuperAdmin gốc vui lòng đăng nhập tại trang /superadmin.');
+      }
+      if (!matched.isActive) {
+        await signOut(auth);
+        throw new Error('Tài khoản này đang bị tạm khóa. Vui lòng liên hệ Quản lý / SuperAdmin.');
+      }
+      setAuthBlockReason(null);
+      setStaffProfile(matched);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+      if (
+        code === 'auth/invalid-credential' ||
+        code === 'auth/wrong-password' ||
+        code === 'auth/user-not-found' ||
+        code === 'auth/invalid-email'
+      ) {
+        throw new Error('Tên đăng nhập hoặc mật khẩu không đúng.');
+      }
+      if (code === 'auth/too-many-requests') {
+        throw new Error('Đăng nhập sai quá nhiều lần. Vui lòng đợi vài phút rồi thử lại.');
+      }
+      if (err instanceof Error) throw err;
+      throw new Error('Đăng nhập thất bại. Vui lòng thử lại.');
     }
-
-    const matched = snap.docs[0].data() as StaffUser;
-    if (matched.authSource === 'firebase_superadmin' || matched.role === 'superadmin') {
-      throw new Error('Tài khoản SuperAdmin gốc vui lòng đăng nhập tại tab "SuperAdmin gốc".');
-    }
-    if (!matched.isActive) {
-      throw new Error('Tài khoản này đang bị tạm khóa. Vui lòng liên hệ Quản lý / SuperAdmin.');
-    }
-
-    const enteredHash = await hashPasswordSha256(password);
-    if (!matched.passwordHash || matched.passwordHash !== enteredHash) {
-      throw new Error('Tên đăng nhập hoặc mật khẩu không đúng.');
-    }
-
-    localStorage.setItem(
-      LS_STAFF_SESSION,
-      JSON.stringify({ uid: matched.uid, username: matched.username, loginAt: Date.now() })
-    );
-    setAuthBlockReason(null);
-    setStaffProfile(matched);
   }, []);
+
+  const completeFirstLoginPasswordChange = useCallback(
+    async (newPassword: string) => {
+      if (newPassword.length < 6) {
+        throw new Error('Mật khẩu mới cần tối thiểu 6 ký tự.');
+      }
+      if (!auth.currentUser || !staffProfile) {
+        throw new Error('Phiên đăng nhập không hợp lệ.');
+      }
+      await updatePassword(auth.currentUser, newPassword);
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'staff_users', staffProfile.uid), {
+        mustChangePassword: false,
+        updatedAt: now,
+      });
+      setStaffProfile((prev) => (prev ? { ...prev, mustChangePassword: false, updatedAt: now } : prev));
+    },
+    [staffProfile]
+  );
 
   // Real-time Firestore Subscriptions
   useEffect(() => {
@@ -624,6 +656,7 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     isAdmin,
     canManageStaff,
     loginWithStaffCredentials,
+    completeFirstLoginPasswordChange,
     logout,
     hotelConfig,
     formTemplates,

@@ -372,6 +372,61 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   })
                 )}
               </tbody>
+              {filteredBookings.length > 0 && (() => {
+                // v2.2.1 #9: Exclude cancelled & no_show from totals; display forfeited cancellation fees separately
+                const activeRows = filteredBookings.filter(
+                  (b) => b.status !== 'cancelled' && b.status !== 'no_show'
+                );
+                const forfeitedFeeSum = filteredBookings
+                  .filter((b) => b.depositResolutionStatus === 'forfeited_fee')
+                  .reduce((s, b) => s + (b.forfeitedFeeAmount || 0), 0);
+                const excludedCount = filteredBookings.length - activeRows.length;
+                return (
+                  <tfoot className="bg-[#FAF9F6] border-t border-[#E7E3DA] font-semibold text-[12px]">
+                    <tr>
+                      <td colSpan={4} className="px-3.5 py-2.5 text-[#57534E]">
+                        Tổng đơn hoạt động ({activeRows.length} đơn
+                        {excludedCount > 0 ? ` · loại trừ ${excludedCount} đơn hủy/no-show` : ''})
+                        {forfeitedFeeSum > 0 && (
+                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded bg-[#E8F3EC] text-[#0F5132] font-mono-num text-[11px]">
+                            Phí giữ cọc: {formatCurrency(forfeitedFeeSum)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3.5 py-2.5 text-right font-mono-num text-[#1C1B18]">
+                        {formatCurrency(
+                          activeRows.reduce(
+                            (s, b) =>
+                              s +
+                              (b.grossRoomTotal || 0) +
+                              (b.serviceTotal || 0) +
+                              (b.hourlySurcharge || 0),
+                            0
+                          )
+                        )}
+                      </td>
+                      <td className="px-3.5 py-2.5 text-right font-mono-num text-[#0F5132]">
+                        Đã thu:{' '}
+                        {formatCurrency(
+                          activeRows.reduce(
+                            (s, b) => s + (b.depositPaid || 0) + (b.guestPaid || 0),
+                            0
+                          )
+                        )}
+                      </td>
+                      <td className="px-3.5 py-2.5 text-right font-mono-num text-[#B45309]">
+                        Còn lại:{' '}
+                        {formatCurrency(
+                          activeRows.reduce(
+                            (s, b) => s + Math.max(0, getBookingGuestBalance(b)),
+                            0
+                          )
+                        )}
+                      </td>
+                    </tr>
+                  </tfoot>
+                );
+              })()}
             </table>
           </div>
         </div>

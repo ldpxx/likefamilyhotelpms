@@ -1,4 +1,11 @@
 import {
+  createUserWithEmailAndPassword,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  signOut as firebaseSignOut,
+  updatePassword,
+} from 'firebase/auth';
+import {
   collection,
   deleteDoc,
   doc,
@@ -12,8 +19,7 @@ import {
   type DocumentData,
   type UpdateData,
 } from 'firebase/firestore';
-import { db } from './firebase';
-import { hashPasswordSha256 } from './crypto';
+import { auth, db, getStaffCreatorAuth, usernameToInternalEmail } from './firebase';
 import type {
   AuditLog,
   Booking,
@@ -25,6 +31,7 @@ import type {
   GuestDocument,
   HousekeepingStatus,
   Occupant,
+  OtaAdjustment,
   OtaPayoutBatch,
   PaymentMethod,
   Room,
@@ -284,6 +291,7 @@ export interface CreateBookingPayload {
   groupId?: string | null;
   groupName?: string | null;
   checkInImmediately?: boolean;
+  accountingLockDate?: string | null;
 }
 
 export async function createBooking(
@@ -358,7 +366,7 @@ export async function createBooking(
     groupId: payload.groupId || null,
     groupName: payload.groupName || null,
     checkIn: payload.checkIn,
-    checkOut: payload.checkOut,
+    checkOut: isHourly ? payload.checkIn : payload.checkOut,
     actualCheckInAt: payload.checkInImmediately ? now : null,
     actualCheckOutAt: null,
     primaryGuestId: guestId,
@@ -410,6 +418,8 @@ export async function createBooking(
   }
 
   if (booking.depositPaid > 0 && payload.depositMethod !== 'ota_debt') {
+    const depDate = todayISO();
+    assertPeriodOpen(depDate, payload.accountingLockDate);
     const txId = generateId('tx');
     const tx: Transaction = {
       id: txId,
@@ -422,7 +432,7 @@ export async function createBooking(
       category: 'Tiền đặt cọc phòng',
       amount: booking.depositPaid,
       method: payload.depositMethod,
-      date: todayISO(),
+      date: depDate,
       status: 'active',
       createdAt: now,
       createdByUid: actor.uid,
@@ -456,9 +466,13 @@ export interface CreateGroupBookingPayload {
   leaderName: string;
   leaderPhone: string;
   guestCategory: 'vietnamese' | 'foreigner';
+  source?: Booking['source'];
+  sourceLabel?: string;
+  otaChannel?: string | null;
   billingMode: 'master' | 'split';
   depositAmount: number;
   depositMethod: PaymentMethod;
+  accountingLockDate?: string | null;
   note?: string;
   roomItems: Array<{
     room: Room;
@@ -518,13 +532,15 @@ export async function createGroupBooking(
         guestPhone: payload.leaderPhone,
         guestCategory: payload.guestCategory,
         existingGuestId: guestId,
-        source: 'group',
-        sourceLabel: 'Khách đoàn',
+        source: payload.source || 'group',
+        sourceLabel: payload.sourceLabel || 'Khách đoàn',
+        otaChannel: payload.source === 'ota' ? payload.otaChannel || payload.sourceLabel || 'OTA' : null,
         selectedPriceTierId: item.selectedPriceTierId,
         dailyRates: item.dailyRates,
-        paymentMethod: payload.depositMethod,
+        paymentMethod: payload.source === 'ota' ? 'ota_debt' : payload.depositMethod,
         depositPaid: roomDeposit,
         depositMethod: payload.depositMethod,
+        accountingLockDate: payload.accountingLockDate,
         note: payload.note,
         groupId,
         groupName: group.groupName,
@@ -1118,6 +1134,77 @@ export async function mergeBookingsIntoGroup(
   return group;
 }
 
+/**
+ * Bug #11a: Enforce Accounting Period Lock across ALL money-writing paths (`src/lib/*`).
+ * Compares ISO `YYYY-MM-DD` strings cleanly.
+ */
+export function assertPeriodOpen(
+  transactionDateISO: string,
+  accountingLockDate?: string | null
+): void {
+  if (!accountingLockDate) return;
+  if (transactionDateISO <= accountingLockDate) {
+    throw new Error(
+      `Kỳ kế toán đã khóa sổ đến hết ngày ${formatDateVN(
+        accountingLockDate
+      )}. Không thể ghi giao dịch cho ngày ${formatDateVN(transactionDateISO)}.`
+    );
+  }
+}
+
+/**
+ * Bug #4 & #5: SINGLE SOURCE OF TRUTH for updating `depositPaid` and `guestPaid` on a Booking.
+ * Guarantees refunds / early-checkout refunds / deposit transfers ALWAYS deduct cleanly
+ * without ever going negative.
+ */
+export function applyPaymentDelta(
+  booking: Pick<Booking, 'depositPaid' | 'guestPaid'>,
+  type: 'deposit' | 'payment' | 'refund' | 'refund_deposit' | 'transfer_out' | 'transfer_in',
+  rawAmount: number
+): { depositPaid: number; guestPaid: number } {
+  const amount = Math.max(0, Math.round(rawAmount));
+  let depositPaid = Math.max(0, Math.round(booking.depositPaid || 0));
+  let guestPaid = Math.max(0, Math.round(booking.guestPaid || 0));
+
+  if (amount === 0) return { depositPaid, guestPaid };
+
+  if (type === 'deposit' || type === 'transfer_in') {
+    depositPaid += amount;
+    return { depositPaid, guestPaid };
+  }
+
+  if (type === 'payment') {
+    guestPaid += amount;
+    return { depositPaid, guestPaid };
+  }
+
+  // Refund / transfer_out: validate total paid >= amount (no negative paid totals!)
+  const totalPaid = depositPaid + guestPaid;
+  if (amount > totalPaid) {
+    throw new Error(
+      `Số tiền hoàn / chuyển (${amount.toLocaleString('vi-VN')}đ) vượt quá tổng tiền khách đã trả (${totalPaid.toLocaleString('vi-VN')}đ).`
+    );
+  }
+
+  if (type === 'refund_deposit') {
+    const fromDep = Math.min(depositPaid, amount);
+    depositPaid -= fromDep;
+    guestPaid -= amount - fromDep;
+  } else {
+    // Default refund / transfer_out deducts guestPaid first, then remaining from depositPaid
+    const fromGuest = Math.min(guestPaid, amount);
+    guestPaid -= fromGuest;
+    depositPaid -= amount - fromGuest;
+  }
+
+  return { depositPaid, guestPaid };
+}
+
+/**
+ * Bug #2: Room Consolidation WITHOUT Double-Counting Revenue!
+ * - Source Room A keeps its real stay revenue, sets `consolidatedInto` + `balanceTransferredOut` (guest balance -> 0đ).
+ * - Target Room B adds `carriedBalance` to `transferredBalance` (payable by guest, EXCLUDED from P&L revenue!).
+ */
 export async function consolidateRoomIntoTarget(
   sourceBooking: Booking,
   targetBooking: Booking,
@@ -1126,11 +1213,13 @@ export async function consolidateRoomIntoTarget(
   const now = new Date().toISOString();
   const carriedBalance = Math.max(
     0,
-    sourceBooking.grossRoomTotal +
-      sourceBooking.serviceTotal +
-      sourceBooking.hourlySurcharge -
-      sourceBooking.depositPaid -
-      sourceBooking.guestPaid
+    (sourceBooking.grossRoomTotal || 0) +
+      (sourceBooking.serviceTotal || 0) +
+      (sourceBooking.hourlySurcharge || 0) +
+      (sourceBooking.transferredBalance || 0) -
+      (sourceBooking.depositPaid || 0) -
+      (sourceBooking.guestPaid || 0) -
+      (sourceBooking.balanceTransferredOut || 0)
   );
 
   const mergedOccupants: Occupant[] = [
@@ -1138,27 +1227,16 @@ export async function consolidateRoomIntoTarget(
     ...sourceBooking.occupants.map((o) => ({ ...o, isPrimary: false })),
   ];
   const flags = computeOccupantFlags(mergedOccupants, targetBooking.checkOut);
-
-  const transferredService: BookingServiceItem[] = [...(targetBooking.services || [])];
-  if (carriedBalance > 0) {
-    transferredService.push({
-      id: generateId('srv'),
-      name: `Kết chuyển tiền phòng ghép từ P.${sourceBooking.roomNumber} (${sourceBooking.bookingCode})`,
-      quantity: 1,
-      unitPrice: carriedBalance,
-      total: carriedBalance,
-      addedAt: now,
-      addedBy: actor.name,
-    });
-  }
-  const nextServiceTotal = transferredService.reduce((s, i) => s + i.total, 0);
+  const nextTransferredBalance = (targetBooking.transferredBalance || 0) + carriedBalance;
 
   const batch = writeBatch(db);
   batch.update(doc(db, 'bookings', sourceBooking.id), {
     status: 'checked_out',
     mergedIntoBookingId: targetBooking.id,
+    consolidatedInto: targetBooking.id,
+    balanceTransferredOut: (sourceBooking.balanceTransferredOut || 0) + carriedBalance,
     actualCheckOutAt: now,
-    note: `Đã dồn khách & công nợ sang P.${targetBooking.roomNumber} (${targetBooking.bookingCode}).`,
+    note: `Đã dồn khách & kết chuyển công nợ ${carriedBalance.toLocaleString('vi-VN')}đ sang P.${targetBooking.roomNumber} (${targetBooking.bookingCode}).`,
     updatedAt: now,
   });
   batch.update(doc(db, 'rooms', sourceBooking.roomId), {
@@ -1168,9 +1246,9 @@ export async function consolidateRoomIntoTarget(
   batch.update(doc(db, 'bookings', targetBooking.id), {
     occupants: mergedOccupants,
     ...flags,
-    services: transferredService,
-    serviceTotal: nextServiceTotal,
+    transferredBalance: nextTransferredBalance,
     mergedFromBookingIds: [...(targetBooking.mergedFromBookingIds || []), sourceBooking.id],
+    note: `${targetBooking.note ? `${targetBooking.note} | ` : ''}Nhận kết chuyển công nợ ${carriedBalance.toLocaleString('vi-VN')}đ từ P.${sourceBooking.roomNumber} (${sourceBooking.bookingCode})`.trim(),
     updatedAt: now,
   });
   await batch.commit();
@@ -1178,10 +1256,18 @@ export async function consolidateRoomIntoTarget(
   await writeAuditLog({
     actionType: 'room_merge_consolidate',
     targetId: targetBooking.id,
-    targetLabel: `Dồn P.${sourceBooking.roomNumber} -> P.${targetBooking.roomNumber}`,
-    previousState: { sourceBookingId: sourceBooking.id, carriedBalance },
-    newState: { targetBookingId: targetBooking.id, occupantCount: flags.occupantCount },
-    reason: 'Ghép phòng dồn khách sang ở chung 1 phòng',
+    targetLabel: `Dồn P.${sourceBooking.roomNumber} -> P.${targetBooking.roomNumber} (Chuyển công nợ ${carriedBalance.toLocaleString('vi-VN')}đ, không tăng doanh thu ảo)`,
+    previousState: {
+      sourceBookingId: sourceBooking.id,
+      sourceBalance: carriedBalance,
+      targetTransferredBalance: targetBooking.transferredBalance || 0,
+    },
+    newState: {
+      targetBookingId: targetBooking.id,
+      targetTransferredBalance: nextTransferredBalance,
+      occupantCount: flags.occupantCount,
+    },
+    reason: 'Ghép phòng dồn khách & kết chuyển công nợ sang trường transferredBalance riêng',
     actor,
   });
 }
@@ -1195,10 +1281,14 @@ export async function recordTransaction(params: {
   amount: number;
   method: PaymentMethod;
   date?: string;
+  accountingLockDate?: string | null;
   note?: string;
   actor: ActorInfo;
 }): Promise<Transaction> {
   const now = new Date().toISOString();
+  const txDate = params.date || todayISO();
+  assertPeriodOpen(txDate, params.accountingLockDate);
+
   const txId = generateId('tx');
   const amount = Math.max(0, Math.round(params.amount));
   const tx: Transaction = {
@@ -1212,7 +1302,7 @@ export async function recordTransaction(params: {
     category: params.category,
     amount,
     method: params.method,
-    date: params.date || todayISO(),
+    date: txDate,
     status: 'active',
     createdAt: now,
     createdByUid: params.actor.uid,
@@ -1230,14 +1320,11 @@ export async function recordTransaction(params: {
         otaSettlementStatus: 'unsettled',
         updatedAt: now,
       });
-    } else if (params.type === 'deposit') {
+    } else if (params.type === 'deposit' || params.type === 'payment' || params.type === 'refund') {
+      const nextPaid = applyPaymentDelta(params.booking, params.type, amount);
       batch.update(doc(db, 'bookings', params.booking.id), {
-        depositPaid: (params.booking.depositPaid || 0) + amount,
-        updatedAt: now,
-      });
-    } else if (params.type === 'payment') {
-      batch.update(doc(db, 'bookings', params.booking.id), {
-        guestPaid: (params.booking.guestPaid || 0) + amount,
+        depositPaid: nextPaid.depositPaid,
+        guestPaid: nextPaid.guestPaid,
         updatedAt: now,
       });
     }
@@ -1248,7 +1335,8 @@ export async function recordTransaction(params: {
     actionType: `tx_${params.type}`,
     targetId: txId,
     targetLabel: `${params.category} — ${amount.toLocaleString('vi-VN')}đ`,
-    newState: { amount, method: params.method, bookingCode: params.booking?.bookingCode || null },
+    newState: { amount, method: params.method, date: txDate, bookingCode: params.booking?.bookingCode || null },
+    relatedTransactionIds: [txId],
     reason: params.note || params.category,
     actor: params.actor,
   });
@@ -1262,6 +1350,13 @@ export async function undoBookingAction(params: {
   actor: ActorInfo;
   overridePrevState?: Record<string, unknown>;
 }): Promise<void> {
+  // Bug #6: Permanently block quick-undo bypass for check_in / check_out / early_checkout
+  const snapAction = (params.booking.lastActionSnapshot as { action?: string } | null)?.action;
+  if (snapAction === 'check_in' || snapAction === 'check_out' || snapAction === 'early_checkout') {
+    throw new Error(
+      'Không được hoàn tác nhanh Nhận/Trả phòng. Vui lòng dùng đúng luồng "Đảo Check-in nhầm" (chọn phòng Sạch/Bẩn) hoặc "Mở lại đơn đã Check-out" (quyền Chủ KS/Quản lý).'
+    );
+  }
   const snapshot =
     params.overridePrevState ||
     ((params.booking.lastActionSnapshot as { prevState?: Record<string, unknown> } | null)
@@ -1273,6 +1368,14 @@ export async function undoBookingAction(params: {
 
   const now = new Date().toISOString();
   const prevStatus = (snapshot.status || snapshot.oldStatus) as Booking['status'] | undefined;
+  if (
+    (params.booking.status === 'in_house' && prevStatus === 'reserved') ||
+    (params.booking.status === 'checked_out' && prevStatus === 'in_house')
+  ) {
+    throw new Error(
+      'Thao tác Đảo Check-in hoặc Mở lại đơn Đã trả phòng bắt buộc thực hiện qua quy trình kiểm soát kế toán.'
+    );
+  }
   const batch = writeBatch(db);
 
   const updatePayload: Record<string, unknown> = {
@@ -1395,15 +1498,22 @@ export async function createOtaPayoutBatch(params: {
   otaChannel: string;
   payoutDate: string;
   bookings: Booking[];
+  appliedAdjustments?: OtaAdjustment[];
   actualReceivedAmount: number;
+  accountingLockDate?: string | null;
   note?: string;
   actor: ActorInfo;
 }): Promise<OtaPayoutBatch> {
   if (params.bookings.length === 0) throw new Error('Chưa chọn đơn OTA nào để gạch nợ.');
+  assertPeriodOpen(params.payoutDate, params.accountingLockDate);
+
   const now = new Date().toISOString();
   const batchId = generateId('otabatch');
   const batchCode = generateCode('OTA');
-  const expectedNetTotal = params.bookings.reduce((s, b) => s + (b.grossRoomTotal || 0), 0);
+  const rawBookingsTotal = params.bookings.reduce((s, b) => s + (b.grossRoomTotal || 0), 0);
+  const adjustments = params.appliedAdjustments || [];
+  const adjTotal = adjustments.reduce((s, a) => s + (a.adjustmentAmount || 0), 0);
+  const expectedNetTotal = Math.max(0, rawBookingsTotal + adjTotal);
   const actual = Math.max(0, Math.round(params.actualReceivedAmount));
   const bankFeeDiff = expectedNetTotal - actual;
 
@@ -1431,6 +1541,13 @@ export async function createOtaPayoutBatch(params: {
       updatedAt: now,
     });
   }
+  // Bug #11b: Atomically settle all selected pending OTA adjustments in the SAME writeBatch
+  for (const adj of adjustments) {
+    batch.update(doc(db, 'ota_adjustments', adj.id), {
+      status: 'settled',
+      appliedBatchId: batchCode,
+    });
+  }
 
   const txId = generateId('tx');
   const tx: Transaction = {
@@ -1446,9 +1563,9 @@ export async function createOtaPayoutBatch(params: {
     createdAt: now,
     createdByUid: params.actor.uid,
     createdByName: params.actor.name,
-    note: `Lô ${batchCode} (${params.bookings.length} đơn)${
-      bankFeeDiff !== 0 ? ` — Chênh lệch: ${bankFeeDiff.toLocaleString('vi-VN')}đ` : ''
-    }`,
+    note: `Lô ${batchCode} (${params.bookings.length} đơn${
+      adjustments.length > 0 ? `, cấn trừ ${adjustments.length} điều chỉnh ${adjTotal.toLocaleString('vi-VN')}đ` : ''
+    })${bankFeeDiff !== 0 ? ` — Chênh lệch: ${bankFeeDiff.toLocaleString('vi-VN')}đ` : ''}`,
   };
   batch.set(doc(db, 'transactions', txId), tx);
 
@@ -1458,7 +1575,14 @@ export async function createOtaPayoutBatch(params: {
     actionType: 'ota_payout_batch',
     targetId: batchId,
     targetLabel: `${batchCode} — ${params.otaChannel} (${params.bookings.length} đơn)`,
-    newState: { expectedNetTotal, actualReceivedAmount: actual, bankFeeDiff },
+    newState: {
+      expectedNetTotal,
+      appliedAdjustmentIds: adjustments.map((a) => a.id),
+      adjTotal,
+      actualReceivedAmount: actual,
+      bankFeeDiff,
+    },
+    relatedTransactionIds: [txId],
     reason: 'Gạch nợ đối soát chuyển khoản OTA theo lô',
     actor: params.actor,
   });
@@ -1492,15 +1616,25 @@ export async function createRoomMaintenance(params: {
   issueTitle: string;
   description: string;
   cost: number;
+  maintenanceFrom?: string;
+  maintenanceTo?: string;
   markRoomAsMaintenance: boolean;
   isCompletedNow: boolean;
   paymentMethod: PaymentMethod;
+  accountingLockDate?: string | null;
   actor: ActorInfo;
 }): Promise<RoomMaintenance> {
   const now = new Date().toISOString();
+  const today = todayISO();
   const id = generateId('mnt');
   const cleanCost = Math.max(0, Math.round(params.cost || 0));
+  const mFrom = params.maintenanceFrom || today;
+  const mTo = params.maintenanceTo && params.maintenanceTo >= mFrom ? params.maintenanceTo : mFrom;
   let txId: string | null = null;
+
+  if (cleanCost > 0) {
+    assertPeriodOpen(today, params.accountingLockDate);
+  }
 
   const batch = writeBatch(db);
 
@@ -1515,7 +1649,7 @@ export async function createRoomMaintenance(params: {
       category: 'Sửa chữa & Bảo trì',
       amount: cleanCost,
       method: params.paymentMethod,
-      date: todayISO(),
+      date: today,
       status: 'active',
       createdAt: now,
       createdByUid: params.actor.uid,
@@ -1534,6 +1668,8 @@ export async function createRoomMaintenance(params: {
     cost: cleanCost,
     transactionId: txId,
     status: params.isCompletedNow ? 'completed' : 'pending',
+    maintenanceFrom: mFrom,
+    maintenanceTo: mTo,
     reportedAt: now,
     completedAt: params.isCompletedNow ? now : null,
     performedBy: params.actor.name,
@@ -1662,7 +1798,7 @@ export async function cleanupOldGuestDocumentPhotos(
 }
 
 // ==========================================
-// Staff CRUD (Firestore `staff_users`, SHA-256 Password)
+// Bug #8: Staff CRUD via Firebase Auth Email/Password + Secondary App (0 VND, ZERO passwordHash)
 // ==========================================
 
 export async function createStaffAccount(params: {
@@ -1674,12 +1810,12 @@ export async function createStaffAccount(params: {
   permissions?: StaffPermissions;
   actor: ActorInfo;
 }): Promise<StaffUser> {
-  const cleanUser = params.username.trim().toLowerCase().replace(/\s+/g, '');
+  const cleanUser = params.username.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
   if (cleanUser.length < 3) {
-    throw new Error('Tên đăng nhập cần tối thiểu 3 ký tự (không dấu, không khoảng trắng).');
+    throw new Error('Tên đăng nhập cần tối thiểu 3 ký tự (chữ thường, số, không dấu/khoảng trắng).');
   }
-  if (params.password.length < 4) {
-    throw new Error('Mật khẩu cần tối thiểu 4 ký tự.');
+  if (params.password.length < 6) {
+    throw new Error('Mật khẩu Firebase Auth cần tối thiểu 6 ký tự.');
   }
 
   const dup = await getDocs(
@@ -1689,39 +1825,60 @@ export async function createStaffAccount(params: {
     throw new Error(`Tên đăng nhập "${cleanUser}" đã tồn tại.`);
   }
 
+  const internalEmail = usernameToInternalEmail(cleanUser);
+  const secondaryAuth = getStaffCreatorAuth();
+  let newUid: string;
+  try {
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, internalEmail, params.password);
+    newUid = cred.user.uid;
+    await firebaseSignOut(secondaryAuth);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code || '';
+    if (code === 'auth/email-already-in-use') {
+      throw new Error(
+        `Tên đăng nhập "${cleanUser}" đã được đăng ký trong Firebase Auth. Vui lòng chọn tên đăng nhập khác (VD: ${cleanUser}2).`
+      );
+    }
+    if (code === 'auth/weak-password') {
+      throw new Error('Mật khẩu quá yếu (tối thiểu 6 ký tự).');
+    }
+    throw err;
+  }
+
   const now = new Date().toISOString();
-  const uid = generateId('staff');
-  const passwordHash = await hashPasswordSha256(params.password);
   const staff: StaffUser = {
-    uid,
+    uid: newUid,
     username: cleanUser,
-    passwordHash,
     fullName: params.fullName.trim(),
     phone: params.phone.trim(),
-    email: '',
+    email: internalEmail,
     role: params.role,
-    authSource: 'firestore_staff',
+    authSource: 'firebase_staff',
+    mustChangePassword: true,
     permissions: params.permissions || getDefaultPermissionsForRole(params.role),
     isActive: true,
     createdAt: now,
     updatedAt: now,
   };
 
-  await setDoc(doc(db, 'staff_users', uid), staff);
+  await setDoc(doc(db, 'staff_users', newUid), staff);
   await writeAuditLog({
     actionType: 'create_staff',
-    targetId: uid,
+    targetId: newUid,
     targetLabel: `Tạo tài khoản ${staff.fullName} (@${staff.username} — ${staff.role})`,
-    reason: 'Quản lý tạo mới tài khoản nhân viên',
+    reason: 'Quản lý tạo mới tài khoản nhân viên Firebase Auth (bắt buộc đổi MK lần đầu)',
     actor: params.actor,
   });
   return staff;
 }
 
 export async function updateStaffMember(staff: StaffUser, actor: ActorInfo): Promise<void> {
+  const { ...cleanStaff } = staff;
+  // Never persist passwordHash field
+  delete (cleanStaff as Record<string, unknown>).passwordHash;
   await setDoc(
     doc(db, 'staff_users', staff.uid),
-    { ...staff, updatedAt: new Date().toISOString() },
+    { ...cleanStaff, updatedAt: new Date().toISOString() },
     { merge: true }
   );
   await writeAuditLog({
@@ -1736,24 +1893,42 @@ export async function updateStaffMember(staff: StaffUser, actor: ActorInfo): Pro
   });
 }
 
-export async function resetStaffPassword(
-  staff: StaffUser,
-  newPassword: string,
-  actor: ActorInfo
-): Promise<void> {
-  if (newPassword.length < 4) throw new Error('Mật khẩu mới cần tối thiểu 4 ký tự.');
-  const passwordHash = await hashPasswordSha256(newPassword);
-  await updateDoc(doc(db, 'staff_users', staff.uid), {
-    passwordHash,
+/**
+ * Bug #8 (0 VND Zero-Cloud-Function replacement for forgotten password):
+ * Locks the old staff account (`isActive: false`) and creates a fresh Firebase Auth account
+ * with `mustChangePassword: true` via Secondary App in 5 seconds.
+ */
+export async function replaceForgottenStaffAccount(params: {
+  oldStaff: StaffUser;
+  newUsername: string;
+  tempPassword: string;
+  actor: ActorInfo;
+}): Promise<StaffUser> {
+  const { oldStaff, newUsername, tempPassword, actor } = params;
+  if (oldStaff.role === 'superadmin' || oldStaff.authSource === 'firebase_superadmin') {
+    throw new Error('Không áp dụng cho SuperAdmin gốc.');
+  }
+  const created = await createStaffAccount({
+    username: newUsername,
+    password: tempPassword,
+    fullName: oldStaff.fullName,
+    phone: oldStaff.phone,
+    role: oldStaff.role,
+    permissions: oldStaff.permissions,
+    actor,
+  });
+  await updateDoc(doc(db, 'staff_users', oldStaff.uid), {
+    isActive: false,
     updatedAt: new Date().toISOString(),
   });
   await writeAuditLog({
-    actionType: 'reset_staff_password',
-    targetId: staff.uid,
-    targetLabel: `Đặt lại mật khẩu cho ${staff.fullName} (@${staff.username})`,
-    reason: 'Quản lý đặt lại mật khẩu nhân viên',
+    actionType: 'replace_staff_account',
+    targetId: oldStaff.uid,
+    targetLabel: `Khóa @${oldStaff.username} & cấp mới @${created.username} (${oldStaff.fullName})`,
+    reason: 'Cấp lại tài khoản mới do nhân viên quên mật khẩu',
     actor,
   });
+  return created;
 }
 
 export async function deleteStaffAccount(staff: StaffUser, actor: ActorInfo): Promise<void> {
@@ -1785,16 +1960,19 @@ export async function updateOwnProfileAndPassword(params: {
   };
 
   if (params.newPassword && params.newPassword.length > 0) {
-    if (params.newPassword.length < 4) {
-      throw new Error('Mật khẩu mới cần tối thiểu 4 ký tự.');
+    if (params.newPassword.length < 6) {
+      throw new Error('Mật khẩu mới cần tối thiểu 6 ký tự.');
     }
-    if (params.staff.authSource === 'firestore_staff') {
-      const curHash = await hashPasswordSha256(params.currentPassword || '');
-      if (params.staff.passwordHash && curHash !== params.staff.passwordHash) {
-        throw new Error('Mật khẩu hiện tại không đúng.');
-      }
-      updates.passwordHash = await hashPasswordSha256(params.newPassword);
+    if (!auth.currentUser || !auth.currentUser.email) {
+      throw new Error('Phiên đăng nhập Firebase Auth không hợp lệ.');
     }
+    if (!params.currentPassword) {
+      throw new Error('Vui lòng nhập mật khẩu hiện tại để xác nhận đổi mật khẩu.');
+    }
+    const cred = EmailAuthProvider.credential(auth.currentUser.email, params.currentPassword);
+    await reauthenticateWithCredential(auth.currentUser, cred);
+    await updatePassword(auth.currentUser, params.newPassword);
+    updates.mustChangePassword = false;
   }
 
   await updateDoc(
@@ -1805,7 +1983,7 @@ export async function updateOwnProfileAndPassword(params: {
     actionType: 'self_update_profile',
     targetId: params.staff.uid,
     targetLabel: `${params.staff.fullName} tự cập nhật thông tin cá nhân`,
-    reason: params.newPassword ? 'Cập nhật hồ sơ & đổi mật khẩu cá nhân' : 'Cập nhật hồ sơ cá nhân',
+    reason: params.newPassword ? 'Cập nhật hồ sơ & đổi mật khẩu cá nhân (Firebase Auth)' : 'Cập nhật hồ sơ cá nhân',
     actor: params.actor,
   });
 }

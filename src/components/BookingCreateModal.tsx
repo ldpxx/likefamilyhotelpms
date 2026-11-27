@@ -10,11 +10,11 @@ import {
   formatCurrency,
   formatDateVN,
   isBookingBlockingCalendar,
-  isDateRangeOverlap,
   isLoyalGuest,
   sumDailyRates,
   todayISO,
 } from '../lib/utils';
+import { doBookingIntervalsOverlap, isRoomBlockedByMaintenance } from '../lib/revenueMetrics';
 import { createBooking, findMatchingGuests } from '../lib/pmsActions';
 import { PricingEditor } from './PricingEditor';
 import { DateInputVN } from './DateInputVN';
@@ -47,6 +47,8 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
     roomTypes,
     activeBookingSources,
     bookings,
+    maintenances,
+    hotelConfig,
     guests,
     actor,
     staffProfile,
@@ -169,18 +171,56 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
     setGuestIdIssueDate(g.idIssueDate || '');
   };
 
-  const effectiveCheckOut = bookingMode === 'hourly' ? addDays(checkIn, 1) : checkOut;
+  // v2.2.1 #7: Hourly bookings use same-day checkIn === checkOut (nights = 0) + 5-min cleaning buffer
+  const effectiveCheckOut = bookingMode === 'hourly' ? checkIn : checkOut;
+  const computedCheckOutTime =
+    bookingMode === 'hourly' ? addHoursToTime(checkInTime, hourlyHours) : undefined;
+  const bufferMinutes = hotelConfig.hourlyCleaningBufferMinutes ?? 5;
 
   const conflictBooking = useMemo(() => {
     if (!selectedRoom) return null;
     if (bookingMode === 'daily' && checkOut <= checkIn) return null;
+    const candidate = {
+      bookingMode,
+      checkIn,
+      checkOut: effectiveCheckOut,
+      checkInTime: bookingMode === 'hourly' ? checkInTime : undefined,
+      checkOutTime: computedCheckOutTime,
+      hourlyHours: bookingMode === 'hourly' ? hourlyHours : undefined,
+    };
     return bookings.find(
       (b) =>
         b.roomId === selectedRoom.id &&
         isBookingBlockingCalendar(b.status) &&
-        isDateRangeOverlap(b.checkIn, b.checkOut, checkIn, effectiveCheckOut)
+        doBookingIntervalsOverlap(
+          b,
+          candidate,
+          hotelConfig.checkInTime || '14:00',
+          hotelConfig.checkOutTime || '12:00',
+          bufferMinutes
+        )
     );
-  }, [bookings, selectedRoom, bookingMode, checkIn, checkOut, effectiveCheckOut]);
+  }, [
+    bookings,
+    selectedRoom,
+    bookingMode,
+    checkIn,
+    checkOut,
+    effectiveCheckOut,
+    checkInTime,
+    computedCheckOutTime,
+    hourlyHours,
+    hotelConfig.checkInTime,
+    hotelConfig.checkOutTime,
+    bufferMinutes,
+  ]);
+
+  const maintenanceConflict = useMemo(() => {
+    if (!selectedRoom) return false;
+    const rangeEnd = bookingMode === 'hourly' ? addDays(checkIn, 1) : checkOut;
+    if (isRoomBlockedByMaintenance(selectedRoom.id, maintenances, checkIn, rangeEnd)) return true;
+    return selectedRoom.hkStatus === 'maintenance' && checkIn <= todayISO();
+  }, [selectedRoom, maintenances, bookingMode, checkIn, checkOut]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -189,9 +229,16 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
       notify('Ngày trả phòng phải sau ngày nhận phòng ít nhất 1 đêm', 'error');
       return;
     }
+    if (maintenanceConflict) {
+      notify(
+        `P.${selectedRoom.roomNumber} đang khóa bảo trì trong khoảng ngày đã chọn`,
+        'error'
+      );
+      return;
+    }
     if (conflictBooking) {
       notify(
-        `P.${selectedRoom.roomNumber} bị trùng lịch với đơn ${conflictBooking.bookingCode} (${conflictBooking.primaryGuestName})`,
+        `P.${selectedRoom.roomNumber} bị trùng lịch (hoặc chưa đủ ${bufferMinutes} phút dọn phòng) với đơn ${conflictBooking.bookingCode} (${conflictBooking.primaryGuestName})`,
         'error'
       );
       return;
@@ -245,6 +292,7 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
           depositMethod,
           note,
           checkInImmediately,
+          accountingLockDate: hotelConfig.accountingLockDate,
         },
         guests,
         actor
@@ -270,33 +318,41 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white border border-[#E5E2DC] rounded-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto shadow-xl">
-        <div className="sticky top-0 z-10 bg-white border-b border-[#E5E2DC] px-6 py-4 flex items-center justify-between">
+    <div
+      className="fixed inset-0 z-50 bg-black/40 flex justify-end"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-white border-l border-[#E7E3DA] w-full max-w-2xl h-full flex flex-col shadow-2xl overflow-hidden">
+        <div className="shrink-0 bg-white border-b border-[#E7E3DA] px-6 py-4 flex items-center justify-between">
           <div>
-            <h2 className="text-[16px] font-semibold text-[#1C1B18]">Tạo đặt phòng mới</h2>
-            <p className="text-[12px] text-[#57534E]">
-              Hỗ trợ đặt theo ngày/đêm hoặc theo giờ 3 bậc • Tự động nhận diện Khách hàng thân quen
+            <h2 className="text-[16px] font-semibold text-[#1C1B18]">Đặt phòng mới</h2>
+            <p className="text-[12px] text-[#57534E] font-mono-num">
+              {selectedRoom ? `P.${selectedRoom.roomNumber}` : 'Chọn phòng'} ·{' '}
+              {bookingMode === 'hourly'
+                ? `${formatDateVN(checkIn)} (${hourlyHours} giờ)`
+                : `${formatDateVN(checkIn)} → ${formatDateVN(checkOut)} (${stayNights} đêm)`}
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-lg hover:bg-[#F1EFEA] flex items-center justify-center text-[#57534E]"
+            className="w-8 h-8 rounded-lg hover:bg-[#FAF9F6] flex items-center justify-center text-[#57534E]"
           >
             <X className="w-4 h-4" strokeWidth={1.5} />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5">
           {/* Booking Mode Toggle: Theo ngày/đêm vs Theo giờ */}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex p-1 rounded-xl bg-[#F1EFEA]">
+            <div className="inline-flex p-1 rounded-xl bg-[#F3F0E9]">
               <button
                 type="button"
                 onClick={() => setBookingMode('daily')}
                 className={`h-8 px-4 rounded-lg text-[13px] font-medium transition-colors ${
-                  bookingMode === 'daily' ? 'bg-white text-[#1C1B18] shadow-xs' : 'text-[#57534E]'
+                  bookingMode === 'daily' ? 'bg-[#0F5132] text-white' : 'text-[#57534E]'
                 }`}
               >
                 Đặt theo ngày / đêm
@@ -308,7 +364,7 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
                   setCheckInImmediately(true);
                 }}
                 className={`h-8 px-4 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors ${
-                  bookingMode === 'hourly' ? 'bg-white text-[#1B5E4B] shadow-xs' : 'text-[#57534E]'
+                  bookingMode === 'hourly' ? 'bg-[#0F5132] text-white' : 'text-[#57534E]'
                 }`}
               >
                 <Clock className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -317,7 +373,7 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
             </div>
 
             {/* Automatic Prominent Stay Duration Badge */}
-            <div className="px-3.5 py-1.5 rounded-lg bg-[#E8F2EE] border border-[#1B5E4B]/25 text-[#1B5E4B] text-[13px] font-semibold font-mono-num">
+            <div className="px-3.5 py-1.5 rounded-lg bg-[#E8F3EC] border border-[#0F5132]/25 text-[#0F5132] text-[13px] font-semibold font-mono-num">
               {bookingMode === 'hourly'
                 ? `Nghỉ giờ: ${hourlyHours} giờ (${checkInTime} → ${addHoursToTime(
                     checkInTime,
@@ -327,91 +383,126 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
             </div>
           </div>
 
-          {/* Room & Dates (dd/mm/YYYY) */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-[12px] font-medium text-[#57534E] mb-1">Chọn phòng</label>
-              <select
-                value={roomId}
-                onChange={(e) => handleRoomChange(e.target.value)}
-                className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px] focus:outline-none focus:border-[#1B5E4B]"
-              >
-                {activeRooms.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    P.{r.roomNumber} — {r.roomTypeName} ({r.floor})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
-                {bookingMode === 'hourly' ? 'Ngày sử dụng (dd/mm/YYYY)' : 'Ngày nhận phòng'}
-              </label>
-              <DateInputVN
-                required
-                value={checkIn}
-                onChange={(v) => {
-                  setCheckIn(v);
-                  const nextOut = v >= checkOut ? addDays(v, 1) : checkOut;
-                  setCheckOut(nextOut);
-                  recomputeDates(v, nextOut);
-                }}
-              />
-            </div>
-
-            {bookingMode === 'daily' ? (
-              <div>
+          {/* Room & Dates (dd/mm/YYYY) + Direct Editable Nights Input */}
+          <div className="p-4 rounded-xl bg-[#FAF9F6] border border-[#E7E3DA] space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div className="sm:col-span-4">
                 <label className="block text-[12px] font-medium text-[#57534E] mb-1">
-                  Ngày trả phòng
+                  Chọn phòng
+                </label>
+                <select
+                  value={roomId}
+                  onChange={(e) => handleRoomChange(e.target.value)}
+                  className="w-full h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px] focus:outline-none focus:border-[#0F5132]"
+                >
+                  {activeRooms.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      P.{r.roomNumber} — {r.roomTypeName} ({r.floor})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="sm:col-span-3">
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  {bookingMode === 'hourly' ? 'Ngày sử dụng' : 'Ngày đến'}
                 </label>
                 <DateInputVN
                   required
-                  min={addDays(checkIn, 1)}
-                  value={checkOut}
+                  value={checkIn}
                   onChange={(v) => {
-                    setCheckOut(v);
-                    recomputeDates(checkIn, v);
+                    setCheckIn(v);
+                    const nextOut = v >= checkOut ? addDays(v, 1) : checkOut;
+                    setCheckOut(nextOut);
+                    recomputeDates(v, nextOut);
                   }}
                 />
               </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[12px] font-medium text-[#57534E] mb-1">
-                    Giờ vào
-                  </label>
-                  <input
-                    type="time"
-                    value={checkInTime}
-                    onChange={(e) => setCheckInTime(e.target.value)}
-                    className="w-full h-9 px-2.5 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
-                  />
+
+              {bookingMode === 'daily' ? (
+                <>
+                  <div className="sm:col-span-3">
+                    <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                      Ngày đi
+                    </label>
+                    <DateInputVN
+                      required
+                      min={addDays(checkIn, 1)}
+                      value={checkOut}
+                      onChange={(v) => {
+                        setCheckOut(v);
+                        recomputeDates(checkIn, v);
+                      }}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                      Số đêm
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={365}
+                      value={stayNights}
+                      onChange={(e) => {
+                        const n = Math.max(1, Math.min(365, Number(e.target.value) || 1));
+                        const nextOut = addDays(checkIn, n);
+                        setCheckOut(nextOut);
+                        recomputeDates(checkIn, nextOut);
+                      }}
+                      className="w-full h-9 px-2.5 text-center rounded-lg border border-[#E7E3DA] bg-white font-mono-num text-[13px] font-semibold focus:outline-none focus:border-[#0F5132]"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="sm:col-span-5 grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                      Giờ vào
+                    </label>
+                    <input
+                      type="time"
+                      value={checkInTime}
+                      onChange={(e) => setCheckInTime(e.target.value)}
+                      className="w-full h-9 px-2.5 rounded-lg border border-[#E7E3DA] bg-white font-mono-num text-[13px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                      Số giờ
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={hourlyHours}
+                      onChange={(e) => {
+                        setHourlyHours(Math.max(1, Math.min(12, Number(e.target.value) || 1)));
+                        setHourlyTotalOverride(null);
+                      }}
+                      className="w-full h-9 px-2.5 text-center rounded-lg border border-[#E7E3DA] bg-white font-mono-num text-[13px]"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-[12px] font-medium text-[#57534E] mb-1">Số giờ</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={12}
-                    value={hourlyHours}
-                    onChange={(e) => {
-                      setHourlyHours(Math.max(1, Math.min(12, Number(e.target.value) || 1)));
-                      setHourlyTotalOverride(null);
-                    }}
-                    className="w-full h-9 px-2.5 text-center rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
-                  />
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
+
+          {maintenanceConflict && (
+            <div className="p-3 rounded-xl bg-[#FEF2F2] border border-[#FECACA] text-[13px] text-[#991B1B]">
+              Phòng P.{selectedRoom?.roomNumber} đang trong lịch bảo trì / khóa sửa chữa vào thời điểm đã chọn. Vui lòng chọn phòng khác hoặc hoàn tất bảo trì trước.
+            </div>
+          )}
 
           {conflictBooking && (
             <div className="p-3 rounded-xl bg-[#FEF2F2] border border-[#FECACA] text-[13px] text-[#991B1B]">
-              Cảnh báo trùng lịch: P.{selectedRoom?.roomNumber} đã có đơn{' '}
+              Cảnh báo trùng lịch (gồm {bufferMinutes} phút đệm dọn phòng): P.{selectedRoom?.roomNumber} đã có đơn{' '}
               <span className="font-mono-num font-semibold">{conflictBooking.bookingCode}</span> (
-              {conflictBooking.primaryGuestName}: {formatDateVN(conflictBooking.checkIn)} →{' '}
-              {formatDateVN(conflictBooking.checkOut)}).
+              {conflictBooking.primaryGuestName}:{' '}
+              {conflictBooking.bookingMode === 'hourly'
+                ? `${formatDateVN(conflictBooking.checkIn)} ${conflictBooking.checkInTime || ''} → ${conflictBooking.checkOutTime || ''}`
+                : `${formatDateVN(conflictBooking.checkIn)} → ${formatDateVN(conflictBooking.checkOut)}`}
+              ).
             </div>
           )}
 

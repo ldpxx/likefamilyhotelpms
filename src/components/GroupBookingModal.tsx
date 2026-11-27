@@ -1,17 +1,17 @@
 import React, { useState } from 'react';
 import { Plus, Trash2, Users, X } from 'lucide-react';
 import { usePms } from '../context/PmsContext';
-import type { DailyRate, PaymentMethod, Room } from '../types/pms';
+import type { Booking, DailyRate, PaymentMethod, Room } from '../types/pms';
 import {
   addDays,
   buildDailyRates,
   diffDays,
   formatCurrency,
   isBookingBlockingCalendar,
-  isDateRangeOverlap,
   sumDailyRates,
   todayISO,
 } from '../lib/utils';
+import { doBookingIntervalsOverlap, isRoomBlockedByMaintenance } from '../lib/revenueMetrics';
 import { createGroupBooking } from '../lib/pmsActions';
 import { DateInputVN } from './DateInputVN';
 
@@ -35,7 +35,17 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
   initialCheckOut,
   onClose,
 }) => {
-  const { activeRooms, roomTypes, bookings, guests, actor, notify } = usePms();
+  const {
+    activeRooms,
+    roomTypes,
+    activeBookingSources,
+    bookings,
+    maintenances,
+    hotelConfig,
+    guests,
+    actor,
+    notify,
+  } = usePms();
 
   const startIn = initialCheckIn || todayISO();
   const startOut = initialCheckOut || addDays(startIn, 2);
@@ -49,11 +59,19 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
   const [groupName, setGroupName] = useState('');
   const [leaderName, setLeaderName] = useState('');
   const [leaderPhone, setLeaderPhone] = useState('');
+  const [selectedSourceId, setSelectedSourceId] = useState<string>(
+    activeBookingSources.find((s) => s.id === 'src_corporate')?.id ||
+      activeBookingSources[0]?.id ||
+      'src_walk_in'
+  );
   const [guestCategory, setGuestCategory] = useState<'vietnamese' | 'foreigner'>('vietnamese');
   const [billingMode, setBillingMode] = useState<'master' | 'split'>('master');
   const [depositAmount, setDepositAmount] = useState(0);
   const [depositMethod, setDepositMethod] = useState<PaymentMethod>('bank_transfer');
   const [note, setNote] = useState('');
+
+  const selectedSourceCfg = activeBookingSources.find((s) => s.id === selectedSourceId);
+  const isOtaSource = selectedSourceCfg?.kind === 'ota';
 
   const [drafts, setDrafts] = useState<GroupRoomDraft[]>(() => {
     const seed = initialRooms.length > 0 ? initialRooms : activeRooms.slice(0, 2);
@@ -142,11 +160,24 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
       seen.add(d.roomId);
       const room = activeRooms.find((r) => r.id === d.roomId);
       if (!room) continue;
+      if (
+        isRoomBlockedByMaintenance(room.id, maintenances, d.checkIn, d.checkOut) ||
+        (room.hkStatus === 'maintenance' && d.checkIn <= todayISO())
+      ) {
+        notify(`P.${room.roomNumber} đang trong lịch bảo trì vào khoảng ngày đã chọn`, 'error');
+        return;
+      }
       const conflict = bookings.find(
         (b) =>
           b.roomId === room.id &&
           isBookingBlockingCalendar(b.status) &&
-          isDateRangeOverlap(b.checkIn, b.checkOut, d.checkIn, d.checkOut)
+          doBookingIntervalsOverlap(
+            b,
+            { bookingMode: 'daily', checkIn: d.checkIn, checkOut: d.checkOut },
+            hotelConfig.checkInTime || '14:00',
+            hotelConfig.checkOutTime || '12:00',
+            hotelConfig.hourlyCleaningBufferMinutes ?? 5
+          )
       );
       if (conflict) {
         notify(`P.${room.roomNumber} bị trùng lịch với đơn ${conflict.bookingCode}`, 'error');
@@ -154,6 +185,20 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
       }
       resolvedItems.push({ room, checkIn: d.checkIn, checkOut: d.checkOut, dailyRates: d.dailyRates });
     }
+
+    const mappedSource: Booking['source'] = isOtaSource
+      ? 'ota'
+      : selectedSourceId === 'src_loyal'
+      ? 'loyal_guest'
+      : selectedSourceId === 'src_phone'
+      ? 'phone'
+      : selectedSourceId === 'src_zalo'
+      ? 'zalo'
+      : selectedSourceId === 'src_facebook'
+      ? 'facebook'
+      : selectedSourceId === 'src_corporate'
+      ? 'corporate'
+      : 'group';
 
     setSubmitting(true);
     try {
@@ -163,9 +208,13 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
           leaderName,
           leaderPhone,
           guestCategory,
+          source: mappedSource,
+          sourceLabel: selectedSourceCfg?.name || 'Khách đoàn',
+          otaChannel: isOtaSource ? selectedSourceCfg?.name || 'OTA' : null,
           billingMode,
           depositAmount,
           depositMethod,
+          accountingLockDate: hotelConfig.accountingLockDate,
           note,
           roomItems: resolvedItems,
         },
@@ -186,7 +235,7 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
       <div className="bg-white border border-[#E5E2DC] rounded-2xl w-full max-w-4xl max-h-[92vh] overflow-y-auto shadow-xl">
         <div className="sticky top-0 z-10 bg-white border-b border-[#E5E2DC] px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <Users className="w-5 h-5 text-[#1B5E4B]" strokeWidth={1.5} />
+            <Users className="w-5 h-5 text-[#0F5132]" strokeWidth={1.5} />
             <div>
               <h2 className="text-[16px] font-semibold text-[#1C1B18]">
                 Đặt phòng Khách đoàn / Nhóm nhiều phòng
@@ -246,7 +295,24 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Nguồn đặt phòng
+              </label>
+              <select
+                value={selectedSourceId}
+                onChange={(e) => setSelectedSourceId(e.target.value)}
+                className="w-full h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px] focus:outline-none focus:border-[#0F5132]"
+              >
+                {activeBookingSources.map((src) => (
+                  <option key={src.id} value={src.id}>
+                    {src.name}
+                    {src.kind === 'ota' ? ' (OTA)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div>
               <label className="block text-[12px] font-medium text-[#57534E] mb-1">
                 Phân loại khách
@@ -311,7 +377,7 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
               <button
                 type="button"
                 onClick={addDraftRoom}
-                className="h-8 px-3 rounded-lg border border-[#E5E2DC] hover:bg-[#F7F6F3] text-[12px] font-medium text-[#1B5E4B] inline-flex items-center gap-1"
+                className="h-8 px-3 rounded-lg border border-[#E7E3DA] hover:bg-[#FAF9F6] text-[12px] font-medium text-[#0F5132] inline-flex items-center gap-1"
               >
                 <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
                 Thêm phòng
@@ -359,7 +425,7 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
                         onChange={(v) => updateDraft(idx, { checkOut: v })}
                       />
                     </div>
-                    <div className="md:col-span-1 text-center text-[11px] font-mono-num font-semibold text-[#1B5E4B]">
+                    <div className="md:col-span-1 text-center text-[11px] font-mono-num font-semibold text-[#0F5132]">
                       {nights}đ
                     </div>
                     <div className="md:col-span-2">
@@ -369,12 +435,12 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
                         step={10000}
                         value={avgNight}
                         onChange={(e) => updateDraftRatePerNight(idx, Number(e.target.value) || 0)}
-                        className="w-full h-9 px-2 text-right rounded-lg border border-[#E5E2DC] bg-white text-[12px] font-mono-num"
+                        className="w-full h-9 px-2 text-right rounded-lg border border-[#E7E3DA] bg-white text-[12px] font-mono-num"
                         title="Đơn giá mỗi đêm"
                       />
                     </div>
                     <div className="md:col-span-2 flex items-center justify-between gap-2">
-                      <span className="text-[12px] font-mono-num font-semibold text-[#1B5E4B]">
+                      <span className="text-[12px] font-mono-num font-semibold text-[#0F5132]">
                         {formatCurrency(subtotal)}
                       </span>
                       {drafts.length > 1 && (
@@ -409,7 +475,7 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-[#E5E2DC]">
             <div className="text-[13px]">
               Tổng tiền phòng dự kiến:{' '}
-              <span className="text-[16px] font-semibold font-mono-num text-[#1B5E4B]">
+              <span className="text-[16px] font-semibold font-mono-num text-[#0F5132]">
                 {formatCurrency(grandTotal)}
               </span>
             </div>
@@ -417,14 +483,14 @@ export const GroupBookingModal: React.FC<GroupBookingModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="h-9 px-4 rounded-lg border border-[#E5E2DC] text-[13px] font-medium text-[#57534E]"
+                className="h-9 px-4 rounded-lg border border-[#E7E3DA] text-[13px] font-medium text-[#57534E]"
               >
                 Hủy
               </button>
               <button
                 type="submit"
                 disabled={submitting}
-                className="h-9 px-5 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] disabled:opacity-50 text-white text-[13px] font-medium"
+                className="h-9 px-5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] disabled:opacity-50 text-white text-[13px] font-medium"
               >
                 {submitting ? 'Đang tạo đoàn...' : `Tạo đoàn (${drafts.length} phòng)`}
               </button>

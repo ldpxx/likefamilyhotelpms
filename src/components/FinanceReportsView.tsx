@@ -9,7 +9,8 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { ArrowRightLeft, Lock, Plus, RotateCcw, Wallet } from 'lucide-react';
+import { ArrowRightLeft, Download, Lock, Plus, RotateCcw, Wallet } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import { db } from '../lib/firebase';
 import { usePms } from '../context/PmsContext';
 import type { PaymentMethod, ShiftHandover, Transaction } from '../types/pms';
@@ -20,9 +21,9 @@ import {
   formatDateVN,
   generateId,
   getPaymentMethodLabel,
-  isBookingEligibleForPnLRevenue,
   todayISO,
 } from '../lib/utils';
+import { getRoomRevenueInRange } from '../lib/revenueMetrics';
 import { recordTransaction, voidTransactionWithUndo } from '../lib/pmsActions';
 import { DateInputVN } from './DateInputVN';
 import { ReclassifyPaymentModal } from './ReclassifyPaymentModal';
@@ -41,7 +42,7 @@ export const FinanceReportsView: React.FC = () => {
     notify,
   } = usePms();
 
-  const [subTab, setSubTab] = useState<'pnl' | 'cashbook' | 'handover'>('pnl');
+  const [subTab, setSubTab] = useState<'pnl' | 'monthly' | 'cashbook' | 'handover'>('pnl');
   const [reclassifyingTx, setReclassifyingTx] = useState<Transaction | null>(null);
 
   const [fromDate, setFromDate] = useState(() => addDays(todayISO(), -29));
@@ -65,46 +66,27 @@ export const FinanceReportsView: React.FC = () => {
 
   const canViewProfit = Boolean(staffProfile?.permissions.canViewProfit);
 
-  const filteredBookings = useMemo(() => {
-    return bookings.filter((b) => {
-      if (!isBookingEligibleForPnLRevenue(b, bookings, transactions)) return false;
-      if (b.checkOut <= fromDate || b.checkIn > toDate) return false;
-      if (sourceFilter !== 'all') {
-        if (sourceFilter === 'ota' && b.source !== 'ota') return false;
-        if (
-          sourceFilter !== 'ota' &&
-          b.source !== sourceFilter &&
-          b.otaChannel !== sourceFilter &&
-          b.sourceLabel !== sourceFilter
-        )
-          return false;
-      }
-      if (roomTypeFilter !== 'all' && b.roomTypeId !== roomTypeFilter) return false;
-      return true;
-    });
-  }, [bookings, transactions, fromDate, toDate, sourceFilter, roomTypeFilter]);
+  // Single Source of Truth for P&L Revenue, Sold Nights, Occupancy, ADR & RevPAR (v2.2.1 #1)
+  const rangeRev = useMemo(
+    () =>
+      getRoomRevenueInRange(bookings, transactions, fromDate, toDate, {
+        roomCount: rooms.length,
+        sourceFilter,
+        roomTypeFilter,
+      }),
+    [bookings, transactions, fromDate, toDate, rooms.length, sourceFilter, roomTypeFilter]
+  );
 
-  // Rule 4 & Rule 5: Track Pending Deposits (excluded from revenue!) & Explicit Forfeited Cancellation Fees
+  const filteredBookings = rangeRev.eligibleBookings;
+  const forfeitedCancelFees = rangeRev.forfeitedCancelFees;
+
+  // Rule 4 & Rule 5: Track Pending Deposits (excluded from revenue!)
   const pendingDepositsTotal = useMemo(
     () =>
       bookings
         .filter((b) => b.depositResolutionStatus === 'pending_deposit_resolution')
         .reduce((s, b) => s + (b.pendingDepositAmount || 0), 0),
     [bookings]
-  );
-
-  const forfeitedCancelFees = useMemo(
-    () =>
-      bookings
-        .filter(
-          (b) =>
-            (b.status === 'cancelled' || b.status === 'no_show') &&
-            b.depositResolutionStatus === 'forfeited_fee' &&
-            (b.depositResolvedAt || b.cancelledAt || '').slice(0, 10) >= fromDate &&
-            (b.depositResolvedAt || b.cancelledAt || '').slice(0, 10) <= toDate
-        )
-        .reduce((s, b) => s + (b.forfeitedFeeAmount || 0), 0),
-    [bookings, fromDate, toDate]
   );
 
   // Set of original txIds that already have an immutable reversal entry
@@ -130,21 +112,9 @@ export const FinanceReportsView: React.FC = () => {
   );
 
   const metrics = useMemo(() => {
-    const roomRev = filteredBookings.reduce((s, b) => s + (b.grossRoomTotal || 0), 0);
-    const serviceRev = filteredBookings.reduce(
-      (s, b) => s + (b.serviceTotal || 0) + (b.hourlySurcharge || 0),
-      0
-    );
-    // Only explicit forfeited cancellation fees count into revenue; NEVER pending_deposit_resolution!
-    const totalRevenue = roomRev + serviceRev + forfeitedCancelFees;
-
-    const unsettledOtaDebt = filteredBookings
-      .filter(
-        (b) =>
-          (b.source === 'ota' || b.paymentMethod === 'ota_debt') &&
-          b.otaSettlementStatus !== 'settled'
-      )
-      .reduce((s, b) => s + (b.grossRoomTotal || 0), 0);
+    const roomRev = rangeRev.roomRev;
+    const totalRevenue = rangeRev.totalRevenue;
+    const unsettledOtaDebt = rangeRev.unsettledOtaDebt;
 
     // Cash & bank received (excluding ota_debt, internal deposit transfers, fee markers, and reclassifications — Rule 3)
     const totalCashIn = activeTxs
@@ -163,17 +133,6 @@ export const FinanceReportsView: React.FC = () => {
       .reduce((s, t) => s + t.amount, 0);
     const netProfit = totalRevenue - totalExpense;
 
-    const rangeDays = Math.max(1, diffDays(fromDate, toDate) + 1);
-    const totalRoomNightsAvailable = Math.max(1, rooms.length * rangeDays);
-    const soldRoomNights = filteredBookings.reduce(
-      (s, b) => s + (b.bookingMode === 'hourly' ? 0 : b.nights || 0),
-      0
-    );
-    const hourlyCount = filteredBookings.filter((b) => b.bookingMode === 'hourly').length;
-    const occupancyPct = Math.min(100, Math.round((soldRoomNights / totalRoomNightsAvailable) * 100));
-    const adr = soldRoomNights > 0 ? Math.round(roomRev / soldRoomNights) : 0;
-    const revPar = Math.round(roomRev / totalRoomNightsAvailable);
-
     return {
       roomRev,
       totalRevenue,
@@ -181,13 +140,13 @@ export const FinanceReportsView: React.FC = () => {
       totalCashIn,
       totalExpense,
       netProfit,
-      occupancyPct,
-      adr,
-      revPar,
-      soldRoomNights,
-      hourlyCount,
+      occupancyPct: rangeRev.occupancyPct,
+      adr: rangeRev.adr,
+      revPar: rangeRev.revPar,
+      soldRoomNights: rangeRev.soldNights,
+      hourlyCount: rangeRev.hourlyBookingsCount,
     };
-  }, [filteredBookings, forfeitedCancelFees, activeTxs, rooms.length, fromDate, toDate]);
+  }, [rangeRev, activeTxs]);
 
   const chartData = useMemo(() => {
     const map = new Map<string, { date: string; label: string; thu: number; chi: number }>();
@@ -254,19 +213,24 @@ export const FinanceReportsView: React.FC = () => {
       );
       return;
     }
-    await recordTransaction({
-      type: txDirection === 'out' ? 'expense' : 'payment',
-      direction: txDirection,
-      category: txCategory,
-      amount: txAmount,
-      method: txMethod,
-      date: txDate,
-      note: txNote,
-      actor,
-    });
-    setTxAmount(0);
-    setTxNote('');
-    notify(`Đã ghi sổ ${txDirection === 'out' ? 'Chi' : 'Thu'} ${formatCurrency(txAmount)}`);
+    try {
+      await recordTransaction({
+        type: txDirection === 'out' ? 'expense' : 'payment',
+        direction: txDirection,
+        category: txCategory,
+        amount: txAmount,
+        method: txMethod,
+        date: txDate,
+        note: txNote,
+        accountingLockDate: hotelConfig.accountingLockDate,
+        actor,
+      });
+      setTxAmount(0);
+      setTxNote('');
+      notify(`Đã ghi sổ ${txDirection === 'out' ? 'Chi' : 'Thu'} ${formatCurrency(txAmount)}`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi ghi sổ thu chi', 'error');
+    }
   };
 
   const handleVoidTx = async (tx: Transaction) => {
@@ -304,12 +268,148 @@ export const FinanceReportsView: React.FC = () => {
     notify('Đã chốt Sổ Bàn Giao Tiền Mặt Cuối Ca');
   };
 
+  const applyDatePreset = (preset: 'today' | 'yesterday' | '7d' | '30d' | 'this_month' | 'last_month') => {
+    const t = todayISO();
+    if (preset === 'today') {
+      setFromDate(t);
+      setToDate(t);
+    } else if (preset === 'yesterday') {
+      const y = addDays(t, -1);
+      setFromDate(y);
+      setToDate(y);
+    } else if (preset === '7d') {
+      setFromDate(addDays(t, -6));
+      setToDate(t);
+    } else if (preset === '30d') {
+      setFromDate(addDays(t, -29));
+      setToDate(t);
+    } else if (preset === 'this_month') {
+      setFromDate(`${t.slice(0, 7)}-01`);
+      setToDate(t);
+    } else if (preset === 'last_month') {
+      const d = new Date(Number(t.slice(0, 4)), Number(t.slice(5, 7)) - 2, 1);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const lastDay = new Date(y, d.getMonth() + 1, 0).getDate();
+      setFromDate(`${y}-${m}-01`);
+      setToDate(`${y}-${m}-${String(lastDay).padStart(2, '0')}`);
+    }
+  };
+
+  // Room-Type & Hourly Capacity Breakdown (Single Source of Truth via getRoomRevenueInRange)
+  const roomTypeBreakdown = useMemo(() => {
+    const rangeDays = Math.max(1, diffDays(fromDate, toDate) + 1);
+    return roomTypes.map((rt) => {
+      const rtRooms = rooms.filter((r) => r.roomTypeId === rt.id);
+      const rtMetrics = getRoomRevenueInRange(bookings, transactions, fromDate, toDate, {
+        roomCount: Math.max(1, rtRooms.length),
+        sourceFilter,
+        roomTypeFilter: rt.id,
+      });
+      return {
+        id: rt.id,
+        name: rt.isActive === false ? `${rt.name} (Ngừng SD)` : rt.name,
+        roomCount: rtRooms.length,
+        availNights: rtRooms.length * rangeDays,
+        soldNights: rtMetrics.soldNights,
+        hourlyCount: rtMetrics.hourlyBookingsCount,
+        hourlyHours: rtMetrics.hourlyHoursTotal,
+        occPct: rtRooms.length > 0 ? rtMetrics.occupancyPct : 0,
+        rev: rtMetrics.roomRev,
+        adr: rtMetrics.adr,
+      };
+    });
+  }, [roomTypes, rooms, bookings, transactions, fromDate, toDate, sourceFilter]);
+
+  // 12-Month Trailing P&L Matrix — Single Source of Truth via getRoomRevenueInRange()
+  const monthlyReport = useMemo(() => {
+    const curY = Number(today.slice(0, 4));
+    const curM = Number(today.slice(5, 7));
+    const rows: Array<{
+      ym: string;
+      label: string;
+      isCurrent: boolean;
+      bookingCount: number;
+      soldNights: number;
+      roomRev: number;
+      serviceRev: number;
+      totalRev: number;
+      expense: number;
+      profit: number;
+      occPct: number;
+      adr: number;
+      revPar: number;
+    }> = [];
+
+    for (let offset = 0; offset < 12; offset++) {
+      const dt = new Date(curY, curM - 1 - offset, 1);
+      const y = dt.getFullYear();
+      const m = dt.getMonth() + 1;
+      const ym = `${y}-${String(m).padStart(2, '0')}`;
+      const daysInMonth = new Date(y, m, 0).getDate();
+      const mStart = `${ym}-01`;
+      const mEnd = `${ym}-${String(daysInMonth).padStart(2, '0')}`;
+
+      const mRev = getRoomRevenueInRange(bookings, transactions, mStart, mEnd, {
+        roomCount: rooms.length,
+      });
+      const expense = transactions
+        .filter(
+          (t) =>
+            t.status === 'active' &&
+            t.direction === 'out' &&
+            t.type === 'expense' &&
+            t.date.slice(0, 7) === ym
+        )
+        .reduce((s, t) => s + t.amount, 0);
+
+      rows.push({
+        ym,
+        label: `${String(m).padStart(2, '0')}/${y}`,
+        isCurrent: offset === 0,
+        bookingCount: mRev.eligibleBookings.length,
+        soldNights: mRev.soldNights,
+        roomRev: mRev.roomRev,
+        serviceRev: mRev.serviceRev + mRev.forfeitedCancelFees,
+        totalRev: mRev.totalRevenue,
+        expense,
+        profit: mRev.totalRevenue - expense,
+        occPct: mRev.occupancyPct,
+        adr: mRev.adr,
+        revPar: mRev.revPar,
+      });
+    }
+    return rows;
+  }, [bookings, transactions, rooms.length, today]);
+
+  const handleExportMonthlyExcel = () => {
+    const data = monthlyReport.map((r) => ({
+      Tháng: r.label,
+      'Số đặt phòng': r.bookingCount,
+      'Số đêm': r.soldNights,
+      'Tiền phòng (VNĐ)': r.roomRev,
+      'Dịch vụ & Phí hủy (VNĐ)': r.serviceRev,
+      'Tổng doanh thu (VNĐ)': r.totalRev,
+      'Chi phí (VNĐ)': r.expense,
+      'Lợi nhuận (VNĐ)': canViewProfit ? r.profit : 'Ẩn theo phân quyền',
+      'Lấp đầy (%)': r.occPct,
+      'ADR (VNĐ)': r.adr,
+      'RevPAR (VNĐ)': r.revPar,
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'BaoCao12Thang');
+    XLSX.writeFile(wb, `LikeFamily_BaoCao12Thang_${today}.xlsx`);
+    notify('Đã xuất file Excel Báo cáo 12 tháng');
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex p-1 rounded-xl bg-[#EAE7E0]">
+        <div className="inline-flex flex-wrap p-1 rounded-xl bg-[#F3F0E9] border border-[#E7E3DA]">
           {[
-            { id: 'pnl', label: 'Báo cáo Lãi / Lỗ (P&L) & KPI' },
+            { id: 'pnl', label: 'Báo cáo Lãi / Lỗ (P&L) & Công suất' },
+            { id: 'monthly', label: 'Báo cáo 12 tháng' },
             { id: 'cashbook', label: 'Sổ Quỹ Thu – Chi' },
             { id: 'handover', label: 'Bàn giao tiền mặt cuối ca' },
           ].map((t) => (
@@ -318,7 +418,7 @@ export const FinanceReportsView: React.FC = () => {
               type="button"
               onClick={() => setSubTab(t.id as typeof subTab)}
               className={`h-8 px-3.5 rounded-lg text-[13px] font-medium transition-colors ${
-                subTab === t.id ? 'bg-white text-[#1C1B18] shadow-xs' : 'text-[#57534E]'
+                subTab === t.id ? 'bg-[#0F5132] text-white' : 'text-[#57534E] hover:text-[#1C1B18]'
               }`}
             >
               {t.label}
@@ -339,53 +439,78 @@ export const FinanceReportsView: React.FC = () => {
         </div>
       )}
 
-      {subTab !== 'handover' && (
-        <div className="bg-white border border-[#E5E2DC] rounded-xl p-3 flex flex-wrap items-center gap-2.5">
-          <div className="flex items-center gap-1.5 text-[12px]">
-            <span className="text-[#57534E]">Từ</span>
-            <DateInputVN value={fromDate} onChange={setFromDate} className="h-8 text-[12px] w-36" />
-            <span className="text-[#57534E]">đến</span>
-            <DateInputVN value={toDate} onChange={setToDate} className="h-8 text-[12px] w-36" />
+      {subTab !== 'handover' && subTab !== 'monthly' && (
+        <div className="bg-white border border-[#E7E3DA] rounded-xl p-3 space-y-2.5">
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span className="text-[#8A847C] mr-1">Chọn nhanh kỳ:</span>
+            {(
+              [
+                { id: 'today', label: 'Hôm nay' },
+                { id: 'yesterday', label: 'Hôm qua' },
+                { id: '7d', label: '7 ngày qua' },
+                { id: '30d', label: '30 ngày qua' },
+                { id: 'this_month', label: 'Tháng này' },
+                { id: 'last_month', label: 'Tháng trước' },
+              ] as const
+            ).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => applyDatePreset(p.id)}
+                className="h-7 px-2.5 rounded-lg border border-[#E7E3DA] bg-[#FAF9F6] hover:border-[#0F5132] hover:text-[#0F5132] font-medium text-[#57534E] transition-colors"
+              >
+                {p.label}
+              </button>
+            ))}
           </div>
 
-          <select
-            value={sourceFilter}
-            onChange={(e) => setSourceFilter(e.target.value)}
-            className="h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
-          >
-            <option value="all">Tất cả nguồn khách</option>
-            <option value="ota">Tất cả kênh OTA</option>
-            {(hotelConfig.bookingSources || []).map((s) => (
-              <option key={s.id} value={s.name}>
-                {s.kind === 'ota' ? `OTA: ${s.name}` : s.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center gap-1.5 text-[12px]">
+              <span className="text-[#57534E]">Từ</span>
+              <DateInputVN value={fromDate} onChange={setFromDate} className="h-8 text-[12px] w-36" />
+              <span className="text-[#57534E]">đến</span>
+              <DateInputVN value={toDate} onChange={setToDate} className="h-8 text-[12px] w-36" />
+            </div>
 
-          <select
-            value={roomTypeFilter}
-            onChange={(e) => setRoomTypeFilter(e.target.value)}
-            className="h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
-          >
-            <option value="all">Tất cả loại phòng</option>
-            {roomTypes.map((rt) => (
-              <option key={rt.id} value={rt.id}>
-                {rt.name}
-              </option>
-            ))}
-          </select>
+            <select
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value)}
+              className="h-8 px-2.5 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
+            >
+              <option value="all">Tất cả nguồn khách</option>
+              <option value="ota">Tất cả kênh OTA</option>
+              {(hotelConfig.bookingSources || []).map((s) => (
+                <option key={s.id} value={s.name}>
+                  {s.kind === 'ota' ? `OTA: ${s.name}` : s.name}
+                </option>
+              ))}
+            </select>
 
-          <select
-            value={methodFilter}
-            onChange={(e) => setMethodFilter(e.target.value)}
-            className="h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
-          >
-            <option value="all">Mọi hình thức thanh toán</option>
-            <option value="cash">Tiền mặt</option>
-            <option value="bank_transfer">Chuyển khoản (VietQR)</option>
-            <option value="card">Quẹt thẻ</option>
-            <option value="ota_debt">Công nợ OTA</option>
-          </select>
+            <select
+              value={roomTypeFilter}
+              onChange={(e) => setRoomTypeFilter(e.target.value)}
+              className="h-8 px-2.5 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
+            >
+              <option value="all">Tất cả loại phòng</option>
+              {roomTypes.map((rt) => (
+                <option key={rt.id} value={rt.id}>
+                  {rt.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={methodFilter}
+              onChange={(e) => setMethodFilter(e.target.value)}
+              className="h-8 px-2.5 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
+            >
+              <option value="all">Mọi hình thức thanh toán</option>
+              <option value="cash">Tiền mặt</option>
+              <option value="bank_transfer">Chuyển khoản (VietQR)</option>
+              <option value="card">Quẹt thẻ</option>
+              <option value="ota_debt">Công nợ OTA</option>
+            </select>
+          </div>
         </div>
       )}
 
@@ -492,11 +617,214 @@ export const FinanceReportsView: React.FC = () => {
                       fontSize: '12px',
                     }}
                   />
-                  <Bar dataKey="thu" name="Thực thu" fill="#1B5E4B" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="chi" name="Chi phí" fill="#C7C1B7" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="thu" name="Thực thu" fill="#0F5132" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="chi" name="Chi phí" fill="#D97706" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
+          </div>
+
+          {/* Room-Type & Hourly Capacity Breakdown Table */}
+          <div className="bg-white border border-[#E7E3DA] rounded-2xl p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-[14px] font-semibold text-[#1C1B18]">
+                  Báo cáo Công suất theo Loại phòng &amp; Nghỉ giờ
+                </h3>
+                <p className="text-[12px] text-[#57534E]">
+                  Kỳ {formatDateVN(fromDate)} → {formatDateVN(toDate)} • Chỉ tính đơn lưu trú thực tế
+                </p>
+              </div>
+              <div className="text-[12px] font-mono-num text-[#57534E]">
+                Tổng giờ bán:{' '}
+                <strong className="text-[#D97706]">
+                  {roomTypeBreakdown.reduce((s, r) => s + r.hourlyHours, 0)} giờ
+                </strong>{' '}
+                ({metrics.hourlyCount} lượt)
+              </div>
+            </div>
+
+            <div className="overflow-x-auto border border-[#E7E3DA] rounded-xl">
+              <table className="w-full text-[12px] min-w-[680px]">
+                <thead className="bg-[#FAF9F6] border-b border-[#E7E3DA] text-[#57534E]">
+                  <tr>
+                    <th className="text-left px-3.5 py-2 font-medium">Loại phòng</th>
+                    <th className="text-right px-3.5 py-2 font-medium">Số phòng</th>
+                    <th className="text-right px-3.5 py-2 font-medium">Đêm khả dụng</th>
+                    <th className="text-right px-3.5 py-2 font-medium">Đêm bán</th>
+                    <th className="text-right px-3.5 py-2 font-medium">Nghỉ giờ</th>
+                    <th className="text-right px-3.5 py-2 font-medium">% Công suất</th>
+                    <th className="text-right px-3.5 py-2 font-medium">Doanh thu phòng</th>
+                    <th className="text-right px-3.5 py-2 font-medium">ADR</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#F1EFEA] font-mono-num">
+                  {roomTypeBreakdown.map((r) => (
+                    <tr key={r.id}>
+                      <td className="px-3.5 py-2 font-sans font-medium text-[#1C1B18]">{r.name}</td>
+                      <td className="px-3.5 py-2 text-right">{r.roomCount}</td>
+                      <td className="px-3.5 py-2 text-right text-[#57534E]">{r.availNights}</td>
+                      <td className="px-3.5 py-2 text-right font-semibold text-[#0F5132]">
+                        {r.soldNights}
+                      </td>
+                      <td className="px-3.5 py-2 text-right text-[#D97706]">
+                        {r.hourlyCount > 0 ? `${r.hourlyCount} (${r.hourlyHours}h)` : '—'}
+                      </td>
+                      <td className="px-3.5 py-2 text-right font-semibold">{r.occPct}%</td>
+                      <td className="px-3.5 py-2 text-right font-semibold text-[#0F5132]">
+                        {formatCurrency(r.rev)}
+                      </td>
+                      <td className="px-3.5 py-2 text-right">{formatCurrency(r.adr)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUBTAB: 12-MONTH P&L REPORT MATRIX (GoHost-inspired Báo cáo Tháng) */}
+      {subTab === 'monthly' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4">
+              <div className="text-[11px] font-medium text-[#8A847C] uppercase">Tổng doanh thu 12T</div>
+              <div className="mt-1 text-[19px] font-bold font-mono-num text-[#0F5132]">
+                {formatCurrency(monthlyReport.reduce((s, r) => s + r.totalRev, 0))}
+              </div>
+            </div>
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4">
+              <div className="text-[11px] font-medium text-[#8A847C] uppercase">Tổng chi phí 12T</div>
+              <div className="mt-1 text-[19px] font-bold font-mono-num text-[#B91C1C]">
+                {formatCurrency(monthlyReport.reduce((s, r) => s + r.expense, 0))}
+              </div>
+            </div>
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4">
+              <div className="text-[11px] font-medium text-[#8A847C] uppercase">Lợi nhuận 12T</div>
+              <div className="mt-1 text-[19px] font-bold font-mono-num text-[#0F5132]">
+                {canViewProfit
+                  ? formatCurrency(monthlyReport.reduce((s, r) => s + r.profit, 0))
+                  : 'Ẩn theo quyền'}
+              </div>
+            </div>
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4">
+              <div className="text-[11px] font-medium text-[#8A847C] uppercase">Tổng đêm đã bán</div>
+              <div className="mt-1 text-[19px] font-bold font-mono-num text-[#1C1B18]">
+                {monthlyReport.reduce((s, r) => s + r.soldNights, 0)} đêm
+              </div>
+            </div>
+            <div className="bg-white border border-[#E7E3DA] rounded-xl p-4 flex items-center justify-between">
+              <div>
+                <div className="text-[11px] font-medium text-[#8A847C] uppercase">Lấp đầy TB</div>
+                <div className="mt-1 text-[19px] font-bold font-mono-num text-[#1C1B18]">
+                  {(
+                    monthlyReport.reduce((s, r) => s + r.occPct, 0) /
+                    Math.max(1, monthlyReport.length)
+                  ).toFixed(1)}
+                  %
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleExportMonthlyExcel}
+                className="h-9 px-3 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[12px] font-medium inline-flex items-center gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" strokeWidth={1.5} />
+                Excel
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-x-auto">
+            <table className="w-full text-[12px] min-w-[920px]">
+              <thead className="bg-[#FAF9F6] border-b border-[#E7E3DA] text-[#57534E]">
+                <tr>
+                  <th className="text-left px-3.5 py-2.5 font-medium">Tháng</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Số ĐP</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Số đêm</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Tiền phòng</th>
+                  <th className="text-right px-3 py-2.5 font-medium">DV &amp; Phí hủy</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Tổng doanh thu</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Chi phí</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Lợi nhuận</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Lấp đầy</th>
+                  <th className="text-right px-3 py-2.5 font-medium">ADR</th>
+                  <th className="text-right px-3 py-2.5 font-medium">RevPAR</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#F1EFEA] font-mono-num">
+                {monthlyReport.map((r) => (
+                  <tr key={r.ym} className="hover:bg-[#FAF9F6]">
+                    <td className="px-3.5 py-2.5 font-semibold text-[#1C1B18]">
+                      {r.label}
+                      {r.isCurrent && (
+                        <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[#FFFBEB] text-[#B45309] font-sans text-[10px] font-medium">
+                          Tạm tính
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">{r.bookingCount}</td>
+                    <td className="px-3 py-2.5 text-right">{r.soldNights}</td>
+                    <td className="px-3 py-2.5 text-right">{formatCurrency(r.roomRev)}</td>
+                    <td className="px-3 py-2.5 text-right">{formatCurrency(r.serviceRev)}</td>
+                    <td className="px-3 py-2.5 text-right font-semibold text-[#0F5132]">
+                      {formatCurrency(r.totalRev)}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-[#B91C1C]">
+                      {formatCurrency(r.expense)}
+                    </td>
+                    <td
+                      className={`px-3 py-2.5 text-right font-semibold ${
+                        !canViewProfit
+                          ? 'text-[#8A847C] font-sans font-normal'
+                          : r.profit >= 0
+                          ? 'text-[#0F5132]'
+                          : 'text-[#B91C1C]'
+                      }`}
+                    >
+                      {canViewProfit ? formatCurrency(r.profit) : 'Ẩn'}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">{r.occPct}%</td>
+                    <td className="px-3 py-2.5 text-right">{formatCurrency(r.adr)}</td>
+                    <td className="px-3 py-2.5 text-right text-[#57534E]">
+                      {formatCurrency(r.revPar)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot className="bg-[#FAF9F6] border-t-2 border-[#E7E3DA] font-mono-num font-bold">
+                <tr>
+                  <td className="px-3.5 py-2.5 font-sans text-[#1C1B18]">TỔNG 12 THÁNG</td>
+                  <td className="px-3 py-2.5 text-right">
+                    {monthlyReport.reduce((s, r) => s + r.bookingCount, 0)}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    {monthlyReport.reduce((s, r) => s + r.soldNights, 0)}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    {formatCurrency(monthlyReport.reduce((s, r) => s + r.roomRev, 0))}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    {formatCurrency(monthlyReport.reduce((s, r) => s + r.serviceRev, 0))}
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-[#0F5132]">
+                    {formatCurrency(monthlyReport.reduce((s, r) => s + r.totalRev, 0))}
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-[#B91C1C]">
+                    {formatCurrency(monthlyReport.reduce((s, r) => s + r.expense, 0))}
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-[#0F5132]">
+                    {canViewProfit
+                      ? formatCurrency(monthlyReport.reduce((s, r) => s + r.profit, 0))
+                      : '—'}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">—</td>
+                  <td className="px-3 py-2.5 text-right">—</td>
+                  <td className="px-3 py-2.5 text-right">—</td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
         </div>
       )}

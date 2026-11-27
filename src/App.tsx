@@ -7,6 +7,7 @@ import {
   ClipboardList,
   FileSliders,
   Landmark,
+  LayoutDashboard,
   LogOut,
   Menu,
   RotateCcw,
@@ -20,6 +21,7 @@ import { usePms } from './context/PmsContext';
 import type { Booking, FormTemplateType, Room } from './types/pms';
 import { LoginScreen } from './components/LoginScreen';
 import { SuperAdminLoginPage } from './components/SuperAdminLoginPage';
+import { DashboardView } from './components/DashboardView';
 import { RoomGridView } from './components/RoomGridView';
 import { TimelineCalendarView } from './components/TimelineCalendarView';
 import { AvailabilityFinder } from './components/AvailabilityFinder';
@@ -39,6 +41,7 @@ import { undoBookingAction } from './lib/pmsActions';
 import { formatCurrency, formatDateVN, getRoleLabel, todayISO } from './lib/utils';
 
 type NavKey =
+  | 'dashboard'
   | 'rooms'
   | 'calendar'
   | 'finder'
@@ -56,6 +59,7 @@ export const App: React.FC = () => {
     hotelConfig,
     bookings,
     actor,
+    completeFirstLoginPasswordChange,
     logout,
     toasts,
     dismissToast,
@@ -63,6 +67,10 @@ export const App: React.FC = () => {
     clearUndoBanner,
     notify,
   } = usePms();
+
+  const [firstPass, setFirstPass] = useState('');
+  const [firstPassConfirm, setFirstPassConfirm] = useState('');
+  const [savingFirstPass, setSavingFirstPass] = useState(false);
 
   const [nav, setNav] = useState<NavKey>('rooms');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -133,22 +141,115 @@ export const App: React.FC = () => {
     );
   }
 
+  if (staffProfile.mustChangePassword) {
+    const handleForcePasswordSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (firstPass.trim().length < 6) {
+        notify('Mật khẩu mới cần ít nhất 6 ký tự.', 'error');
+        return;
+      }
+      if (firstPass !== firstPassConfirm) {
+        notify('Xác nhận mật khẩu chưa khớp.', 'error');
+        return;
+      }
+      setSavingFirstPass(true);
+      try {
+        await completeFirstLoginPasswordChange(firstPass);
+        setFirstPass('');
+        setFirstPassConfirm('');
+        notify('Đã đổi mật khẩu bảo mật thành công');
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Lỗi đổi mật khẩu', 'error');
+      } finally {
+        setSavingFirstPass(false);
+      }
+    };
+
+    return (
+      <div className="min-h-screen bg-[#FAF9F6] flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white border border-[#E7E3DA] rounded-2xl p-6 space-y-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-[#0F5132] text-white flex items-center justify-center">
+              <ShieldCheck className="w-5 h-5" strokeWidth={1.5} />
+            </div>
+            <div>
+              <h1 className="text-[16px] font-semibold text-[#1C1B18]">
+                Đổi mật khẩu lần đầu đăng nhập
+              </h1>
+              <p className="text-[12px] text-[#57534E]">
+                Tài khoản @{staffProfile.username} ({staffProfile.fullName}) cần đặt mật khẩu cá nhân mới trước khi sử dụng hệ thống.
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleForcePasswordSubmit} className="space-y-3">
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Mật khẩu mới (tối thiểu 6 ký tự)
+              </label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={firstPass}
+                onChange={(e) => setFirstPass(e.target.value)}
+                placeholder="Nhập mật khẩu mới..."
+                className="w-full h-10 px-3 rounded-lg border border-[#E7E3DA] text-[13px]"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Nhập lại mật khẩu mới
+              </label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={firstPassConfirm}
+                onChange={(e) => setFirstPassConfirm(e.target.value)}
+                placeholder="Xác nhận mật khẩu mới..."
+                className="w-full h-10 px-3 rounded-lg border border-[#E7E3DA] text-[13px]"
+              />
+            </div>
+            <div className="flex items-center justify-between pt-2 gap-2">
+              <button
+                type="button"
+                onClick={logout}
+                className="h-9 px-3.5 rounded-lg border border-[#E7E3DA] text-[13px] text-[#57534E] hover:bg-[#FAF9F6]"
+              >
+                Đăng xuất
+              </button>
+              <button
+                type="submit"
+                disabled={savingFirstPass}
+                className="flex-1 h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium disabled:opacity-60"
+              >
+                {savingFirstPass ? 'Đang cập nhật...' : 'Lưu mật khẩu & Vào hệ thống'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   const navItems: Array<{
     id: NavKey;
     label: string;
     icon: LucideIcon;
     group: 'frontdesk' | 'management';
   }> = [
-    { id: 'rooms', label: 'Sơ đồ phòng', icon: BedDouble, group: 'frontdesk' },
-    { id: 'calendar', label: 'Lịch Calendar', icon: CalendarRange, group: 'frontdesk' },
-    { id: 'finder', label: 'Tìm phòng trống', icon: Search, group: 'frontdesk' },
-    { id: 'bookings', label: 'Đơn, Đoàn & ASM', icon: ClipboardList, group: 'frontdesk' },
-    { id: 'ota', label: 'Đối soát OTA', icon: Landmark, group: 'management' },
-    { id: 'finance', label: 'Tài chính & P&L', icon: BarChart3, group: 'management' },
-    { id: 'forms', label: 'Tùy chỉnh biểu mẫu', icon: FileSliders, group: 'management' },
-    { id: 'staff', label: 'Nhân viên & Nhật ký', icon: ShieldCheck, group: 'management' },
-    { id: 'settings', label: 'Cài đặt & Sao lưu', icon: Settings, group: 'management' },
-  ];
+    { id: 'dashboard', label: 'Tổng quan', icon: LayoutDashboard, group: 'frontdesk' },
+      { id: 'rooms', label: 'Sơ đồ phòng', icon: BedDouble, group: 'frontdesk' },
+      { id: 'calendar', label: 'Lịch Calendar', icon: CalendarRange, group: 'frontdesk' },
+      { id: 'finder', label: 'Tìm phòng trống', icon: Search, group: 'frontdesk' },
+      { id: 'bookings', label: 'Đơn, Đoàn & ASM', icon: ClipboardList, group: 'frontdesk' },
+      { id: 'ota', label: 'Đối soát OTA', icon: Landmark, group: 'management' },
+      { id: 'finance', label: 'Tài chính & P&L', icon: BarChart3, group: 'management' },
+      { id: 'forms', label: 'Tùy chỉnh biểu mẫu', icon: FileSliders, group: 'management' },
+      { id: 'staff', label: 'Nhân viên & Nhật ký', icon: ShieldCheck, group: 'management' },
+      { id: 'settings', label: 'Cài đặt & Sao lưu', icon: Settings, group: 'management' },
+    ];
 
   const activeTitle = navItems.find((i) => i.id === nav)?.label || 'Like Family PMS';
 
@@ -173,11 +274,11 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F7F6F3] flex">
-      {/* Desktop Sidebar (248px quiet chrome) */}
-      <aside className="no-print hidden lg:flex flex-col w-[248px] shrink-0 bg-white border-r border-[#E5E2DC] h-screen sticky top-0">
-        <div className="p-4 border-b border-[#E5E2DC] flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-[#1B5E4B] text-white flex items-center justify-center shrink-0">
+    <div className="min-h-screen bg-[#FAF9F6] flex">
+      {/* Desktop Sidebar (248px quiet chrome — Forest Emerald + Warm Cream) */}
+      <aside className="no-print hidden lg:flex flex-col w-[248px] shrink-0 bg-white border-r border-[#E7E3DA] h-screen sticky top-0">
+        <div className="p-4 border-b border-[#E7E3DA] flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-[#0F5132] text-white flex items-center justify-center shrink-0">
             <Building2 className="w-4 h-4" strokeWidth={1.5} />
           </div>
           <div className="min-w-0">
@@ -206,8 +307,8 @@ export const App: React.FC = () => {
                       onClick={() => setNav(item.id)}
                       className={`w-full h-9 px-2.5 rounded-lg text-[13px] font-medium flex items-center gap-2.5 transition-colors ${
                         active
-                          ? 'bg-[#E8F2EE] text-[#1B5E4B]'
-                          : 'text-[#57534E] hover:bg-[#F7F6F3] hover:text-[#1C1B18]'
+                          ? 'bg-[#E8F3EC] text-[#0F5132]'
+                          : 'text-[#57534E] hover:bg-[#FAF9F6] hover:text-[#1C1B18]'
                       }`}
                     >
                       <Icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
@@ -235,8 +336,8 @@ export const App: React.FC = () => {
                       onClick={() => setNav(item.id)}
                       className={`w-full h-9 px-2.5 rounded-lg text-[13px] font-medium flex items-center gap-2.5 transition-colors ${
                         active
-                          ? 'bg-[#E8F2EE] text-[#1B5E4B]'
-                          : 'text-[#57534E] hover:bg-[#F7F6F3] hover:text-[#1C1B18]'
+                          ? 'bg-[#E8F3EC] text-[#0F5132]'
+                          : 'text-[#57534E] hover:bg-[#FAF9F6] hover:text-[#1C1B18]'
                       }`}
                     >
                       <Icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
@@ -293,11 +394,10 @@ export const App: React.FC = () => {
                       setNav(item.id);
                       setMobileMenuOpen(false);
                     }}
-                    className={`w-full h-9 px-2.5 rounded-lg text-[13px] font-medium flex items-center gap-2.5 ${
-                      nav === item.id
-                        ? 'bg-[#E8F2EE] text-[#1B5E4B]'
-                        : 'text-[#57534E] hover:bg-[#F7F6F3]'
-                    }`}
+                    className={`w-full h-9 px-2.5 rounded-lg text-[13px] font-medium flex items-center gap-2.5 ${nav === item.id
+                      ? 'bg-[#E8F2EE] text-[#1B5E4B]'
+                      : 'text-[#57534E] hover:bg-[#F7F6F3]'
+                      }`}
                   >
                     <Icon className="w-4 h-4" strokeWidth={1.5} />
                     {item.label}
@@ -345,7 +445,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={() => setCreateSingleDraft({})}
-              className="h-8 px-3.5 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[12px] font-medium transition-colors"
+              className="h-8 px-3.5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[12px] font-medium transition-colors"
             >
               + Đặt phòng mới
             </button>
@@ -365,11 +465,22 @@ export const App: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setQuickResolveDeposit(pendingDepositBookings[0])}
-                className="h-8 px-3 rounded-lg bg-[#B45309] hover:bg-[#92400E] text-white text-[12px] font-medium shrink-0"
+                className="h-8 px-3 rounded-lg bg-[#D97706] hover:bg-[#B45309] text-white text-[12px] font-medium shrink-0"
               >
                 Xử lý cọc treo ngay
               </button>
             </div>
+          )}
+
+          {nav === 'dashboard' && (
+            <DashboardView
+              onSelectBooking={(b) => setActiveBookingModal({ bookingId: b.id })}
+              onOpenNewSingle={() => setCreateSingleDraft({})}
+              onOpenNewGroup={() => setCreateGroupDraft({})}
+              onGoToFinder={() => setNav('finder')}
+              onGoToRooms={() => setNav('rooms')}
+              onGoToCalendar={() => setNav('calendar')}
+            />
           )}
 
           {nav === 'rooms' && (
@@ -505,15 +616,14 @@ export const App: React.FC = () => {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`px-3.5 py-2.5 rounded-xl border text-[12px] shadow-sm flex items-start justify-between gap-2 ${
-              t.type === 'error'
-                ? 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]'
-                : t.type === 'warning'
+            className={`px-3.5 py-2.5 rounded-xl border text-[12px] shadow-sm flex items-start justify-between gap-2 ${t.type === 'error'
+              ? 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]'
+              : t.type === 'warning'
                 ? 'bg-[#FFFBEB] border-[#FDE68A] text-[#92400E]'
                 : t.type === 'info'
-                ? 'bg-[#EFF6FF] border-[#BFDBFE] text-[#1E40AF]'
-                : 'bg-[#ECFDF5] border-[#A7F3D0] text-[#065F46]'
-            }`}
+                  ? 'bg-[#EFF6FF] border-[#BFDBFE] text-[#1E40AF]'
+                  : 'bg-[#ECFDF5] border-[#A7F3D0] text-[#065F46]'
+              }`}
           >
             <span>{t.message}</span>
             <button

@@ -20,7 +20,7 @@ import {
   sumDailyRates,
   todayISO,
 } from './utils';
-import { writeAuditLog, type ActorInfo } from './pmsActions';
+import { applyPaymentDelta, assertPeriodOpen, writeAuditLog, type ActorInfo } from './pmsActions';
 
 /**
  * Rule 8: Accounting Period Lock Resolver.
@@ -146,12 +146,25 @@ export async function executeEarlyCheckOut(params: {
     booking.checkIn,
     params.accountingLockDate
   );
+  assertPeriodOpen(postingDate, params.accountingLockDate);
+
+  // Bug #5: Use Single Source of Truth `applyPaymentDelta()` to sync depositPaid/guestPaid on refund or transfer!
+  let nextPaid = { depositPaid: booking.depositPaid || 0, guestPaid: booking.guestPaid || 0 };
+  if (excessAmount > 0 && (excessAction === 'refunded' || excessAction === 'transferred_to_booking')) {
+    nextPaid = applyPaymentDelta(
+      booking,
+      excessAction === 'refunded' ? 'refund' : 'transfer_out',
+      excessAmount
+    );
+  }
 
   const before = {
     status: booking.status,
     checkOut: booking.checkOut,
     nights: booking.nights,
     grossRoomTotal: booking.grossRoomTotal,
+    depositPaid: booking.depositPaid || 0,
+    guestPaid: booking.guestPaid || 0,
     totalPaid,
   };
 
@@ -166,6 +179,9 @@ export async function executeEarlyCheckOut(params: {
     grossRoomTotal: newGross,
     otaCommissionAmount: 0,
     netRoomTotal: newGross,
+    depositPaid: nextPaid.depositPaid,
+    guestPaid: nextPaid.guestPaid,
+    earlyCheckoutRefundPending: excessAmount > 0 && excessAction === 'pending_deposit_resolution',
     actualCheckOutAt: now,
     depositResolutionStatus: excessAmount > 0 ? excessAction : 'none',
     pendingDepositAmount:
@@ -251,8 +267,10 @@ export async function executeEarlyCheckOut(params: {
         createdByName: actor.name,
         note: reason.trim(),
       } satisfies Transaction);
+      const targetPaid = applyPaymentDelta(params.transferTargetBooking, 'transfer_in', excessAmount);
       batch.update(doc(db, 'bookings', params.transferTargetBooking.id), {
-        depositPaid: (params.transferTargetBooking.depositPaid || 0) + excessAmount,
+        depositPaid: targetPaid.depositPaid,
+        guestPaid: targetPaid.guestPaid,
         updatedAt: now,
       });
     }
@@ -303,6 +321,7 @@ export async function reclassifyPaymentMethod(params: {
     tx.date,
     params.accountingLockDate
   );
+  assertPeriodOpen(postingDate, params.accountingLockDate);
 
   const outId = generateId('txrc_out');
   const inId = generateId('txrc_in');
@@ -414,6 +433,7 @@ export async function voidCheckedOutBooking(params: {
     booking.checkOut,
     params.accountingLockDate
   );
+  assertPeriodOpen(postingDate, params.accountingLockDate);
 
   const before = {
     status: booking.status,
@@ -649,6 +669,7 @@ export async function recordPostCheckoutAdjustment(params: {
     booking.checkOut,
     params.accountingLockDate
   );
+  assertPeriodOpen(postingDate, params.accountingLockDate);
 
   const oldTotal =
     (booking.grossRoomTotal || 0) + (booking.serviceTotal || 0) + (booking.hourlySurcharge || 0);
@@ -674,7 +695,10 @@ export async function recordPostCheckoutAdjustment(params: {
   ];
   const nextServiceTotal = nextServices.reduce((s, i) => s + i.total, 0);
 
-  let nextGuestPaid = booking.guestPaid || 0;
+  let nextPaid = {
+    depositPaid: booking.depositPaid || 0,
+    guestPaid: booking.guestPaid || 0,
+  };
 
   if (settleNow && actualDiff !== 0) {
     const txId = generateId('txadj');
@@ -703,16 +727,19 @@ export async function recordPostCheckoutAdjustment(params: {
     };
     batch.set(doc(db, 'transactions', txId), tx);
     if (settlementMethod !== 'ota_debt') {
-      nextGuestPaid = isExtraCollect
-        ? nextGuestPaid + actualDiff
-        : Math.max(0, nextGuestPaid - Math.abs(actualDiff));
+      nextPaid = applyPaymentDelta(
+        booking,
+        isExtraCollect ? 'payment' : 'refund',
+        Math.abs(actualDiff)
+      );
     }
   }
 
   batch.update(doc(db, 'bookings', booking.id), {
     services: nextServices,
     serviceTotal: nextServiceTotal,
-    guestPaid: nextGuestPaid,
+    depositPaid: nextPaid.depositPaid,
+    guestPaid: nextPaid.guestPaid,
     isBillingReopened: false,
     updatedAt: now,
   });

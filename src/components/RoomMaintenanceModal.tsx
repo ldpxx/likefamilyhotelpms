@@ -3,7 +3,8 @@ import { CheckCircle2, Wrench, X } from 'lucide-react';
 import { usePms } from '../context/PmsContext';
 import type { PaymentMethod, Room } from '../types/pms';
 import { completeRoomMaintenance, createRoomMaintenance } from '../lib/pmsActions';
-import { formatCurrency, formatDateVN } from '../lib/utils';
+import { formatCurrency, formatDateVN, todayISO } from '../lib/utils';
+import { DateInputVN } from './DateInputVN';
 
 interface RoomMaintenanceModalProps {
   room: Room;
@@ -11,13 +12,15 @@ interface RoomMaintenanceModalProps {
 }
 
 export const RoomMaintenanceModal: React.FC<RoomMaintenanceModalProps> = ({ room, onClose }) => {
-  const { maintenances, actor, notify } = usePms();
+  const { maintenances, hotelConfig, actor, notify } = usePms();
   const [issueTitle, setIssueTitle] = useState('');
   const [description, setDescription] = useState('');
   const [cost, setCost] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [markRoomAsMaintenance, setMarkRoomAsMaintenance] = useState(false);
   const [isCompletedNow, setIsCompletedNow] = useState(true);
+  const [maintenanceFrom, setMaintenanceFrom] = useState(todayISO());
+  const [maintenanceTo, setMaintenanceTo] = useState(todayISO());
   const [saving, setSaving] = useState(false);
 
   const roomLogs = useMemo(
@@ -37,7 +40,10 @@ export const RoomMaintenanceModal: React.FC<RoomMaintenanceModalProps> = ({ room
         cost,
         markRoomAsMaintenance,
         isCompletedNow,
+        maintenanceFrom,
+        maintenanceTo: maintenanceTo >= maintenanceFrom ? maintenanceTo : maintenanceFrom,
         paymentMethod,
+        accountingLockDate: hotelConfig.accountingLockDate,
         actor,
       });
       setIssueTitle('');
@@ -48,6 +54,8 @@ export const RoomMaintenanceModal: React.FC<RoomMaintenanceModalProps> = ({ room
           cost > 0 ? ` và tự động hạch toán chi phí ${formatCurrency(cost)}` : ''
         }`
       );
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi ghi nhận bảo trì', 'error');
     } finally {
       setSaving(false);
     }
@@ -142,11 +150,37 @@ export const RoomMaintenanceModal: React.FC<RoomMaintenanceModalProps> = ({ room
               <button
                 type="submit"
                 disabled={saving}
-                className="h-8 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[12px] font-medium"
+                className="h-8 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[12px] font-medium"
               >
                 {saving ? 'Đang lưu...' : 'Lưu nhật ký'}
               </button>
             </div>
+            {!isCompletedNow && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 border-t border-[#E7E3DA]">
+                <div>
+                  <label className="block text-[11px] font-medium text-[#57534E] mb-1">
+                    Từ ngày bảo trì (khóa lịch)
+                  </label>
+                  <DateInputVN
+                    value={maintenanceFrom}
+                    onChange={(v) => {
+                      setMaintenanceFrom(v);
+                      if (v > maintenanceTo) setMaintenanceTo(v);
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-[#57534E] mb-1">
+                    Đến hết ngày
+                  </label>
+                  <DateInputVN
+                    value={maintenanceTo}
+                    min={maintenanceFrom}
+                    onChange={setMaintenanceTo}
+                  />
+                </div>
+              </div>
+            )}
           </form>
 
           <div className="space-y-2">

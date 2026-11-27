@@ -14,12 +14,12 @@ export interface StaffPermissions {
 export interface StaffUser {
   uid: string;
   username: string;
-  passwordHash?: string;
   fullName: string;
   phone: string;
   email?: string;
   role: StaffRole;
-  authSource: 'firebase_superadmin' | 'firestore_staff';
+  authSource: 'firebase_superadmin' | 'firebase_staff' | 'firestore_staff';
+  mustChangePassword?: boolean;
   permissions: StaffPermissions;
   isActive: boolean;
   createdAt: string;
@@ -64,6 +64,8 @@ export interface HotelConfig {
   lateCheckOutRatePerHour: number;
   /** Accounting Period Lock date (YYYY-MM-DD); no back-dated edits allowed <= this date */
   accountingLockDate?: string | null;
+  /** Cleaning buffer between consecutive bookings on same room (minutes, default 5) */
+  hourlyCleaningBufferMinutes?: number;
   updatedAt?: string;
 }
 
@@ -123,8 +125,12 @@ export interface RoomMaintenance {
   description: string;
   cost: number;
   transactionId?: string | null;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'done';
+  /** ISO YYYY-MM-DD maintenance window (Single Source of Truth for blocking bookings) */
+  maintenanceFrom?: string;
+  maintenanceTo?: string;
   reportedAt: string;
+  reportedDate?: string;
   completedAt?: string | null;
   performedBy: string;
 }
@@ -264,6 +270,12 @@ export interface Booking {
   chainSequence?: number;
   mergedIntoBookingId?: string | null;
   mergedFromBookingIds?: string[];
+  /** Bug #2: Consolidated room debt carried over into this booking (payable by guest, EXCLUDED from P&L revenue) */
+  transferredBalance?: number;
+  /** Bug #2: Source booking consolidated into another room (zeroes out source guest balance without erasing real room revenue) */
+  consolidatedInto?: string | null;
+  balanceTransferredOut?: number;
+  earlyCheckoutRefundPending?: boolean;
   groupId?: string | null;
   groupName?: string | null;
   checkIn: string; // YYYY-MM-DD
@@ -425,7 +437,7 @@ export interface OtaAdjustment {
   payoutBatchId?: string | null;
   adjustmentAmount: number; // negative = deduct from next payout, positive = credit
   accountingDate: string;
-  status: 'pending_next_payout' | 'applied';
+  status: 'pending_next_payout' | 'applied' | 'settled';
   appliedBatchId?: string | null;
   reason: string;
   createdByUid: string;

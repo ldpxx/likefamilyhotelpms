@@ -15,9 +15,9 @@ import {
   formatCurrency,
   getHkStatusLabel,
   isBookingBlockingCalendar,
-  isDateRangeOverlap,
   todayISO,
 } from '../lib/utils';
+import { doBookingIntervalsOverlap, isRoomBlockedByMaintenance } from '../lib/revenueMetrics';
 import { DateInputVN } from './DateInputVN';
 
 interface SearchRow {
@@ -35,7 +35,12 @@ export const AvailabilityFinder: React.FC<AvailabilityFinderProps> = ({
   onCreateSingleBooking,
   onCreateGroupBooking,
 }) => {
-  const { activeRooms: rooms, activeRoomTypes: roomTypes, bookings } = usePms();
+  const { activeRooms: rooms, roomTypes: allRoomTypes, bookings, maintenances, hotelConfig } = usePms();
+  // v2.2.1 #10: Keep active room types plus any inactive room type still referenced by active rooms
+  const roomTypes = useMemo(() => {
+    const usedIds = new Set(rooms.map((r) => r.roomTypeId));
+    return allRoomTypes.filter((rt) => rt.isActive !== false || usedIds.has(rt.id));
+  }, [allRoomTypes, rooms]);
   const [checkIn, setCheckIn] = useState(todayISO());
   const [checkOut, setCheckOut] = useState(addDays(todayISO(), 2));
   const [rows, setRows] = useState<SearchRow[]>(() => [
@@ -53,24 +58,40 @@ export const AvailabilityFinder: React.FC<AvailabilityFinderProps> = ({
     return rows;
   }, [rows, roomTypes]);
 
-  // Determine all available rooms for [checkIn, checkOut) using Zero-Overbooking Check
+  // Determine all available rooms for [checkIn, checkOut) using Zero-Overbooking + Shared Maintenance Check
   const availableRooms = useMemo(() => {
     if (checkOut <= checkIn) return [];
     const blockedRoomIds = new Set<string>();
+    const today = todayISO();
+    const bufferMinutes = hotelConfig.hourlyCleaningBufferMinutes ?? 5;
 
     for (const r of rooms) {
-      if (r.hkStatus === 'maintenance') blockedRoomIds.add(r.id);
+      if (
+        isRoomBlockedByMaintenance(r.id, maintenances, checkIn, checkOut) ||
+        (r.hkStatus === 'maintenance' && checkIn <= today)
+      ) {
+        blockedRoomIds.add(r.id);
+      }
     }
 
+    const candidate = { bookingMode: 'daily' as const, checkIn, checkOut };
     for (const b of bookings) {
       if (!isBookingBlockingCalendar(b.status)) continue;
-      if (isDateRangeOverlap(b.checkIn, b.checkOut, checkIn, checkOut)) {
+      if (
+        doBookingIntervalsOverlap(
+          b,
+          candidate,
+          hotelConfig.checkInTime || '14:00',
+          hotelConfig.checkOutTime || '12:00',
+          bufferMinutes
+        )
+      ) {
         blockedRoomIds.add(b.roomId);
       }
     }
 
     return rooms.filter((r) => !blockedRoomIds.has(r.id));
-  }, [rooms, bookings, checkIn, checkOut]);
+  }, [rooms, bookings, maintenances, hotelConfig, checkIn, checkOut]);
 
   const availableByType = useMemo(() => {
     const map = new Map<string, Room[]>();
@@ -212,7 +233,7 @@ export const AvailabilityFinder: React.FC<AvailabilityFinderProps> = ({
               >
                 {roomTypes.map((rt) => (
                   <option key={rt.id} value={rt.id}>
-                    {rt.name} ({formatCurrency(getDefaultPrice(rt.id))}/đêm)
+                    {rt.isActive === false ? `${rt.name} (Ngừng SD)` : rt.name} ({formatCurrency(getDefaultPrice(rt.id))}/đêm)
                   </option>
                 ))}
               </select>

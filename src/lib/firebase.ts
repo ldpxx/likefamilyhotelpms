@@ -1,5 +1,5 @@
-import { initializeApp, getApps } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
+import { getAuth, type Auth } from 'firebase/auth';
 import {
   initializeFirestore,
   persistentLocalCache,
@@ -8,12 +8,23 @@ import {
   type Firestore,
 } from 'firebase/firestore';
 
-// Note:
-// - Firebase Cloud Storage is intentionally NEVER imported (0 VND cost).
-// - Google Sign-In is intentionally removed (v1.1.0): only 1 root SuperAdmin uses Firebase Auth (Email/Password),
-//   while hotel owners & staff authenticate via username + SHA-256 password in Firestore `staff_users`.
+// Architecture invariants (0 VND cost):
+// - Firebase Cloud Storage is intentionally NEVER imported.
+// - Google Sign-In (GoogleAuthProvider) is intentionally NEVER imported.
+// - All accounts (SuperAdmin + Owner + Staff) authenticate via Firebase Auth Email/Password.
+//   Staff usernames map cleanly to `<username>@likefamilypms.local` (no real inbox needed).
+// - A Secondary Firebase App (`StaffCreator`) lets Owner/SuperAdmin create staff Auth accounts
+//   without signing out their own active session (zero Cloud Functions needed).
 
-const firebaseConfig = {
+export const STAFF_EMAIL_DOMAIN = 'likefamilypms.local';
+
+export function usernameToInternalEmail(usernameOrEmail: string): string {
+  const clean = usernameOrEmail.trim().toLowerCase().replace(/\s+/g, '');
+  if (!clean) return '';
+  return clean.includes('@') ? clean : `${clean}@${STAFF_EMAIL_DOMAIN}`;
+}
+
+export const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
@@ -21,8 +32,19 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-export const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
+export const app =
+  getApps().find((a) => a.name === '[DEFAULT]') || initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+
+let staffCreatorApp: FirebaseApp | null = null;
+export function getStaffCreatorAuth(): Auth {
+  if (!staffCreatorApp) {
+    staffCreatorApp =
+      getApps().find((a) => a.name === 'StaffCreator') ||
+      initializeApp(firebaseConfig, 'StaffCreator');
+  }
+  return getAuth(staffCreatorApp);
+}
 
 let dbInstance: Firestore;
 try {
