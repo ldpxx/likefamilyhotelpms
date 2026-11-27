@@ -108,8 +108,8 @@ service cloud.firestore {
 
     // Bug #8: Staff accounts strictly protected (Firebase Auth required, ZERO passwordHash allowed!)
     match /staff_users/{staffId} {
-      allow get: if isSuperAdmin() ||
-        (isSignedIn() && request.auth.uid == staffId) ||
+      allow get: if (isSignedIn() && request.auth.uid == staffId) ||
+        isSuperAdmin() ||
         isManagerOrAbove();
       allow list: if isManagerOrAbove();
       allow create: if !('passwordHash' in request.resource.data) && (

@@ -323,7 +323,20 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const internalEmail = usernameToInternalEmail(cleanUser);
     try {
       const cred = await signInWithEmailAndPassword(auth, internalEmail, password);
-      const staffSnap = await getDoc(doc(db, 'staff_users', cred.user.uid));
+      // Ensure Firebase Auth ID token is propagated before Firestore reads on cold/mobile devices
+      await cred.user.getIdToken();
+      let staffSnap;
+      try {
+        staffSnap = await getDoc(doc(db, 'staff_users', cred.user.uid));
+      } catch (firstReadErr: unknown) {
+        if ((firstReadErr as { code?: string })?.code === 'permission-denied') {
+          await new Promise((r) => setTimeout(r, 350));
+          await cred.user.getIdToken(true);
+          staffSnap = await getDoc(doc(db, 'staff_users', cred.user.uid));
+        } else {
+          throw firstReadErr;
+        }
+      }
       if (!staffSnap.exists()) {
         await signOut(auth);
         throw new Error('Tài khoản chưa được phân quyền trong hồ sơ nhân viên.');
