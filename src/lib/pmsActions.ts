@@ -74,6 +74,21 @@ export interface ActorInfo {
   name: string;
 }
 
+/** Recursively removes `undefined` object properties so Firestore `set()`/`tx.set()` never throws `invalid-argument`. */
+function stripUndefined<T>(val: T): T {
+  if (Array.isArray(val)) {
+    return val.map((item) => stripUndefined(item)) as unknown as T;
+  }
+  if (val !== null && typeof val === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+      if (v !== undefined) out[k] = stripUndefined(v);
+    }
+    return out as T;
+  }
+  return val;
+}
+
 export async function writeAuditLog(params: {
   actionType: string;
   targetId: string;
@@ -312,22 +327,29 @@ export async function createBooking(
   actor: ActorInfo
 ): Promise<Booking> {
   const now = new Date().toISOString();
-  const { guestId, isReturning, stayCount } = await upsertGuestProfile(
-    {
-      id: payload.existingGuestId,
-      fullName: payload.guestName,
-      phone: payload.guestPhone,
-      guestCategory: payload.guestCategory,
+  // Resolve guest ID in memory first so failed occupancy transactions NEVER leave orphan guest profiles
+  const normPhone = normalizePhone(payload.guestPhone);
+  let matchedGuest: Guest | undefined = payload.existingGuestId
+    ? existingGuests.find((g) => g.id === payload.existingGuestId)
+    : undefined;
+  if (!matchedGuest && existingGuests.length > 0) {
+    const matches = findMatchingGuests(existingGuests, {
       idNumber: payload.guestIdNumber,
-      nationality: payload.guestNationality,
-      gender: payload.guestGender,
-      address: payload.guestAddress,
-      dob: payload.guestDob,
-      idIssueDate: payload.guestIdIssueDate,
-    },
-    existingGuests,
-    false
-  );
+      phone: payload.guestPhone,
+      fullName: payload.guestName,
+    });
+    if (
+      matches[0] &&
+      ((payload.guestIdNumber &&
+        matches[0].idNumber?.toLowerCase() === payload.guestIdNumber.trim().toLowerCase()) ||
+        (normPhone.length >= 9 && matches[0].normalizedPhone === normPhone))
+    ) {
+      matchedGuest = matches[0];
+    }
+  }
+  const guestId = matchedGuest?.id || payload.existingGuestId || generateId('guest');
+  const isReturning = Boolean(matchedGuest);
+  const stayCount = matchedGuest ? (matchedGuest.totalStays || 0) + 1 : 1;
 
   const isHourly = payload.bookingMode === 'hourly';
   const nights = isHourly ? 0 : Math.max(1, diffDays(payload.checkIn, payload.checkOut));
@@ -441,7 +463,7 @@ export async function createBooking(
     });
 
     applyOccupancyPlanInTransaction(tx, db, occPlan);
-    tx.set(doc(db, 'bookings', bookingId), booking);
+    tx.set(doc(db, 'bookings', bookingId), stripUndefined(booking));
 
     if (payload.checkInImmediately) {
       tx.update(doc(db, 'rooms', payload.room.id), { currentBookingId: bookingId });
@@ -471,6 +493,25 @@ export async function createBooking(
       tx.set(doc(db, 'transactions', txId), depTx);
     }
   });
+
+  // Persist guest CRM profile only AFTER atomic occupancy transaction succeeds (zero orphan guests!)
+  await upsertGuestProfile(
+    {
+      id: guestId,
+      fullName: payload.guestName,
+      phone: payload.guestPhone,
+      guestCategory: payload.guestCategory,
+      idNumber: payload.guestIdNumber,
+      nationality: payload.guestNationality,
+      gender: payload.guestGender,
+      address: payload.guestAddress,
+      dob: payload.guestDob,
+      idIssueDate: payload.guestIdIssueDate,
+    },
+    existingGuests,
+    false
+  );
+
   await writeAuditLog({
     actionType: payload.checkInImmediately ? 'create_and_check_in' : 'create_booking',
     targetId: bookingId,
@@ -642,9 +683,9 @@ export async function createGroupBooking(
   await runTransaction(db, async (tx) => {
     const occPlan = await prepareOccupancyPlanInTransaction(tx, db, { reserve: reserveReqs });
     applyOccupancyPlanInTransaction(tx, db, occPlan);
-    tx.set(doc(db, 'booking_groups', groupId), group);
+    tx.set(doc(db, 'booking_groups', groupId), stripUndefined(group));
     for (const b of createdBookings) {
-      tx.set(doc(db, 'bookings', b.id), b);
+      tx.set(doc(db, 'bookings', b.id), stripUndefined(b));
       if (b.depositPaid > 0 && payload.depositMethod !== 'ota_debt') {
         const txId = generateId('tx');
         const depTx: Transaction = {
@@ -926,12 +967,16 @@ export async function updateBookingPricing(
     checkOut: booking.checkOut,
   };
 
-  const scheduleChanged = nextCheckIn !== booking.checkIn || nextCheckOut !== booking.checkOut;
+  const nextHourlyHours = isHourly ? params.hourlyHours ?? booking.hourlyHours ?? 1 : undefined;
+  const scheduleChanged =
+    nextCheckIn !== booking.checkIn ||
+    nextCheckOut !== booking.checkOut ||
+    (isHourly && nextHourlyHours !== (booking.hourlyHours ?? 1));
   if (scheduleChanged && (booking.status === 'reserved' || booking.status === 'in_house')) {
     const oldIv = buildBookingOccupancyInterval(booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
     const oldDates = getAffectedOccupancyDates(oldIv.startAt, oldIv.endAt, oldIv.bufferMinutes);
     const newIv = buildBookingOccupancyInterval(
-      { ...booking, checkIn: nextCheckIn, checkOut: nextCheckOut, hourlyHours: isHourly ? params.hourlyHours ?? booking.hourlyHours ?? 1 : undefined },
+      { ...booking, checkIn: nextCheckIn, checkOut: nextCheckOut, hourlyHours: nextHourlyHours },
       '14:00',
       '12:00',
       DEFAULT_CLEANING_BUFFER_MINUTES,
@@ -984,12 +1029,20 @@ export async function updateBookingPricing(
 
 export async function addBookingService(
   booking: Booking,
-  item: { name: string; quantity: number; unitPrice: number; businessDate?: string; category?: string },
+  item: {
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    businessDate?: string;
+    category?: string;
+    accountingLockDate?: string | null;
+  },
   actor: ActorInfo
 ): Promise<void> {
   const now = new Date().toISOString();
   // v2.2.2 BUG-01: Persist immutable businessDate (YYYY-MM-DD, Asia/Ho_Chi_Minh) on every new service line
   const businessDate = toVietnamISODate(item.businessDate) || toVietnamISODate(now) || todayISO();
+  assertPeriodOpen(businessDate, item.accountingLockDate);
   const newItem: BookingServiceItem = {
     id: generateId('srv'),
     name: item.name.trim(),
@@ -1004,7 +1057,9 @@ export async function addBookingService(
     addedBy: actor.name,
   };
   const nextServices = [...(booking.services || []), newItem];
-  const serviceTotal = nextServices.reduce((s, i) => s + i.total, 0);
+  const serviceTotal = nextServices
+    .filter((i) => i.status !== 'voided')
+    .reduce((s, i) => s + i.total, 0);
   await updateDoc(doc(db, 'bookings', booking.id), {
     services: nextServices,
     serviceTotal,
@@ -1012,14 +1067,107 @@ export async function addBookingService(
   });
 }
 
-export async function removeBookingService(booking: Booking, serviceId: string): Promise<void> {
+export async function removeBookingService(
+  booking: Booking,
+  serviceId: string,
+  accountingLockDate?: string | null
+): Promise<void> {
+  const target = (booking.services || []).find((s) => s.id === serviceId);
+  if (target) {
+    const itemDate = toVietnamISODate(target.businessDate || target.occurredAt || target.addedAt) || booking.checkIn;
+    assertPeriodOpen(itemDate, accountingLockDate);
+  }
   const nextServices = (booking.services || []).filter((s) => s.id !== serviceId);
-  const serviceTotal = nextServices.reduce((s, i) => s + i.total, 0);
+  const serviceTotal = nextServices
+    .filter((i) => i.status !== 'voided')
+    .reduce((s, i) => s + i.total, 0);
   await updateDoc(doc(db, 'bookings', booking.id), {
     services: nextServices,
     serviceTotal,
     updatedAt: new Date().toISOString(),
   });
+}
+
+/**
+ * v2.2.2 Accounting-safe service voiding across periods & accountingLockDate:
+ * - If target item's businessDate is in an OPEN period (`> accountingLockDate`): marks `status: 'voided'`.
+ * - If target item's businessDate is in a LOCKED period (`<= accountingLockDate`):
+ *   - Rejects any retroactive void dated `<= accountingLockDate` via `assertPeriodOpen()`.
+ *   - When `voidDate > accountingLockDate`, keeps the locked-period line frozen and posts an immutable
+ *     contra-reversal line (`total: -item.total`, `businessDate: voidDate`) in the open period so
+ *     historical P&L remains intact and multi-period totals balance to 0đ variance.
+ */
+export async function voidBookingService(params: {
+  booking: Booking;
+  serviceId: string;
+  voidDate?: string;
+  reason: string;
+  accountingLockDate?: string | null;
+  actor: ActorInfo;
+}): Promise<{ mode: 'marked_voided' | 'contra_open_period'; effectiveDate: string; delta: number }> {
+  const { booking, serviceId, reason, accountingLockDate, actor } = params;
+  if (!reason.trim()) throw new Error('Bắt buộc nhập lý do hủy dịch vụ.');
+  const target = (booking.services || []).find((s) => s.id === serviceId);
+  if (!target) throw new Error('Không tìm thấy dòng dịch vụ cần hủy.');
+  if (target.status === 'voided') throw new Error('Dòng dịch vụ này đã được hủy trước đó.');
+
+  const now = new Date().toISOString();
+  const itemDate = toVietnamISODate(target.businessDate || target.occurredAt || target.addedAt) || booking.checkIn;
+  const effectiveVoidDate = toVietnamISODate(params.voidDate) || toVietnamISODate(now) || todayISO();
+
+  // Always enforce period lock on the effective void date
+  assertPeriodOpen(effectiveVoidDate, accountingLockDate);
+
+  const isOriginalLocked = Boolean(accountingLockDate && itemDate <= accountingLockDate);
+  let nextServices: BookingServiceItem[];
+  let mode: 'marked_voided' | 'contra_open_period';
+
+  if (isOriginalLocked) {
+    // Locked original period -> preserve historical line and post negative contra line in open period
+    mode = 'contra_open_period';
+    const contraLine: BookingServiceItem = {
+      id: generateId('srvvoid'),
+      name: `[Hủy dịch vụ kỳ trước ${formatDateVN(itemDate)}] ${target.name}`,
+      quantity: target.quantity,
+      unitPrice: -Math.abs(target.unitPrice),
+      total: -Math.abs(target.total),
+      businessDate: effectiveVoidDate,
+      category: 'Hủy dịch vụ kỳ trước',
+      occurredAt: now,
+      status: 'active',
+      addedAt: now,
+      addedBy: actor.name,
+    };
+    nextServices = [...(booking.services || []), contraLine];
+  } else {
+    // Open period -> mark voided directly
+    mode = 'marked_voided';
+    nextServices = (booking.services || []).map((s) =>
+      s.id === serviceId ? { ...s, status: 'voided' as const } : s
+    );
+  }
+
+  const serviceTotal = nextServices
+    .filter((i) => i.status !== 'voided')
+    .reduce((s, i) => s + i.total, 0);
+
+  await updateDoc(doc(db, 'bookings', booking.id), {
+    services: nextServices,
+    serviceTotal,
+    updatedAt: now,
+  });
+
+  await writeAuditLog({
+    actionType: 'void_booking_service',
+    targetId: booking.id,
+    targetLabel: `Hủy dịch vụ ${target.name} (${booking.bookingCode})`,
+    previousState: { serviceId, itemDate, amount: target.total },
+    newState: { mode, effectiveVoidDate, serviceTotal },
+    reason: reason.trim(),
+    actor,
+  });
+
+  return { mode, effectiveDate: effectiveVoidDate, delta: -Math.abs(target.total) };
 }
 
 export async function updateHourlySurcharge(
@@ -1260,7 +1408,7 @@ export async function transferBookingRoom(params: {
       actualCheckOutAt: now,
       updatedAt: now,
     });
-    tx.set(doc(db, 'bookings', newBookingId), newBooking);
+    tx.set(doc(db, 'bookings', newBookingId), stripUndefined(newBooking));
     tx.update(doc(db, 'rooms', booking.roomId), { currentBookingId: null, hkStatus: 'dirty' });
     tx.update(doc(db, 'rooms', targetRoom.id), { currentBookingId: newBookingId });
   });
@@ -1575,8 +1723,6 @@ export async function undoBookingAction(params: {
       'Thao tác Đảo Check-in hoặc Mở lại đơn Đã trả phòng bắt buộc thực hiện qua quy trình kiểm soát kế toán.'
     );
   }
-  const batch = writeBatch(db);
-
   const updatePayload: Record<string, unknown> = {
     updatedAt: now,
     lastActionSnapshot: null,
@@ -1594,23 +1740,55 @@ export async function undoBookingAction(params: {
     updatePayload.roomNumber = snapshot.oldRoomNumber;
   }
 
-  batch.update(
-    doc(db, 'bookings', params.booking.id),
-    updatePayload as UpdateData<DocumentData>
+  // v2.2.2 BUG-02: Seal undoBookingAction through atomic runTransaction() + room_occupancy
+  const targetRoomId = String(updatePayload.roomId || params.booking.roomId);
+  const targetRoomNumber = String(updatePayload.roomNumber || params.booking.roomNumber);
+  const nextStatus = (prevStatus || params.booking.status) as Booking['status'];
+  const nextCheckOut = String(updatePayload.checkOut || params.booking.checkOut);
+  const curBlocking = params.booking.status === 'reserved' || params.booking.status === 'in_house';
+  const nextBlocking = nextStatus === 'reserved' || nextStatus === 'in_house';
+
+  const curIv = buildBookingOccupancyInterval(params.booking, '14:00', '12:00', DEFAULT_CLEANING_BUFFER_MINUTES, now);
+  const curDates = getAffectedOccupancyDates(curIv.startAt, curIv.endAt, curIv.bufferMinutes);
+  const nextIv = buildBookingOccupancyInterval(
+    {
+      id: params.booking.id,
+      bookingMode: params.booking.bookingMode,
+      checkIn: params.booking.checkIn,
+      checkOut: nextCheckOut,
+      checkInTime: params.booking.checkInTime,
+      checkOutTime: params.booking.checkOutTime,
+      hourlyHours: params.booking.hourlyHours,
+    },
+    '14:00',
+    '12:00',
+    DEFAULT_CLEANING_BUFFER_MINUTES,
+    now
   );
 
-  if (prevStatus === 'in_house') {
-    batch.update(doc(db, 'rooms', params.booking.roomId), {
-      currentBookingId: params.booking.id,
-      hkStatus: 'clean',
+  await runTransaction(db, async (tx) => {
+    const occPlan = await prepareOccupancyPlanInTransaction(tx, db, {
+      release: curBlocking ? [{ roomId: params.booking.roomId, id: params.booking.id, dates: curDates }] : [],
+      reserve: nextBlocking ? [{ roomId: targetRoomId, roomNumber: targetRoomNumber, interval: nextIv }] : [],
     });
-  } else if (prevStatus === 'reserved') {
-    batch.update(doc(db, 'rooms', params.booking.roomId), {
-      currentBookingId: null,
-    });
-  }
+    applyOccupancyPlanInTransaction(tx, db, occPlan);
 
-  await batch.commit();
+    tx.update(
+      doc(db, 'bookings', params.booking.id),
+      updatePayload as UpdateData<DocumentData>
+    );
+
+    if (prevStatus === 'in_house') {
+      tx.update(doc(db, 'rooms', targetRoomId), {
+        currentBookingId: params.booking.id,
+        hkStatus: 'clean',
+      });
+    } else if (prevStatus === 'reserved') {
+      tx.update(doc(db, 'rooms', targetRoomId), {
+        currentBookingId: null,
+      });
+    }
+  });
 
   await writeAuditLog({
     actionType: 'undo_action',
@@ -1886,7 +2064,7 @@ export async function createRoomMaintenance(params: {
       tx.set(doc(db, 'transactions', txId), expTx);
     }
 
-    tx.set(doc(db, 'room_maintenances', id), maint);
+    tx.set(doc(db, 'room_maintenances', id), stripUndefined(maint));
 
     if (params.markRoomAsMaintenance && !params.isCompletedNow) {
       tx.update(doc(db, 'rooms', params.room.id), { hkStatus: 'maintenance' });

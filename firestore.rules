@@ -171,13 +171,20 @@ service cloud.firestore {
     }
 
     // Atomic room occupancy index (`room_occupancy/{roomId}_{YYYY-MM-DD}`) — v2.2.2 BUG-02
-    match /room_occupancy/{occId} {
-      allow read: if isActiveStaff();
-      allow create, update: if isActiveStaff() &&
+    function validOccupancyDoc() {
+      return request.resource.data.keys().hasOnly(['roomId', 'date', 'intervals', 'updatedAt']) &&
         request.resource.data.keys().hasAll(['roomId', 'date', 'intervals', 'updatedAt']) &&
         request.resource.data.roomId is string &&
+        request.resource.data.roomId.size() > 0 &&
         request.resource.data.date is string &&
-        request.resource.data.intervals is list;
+        request.resource.data.date.size() == 10 &&
+        request.resource.data.intervals is list &&
+        request.resource.data.updatedAt is string;
+    }
+
+    match /room_occupancy/{occId} {
+      allow read: if isActiveStaff();
+      allow create, update: if isActiveStaff() && validOccupancyDoc();
       allow delete: if isSuperAdmin();
     }
 

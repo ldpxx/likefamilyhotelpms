@@ -270,8 +270,9 @@ export function getRoomRevenueInRange(
   // businessDate (Asia/Ho_Chi_Minh YYYY-MM-DD), completely independent of `[fromDateISO, toDateISO]`.
   // Guarantees `serviceRev(A, B) + serviceRev(B+1, C) === serviceRev(A, C)` with 0đ variance!
   for (const b of allPnLEligible) {
-    const activeServices = (b.services || []).filter((s) => s.status !== 'voided');
-    if (activeServices.length > 0) {
+    const allServices = b.services || [];
+    if (allServices.length > 0) {
+      const activeServices = allServices.filter((s) => s.status !== 'voided');
       for (const srv of activeServices) {
         const { businessDate } = resolveServiceBusinessDate(srv, b, allTransactions);
         if (businessDate >= fromDateISO && businessDate <= toDateISO) {
