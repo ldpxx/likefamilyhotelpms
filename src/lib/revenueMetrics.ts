@@ -1,10 +1,144 @@
-import type { Booking, RoomMaintenance, Transaction } from '../types/pms';
+import type { AuditLog, Booking, BookingServiceItem, RoomMaintenance, Transaction } from '../types/pms';
 import {
   diffDays,
   getSourceLabel,
   isBookingEligibleForPnLRevenue,
   parseISODate,
 } from './utils';
+
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Converts an ISO date (`YYYY-MM-DD`) or UTC timestamp string into a fixed
+ * `YYYY-MM-DD` business date in `Asia/Ho_Chi_Minh` (UTC+7).
+ */
+export function toVietnamISODate(input?: string | null): string | null {
+  if (!input || typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (ISO_DATE_RE.test(trimmed)) return trimmed;
+  const ms = Date.parse(trimmed);
+  if (Number.isNaN(ms)) return null;
+  const vn = new Date(ms + VN_OFFSET_MS);
+  const y = vn.getUTCFullYear();
+  const m = String(vn.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(vn.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export interface LegacyServiceDateReviewItem {
+  bookingId: string;
+  bookingCode: string;
+  roomNumber: string;
+  serviceId: string | null;
+  serviceName: string;
+  amount: number;
+  flag: 'LEGACY_DATE_REVIEW_REQUIRED';
+  resolvedFallbackDate: string;
+  evidenceNote: string;
+}
+
+/**
+ * Resolves a single immutable accounting `businessDate` (YYYY-MM-DD, Asia/Ho_Chi_Minh)
+ * for a service item — NEVER dependent on the queried P&L range `[fromDateISO, toDateISO]`.
+ */
+export function resolveServiceBusinessDate(
+  service: BookingServiceItem,
+  booking: Pick<Booking, 'id' | 'checkIn' | 'checkOut'>,
+  linkedTransactions?: Transaction[],
+  auditLogs?: AuditLog[]
+): { businessDate: string; source: 'businessDate' | 'occurredAt' | 'addedAt' | 'transaction' | 'audit_log' | 'legacy_fallback' } {
+  const direct = toVietnamISODate(service.businessDate);
+  if (direct) return { businessDate: direct, source: 'businessDate' };
+
+  const occ = toVietnamISODate(service.occurredAt);
+  if (occ) return { businessDate: occ, source: 'occurredAt' };
+
+  const added = toVietnamISODate(service.addedAt);
+  if (added) return { businessDate: added, source: 'addedAt' };
+
+  if (linkedTransactions && linkedTransactions.length > 0) {
+    const matchTx = linkedTransactions.find(
+      (t) => t.bookingId === booking.id && t.status === 'active' && t.amount === service.total && t.date
+    );
+    const txDate = toVietnamISODate(matchTx?.date);
+    if (txDate) return { businessDate: txDate, source: 'transaction' };
+  }
+
+  if (auditLogs && auditLogs.length > 0) {
+    const matchLog = auditLogs.find(
+      (l) => l.targetId === booking.id && (l.actionType.includes('service') || l.actionType.includes('adjustment'))
+    );
+    const logDate = toVietnamISODate(matchLog?.timestamp);
+    if (logDate) return { businessDate: logDate, source: 'audit_log' };
+  }
+
+  // Traceable migration fallback (flagged by auditLegacyServiceDates)
+  return { businessDate: booking.checkIn, source: 'legacy_fallback' };
+}
+
+/**
+ * Resolves a single immutable accounting date for `booking.hourlySurcharge` based purely
+ * on surcharge type (late check-out -> checkOut, early check-in / extra guest -> checkIn),
+ * NEVER shifting dynamically with the queried report range.
+ */
+export function resolveSurchargeBusinessDate(
+  booking: Pick<Booking, 'bookingMode' | 'checkIn' | 'checkOut' | 'hourlySurchargeNote'>
+): string {
+  if (booking.bookingMode === 'hourly') return booking.checkIn;
+  const note = (booking.hourlySurchargeNote || '').toLowerCase();
+  if (note.includes('muộn') || note.includes('late')) {
+    return booking.checkOut;
+  }
+  return booking.checkIn;
+}
+
+/**
+ * Read-only audit queue for legacy bookings whose services lack an explicit
+ * `businessDate` / `occurredAt` / `addedAt` (flags `LEGACY_DATE_REVIEW_REQUIRED`
+ * without mutating original records).
+ */
+export function auditLegacyServiceDates(
+  allBookings: Booking[],
+  allTransactions: Transaction[] = [],
+  auditLogs: AuditLog[] = []
+): LegacyServiceDateReviewItem[] {
+  const queue: LegacyServiceDateReviewItem[] = [];
+  for (const b of allBookings) {
+    const services = (b.services || []).filter((s) => s.status !== 'voided');
+    if (services.length > 0) {
+      for (const srv of services) {
+        const res = resolveServiceBusinessDate(srv, b, allTransactions, auditLogs);
+        if (res.source === 'legacy_fallback') {
+          queue.push({
+            bookingId: b.id,
+            bookingCode: b.bookingCode,
+            roomNumber: b.roomNumber,
+            serviceId: srv.id,
+            serviceName: srv.name,
+            amount: srv.total,
+            flag: 'LEGACY_DATE_REVIEW_REQUIRED',
+            resolvedFallbackDate: res.businessDate,
+            evidenceNote: 'Thiếu businessDate/occurredAt/addedAt, không khớp giao dịch hay audit_logs; tạm đối chiếu theo checkIn.',
+          });
+        }
+      }
+    } else if ((b.serviceTotal || 0) > 0) {
+      queue.push({
+        bookingId: b.id,
+        bookingCode: b.bookingCode,
+        roomNumber: b.roomNumber,
+        serviceId: null,
+        serviceName: 'Tổng dịch vụ legacy (không có dòng services[])',
+        amount: b.serviceTotal,
+        flag: 'LEGACY_DATE_REVIEW_REQUIRED',
+        resolvedFallbackDate: b.checkIn,
+        evidenceNote: 'Booking có serviceTotal > 0 nhưng mảng services[] rỗng; tạm hạch toán cố định theo checkIn.',
+      });
+    }
+  }
+  return queue;
+}
 
 export interface RevenueRangeOptions {
   roomCount?: number;
@@ -65,9 +199,11 @@ export function getRoomRevenueInRange(
     return true;
   };
 
-  const eligibleBookings = allBookings.filter((b) => {
-    if (!isBookingEligibleForPnLRevenue(b, allBookings, allTransactions)) return false;
-    if (!matchesFilters(b)) return false;
+  const allPnLEligible = allBookings.filter(
+    (b) => isBookingEligibleForPnLRevenue(b, allBookings, allTransactions) && matchesFilters(b)
+  );
+
+  const eligibleBookings = allPnLEligible.filter((b) => {
     if (b.bookingMode === 'hourly') {
       return b.checkIn >= fromDateISO && b.checkIn <= toDateISO;
     }
@@ -88,7 +224,6 @@ export function getRoomRevenueInRange(
     if (b.bookingMode === 'hourly') {
       bRoomRevInPeriod = b.grossRoomTotal || 0;
       roomRev += bRoomRevInPeriod;
-      serviceRev += (b.serviceTotal || 0) + (b.hourlySurcharge || 0);
       hourlyBookingsCount += 1;
       hourlyHoursTotal += b.hourlyHours || 1;
     } else {
@@ -116,12 +251,6 @@ export function getRoomRevenueInRange(
 
       roomRev += bRoomRevInPeriod;
       soldNights += bNightsInPeriod;
-
-      // Attribute services & hourly surcharges on checkIn date (or checkOut if checkIn precedes range)
-      const svcDate = b.checkIn >= fromDateISO && b.checkIn <= toDateISO ? b.checkIn : b.checkOut;
-      if (svcDate >= fromDateISO && svcDate <= toDateISO) {
-        serviceRev += (b.serviceTotal || 0) + (b.hourlySurcharge || 0);
-      }
     }
 
     if (bRoomRevInPeriod > 0) {
@@ -134,6 +263,33 @@ export function getRoomRevenueInRange(
       b.otaSettlementStatus !== 'settled'
     ) {
       unsettledOtaDebt += bRoomRevInPeriod;
+    }
+  }
+
+  // v2.2.2 BUG-01 FIX: Attribute every active service item & surcharge to ONE immutable
+  // businessDate (Asia/Ho_Chi_Minh YYYY-MM-DD), completely independent of `[fromDateISO, toDateISO]`.
+  // Guarantees `serviceRev(A, B) + serviceRev(B+1, C) === serviceRev(A, C)` with 0đ variance!
+  for (const b of allPnLEligible) {
+    const activeServices = (b.services || []).filter((s) => s.status !== 'voided');
+    if (activeServices.length > 0) {
+      for (const srv of activeServices) {
+        const { businessDate } = resolveServiceBusinessDate(srv, b, allTransactions);
+        if (businessDate >= fromDateISO && businessDate <= toDateISO) {
+          serviceRev += srv.total || 0;
+        }
+      }
+    } else if ((b.serviceTotal || 0) > 0) {
+      // Legacy booking with aggregate serviceTotal but empty services[]
+      if (b.checkIn >= fromDateISO && b.checkIn <= toDateISO) {
+        serviceRev += b.serviceTotal || 0;
+      }
+    }
+
+    if ((b.hourlySurcharge || 0) > 0) {
+      const surchargeDate = resolveSurchargeBusinessDate(b);
+      if (surchargeDate >= fromDateISO && surchargeDate <= toDateISO) {
+        serviceRev += b.hourlySurcharge || 0;
+      }
     }
   }
 

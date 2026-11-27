@@ -32,6 +32,7 @@ export interface BookingSourceConfig {
   kind: 'direct' | 'ota';
   color?: string;
   isActive: boolean;
+  order?: number;
 }
 
 export interface BankAccountConfig {
@@ -66,6 +67,8 @@ export interface HotelConfig {
   accountingLockDate?: string | null;
   /** Cleaning buffer between consecutive bookings on same room (minutes, default 5) */
   hourlyCleaningBufferMinutes?: number;
+  /** Idempotent config migration version for bookingSources & future defaults (v2.2.2 BUG-03) */
+  configMigrationVersion?: number;
   updatedAt?: string;
 }
 
@@ -220,8 +223,31 @@ export interface BookingServiceItem {
   quantity: number;
   unitPrice: number;
   total: number;
+  /** Fixed accounting business date (YYYY-MM-DD, Asia/Ho_Chi_Minh) — v2.2.2 BUG-01 */
+  businessDate?: string;
+  category?: string;
+  occurredAt?: string;
+  status?: 'active' | 'voided';
   addedAt: string;
   addedBy: string;
+}
+
+export interface OccupancyInterval {
+  id: string; // bookingId or maintenanceId
+  kind: 'booking' | 'maintenance';
+  startAt: number; // Epoch ms (UTC)
+  endAt: number; // Epoch ms (UTC)
+  bufferMinutes: number; // Default 5 for bookings, 0 for maintenance
+  status: 'active';
+  updatedAt: string;
+  testRunId?: string;
+}
+
+export interface OccupancyDayDoc {
+  roomId: string;
+  date: string; // YYYY-MM-DD (Asia/Ho_Chi_Minh)
+  intervals: OccupancyInterval[];
+  updatedAt: string;
 }
 
 export type BookingSource =
