@@ -19,6 +19,12 @@
     --amber-soft: #FFFBEB;
   }
 
+  html,
+  body {
+    max-width: 100vw;
+    overflow-x: clip;
+  }
+
   body {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background-color: var(--bg-canvas);
@@ -42,13 +48,16 @@
   width: 8px;
   height: 8px;
 }
+
 ::-webkit-scrollbar-track {
   background: #F3F0E9;
 }
+
 ::-webkit-scrollbar-thumb {
   background: #D3CDC2;
   border-radius: 4px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: #A9A295;
 }

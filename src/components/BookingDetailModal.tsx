@@ -321,10 +321,10 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
           payMethod === 'ota_debt'
             ? 'Ghi nhận Công nợ OTA'
             : payType === 'deposit'
-            ? 'Thu tiền đặt cọc'
-            : payType === 'refund'
-            ? 'Hoàn tiền cho khách'
-            : 'Thanh toán tiền phòng & dịch vụ',
+              ? 'Thu tiền đặt cọc'
+              : payType === 'refund'
+                ? 'Hoàn tiền cho khách'
+                : 'Thanh toán tiền phòng & dịch vụ',
         amount: payMethod === 'ota_debt' ? booking.grossRoomTotal : amount,
         method: payMethod,
         note: payNote || `Đơn ${booking.bookingCode} - P.${booking.roomNumber}`,
@@ -357,8 +357,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
       transferPricingMode === 'new_room_rate'
         ? targetDefaultRate
         : transferPricingMode === 'keep_old_rate'
-        ? oldRate
-        : transferCustomRate;
+          ? oldRate
+          : transferCustomRate;
 
     setBusy(true);
     try {
@@ -410,12 +410,12 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/40 flex justify-end"
+      className="fixed inset-0 left-0 right-0 top-0 bottom-0 w-screen max-w-[100vw] z-50 bg-black/40 flex justify-end overflow-hidden"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white border-l border-[#E7E3DA] w-full max-w-3xl h-full flex flex-col shadow-2xl overflow-hidden">
+      <div className="bg-white border-l border-[#E7E3DA] w-full max-w-[100vw] sm:max-w-3xl h-full flex flex-col shadow-2xl overflow-hidden">
         {/* Top Drawer Header with Initials Avatar & 1-Click Copy */}
         <div className="px-4 sm:px-6 py-4 border-b border-[#E7E3DA] flex flex-nowrap items-start justify-between gap-3 bg-white shrink-0">
           <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -497,12 +497,10 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                 <span className="font-mono-num text-[12px]">
                   •{' '}
                   {isHourly
-                    ? `${formatDateVN(booking.checkIn)} (${booking.checkInTime || ''} → ${
-                        booking.checkOutTime || ''
-                      } • ${booking.hourlyHours || 1} giờ)`
-                    : `${formatDateVN(booking.checkIn)} → ${formatDateVN(booking.checkOut)} (${
-                        booking.nights
-                      } đêm)`}
+                    ? `${formatDateVN(booking.checkIn)} (${booking.checkInTime || ''} → ${booking.checkOutTime || ''
+                    } • ${booking.hourlyHours || 1} giờ)`
+                    : `${formatDateVN(booking.checkIn)} → ${formatDateVN(booking.checkOut)} (${booking.nights
+                    } đêm)`}
                 </span>
               </p>
             </div>
@@ -576,11 +574,10 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   setEditHourlyTotal(booking.grossRoomTotal);
                 }
               }}
-              className={`shrink-0 px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap border-b-2 transition-colors ${
-                tab === t.id
-                  ? 'border-[#1B5E4B] text-[#1B5E4B]'
-                  : 'border-transparent text-[#57534E] hover:text-[#1C1B18]'
-              }`}
+              className={`shrink-0 px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap border-b-2 transition-colors ${tab === t.id
+                ? 'border-[#1B5E4B] text-[#1B5E4B]'
+                : 'border-transparent text-[#57534E] hover:text-[#1C1B18]'
+                }`}
             >
               {t.label}
             </button>
@@ -600,11 +597,10 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                     {chainBookings.map((leg) => (
                       <div
                         key={leg.id}
-                        className={`px-2.5 py-1 rounded-lg border ${
-                          leg.id === booking.id
-                            ? 'bg-[#1D4ED8] text-white border-[#1D4ED8]'
-                            : 'bg-white text-[#1C1B18] border-[#BFDBFE]'
-                        }`}
+                        className={`px-2.5 py-1 rounded-lg border ${leg.id === booking.id
+                          ? 'bg-[#1D4ED8] text-white border-[#1D4ED8]'
+                          : 'bg-white text-[#1C1B18] border-[#BFDBFE]'
+                          }`}
                       >
                         Chặng {leg.chainSequence || 1}: P.{leg.roomNumber} ({leg.nights}đ) •{' '}
                         {formatCurrency(leg.grossRoomTotal)}
@@ -648,17 +644,15 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   </div>
                 </div>
                 <div
-                  className={`p-3.5 rounded-xl border ${
-                    guestBalance > 0
-                      ? 'border-[#FDE68A] bg-[#FFFBEB]'
-                      : 'border-[#A7F3D0] bg-[#ECFDF5]'
-                  }`}
+                  className={`p-3.5 rounded-xl border ${guestBalance > 0
+                    ? 'border-[#FDE68A] bg-[#FFFBEB]'
+                    : 'border-[#A7F3D0] bg-[#ECFDF5]'
+                    }`}
                 >
                   <div className="text-[11px] text-[#57534E]">Khách cần thanh toán tại quầy</div>
                   <div
-                    className={`mt-1 text-[16px] font-semibold font-mono-num ${
-                      guestBalance > 0 ? 'text-[#B45309]' : 'text-[#15803D]'
-                    }`}
+                    className={`mt-1 text-[16px] font-semibold font-mono-num ${guestBalance > 0 ? 'text-[#B45309]' : 'text-[#15803D]'
+                      }`}
                   >
                     {formatCurrency(Math.max(0, guestBalance))}
                   </div>
@@ -946,9 +940,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                     {bookingTransactions.map((tx) => (
                       <div
                         key={tx.id}
-                        className={`px-3.5 py-2.5 flex items-center justify-between text-[12px] ${
-                          tx.status === 'voided_by_undo' ? 'opacity-50 line-through' : ''
-                        }`}
+                        className={`px-3.5 py-2.5 flex items-center justify-between text-[12px] ${tx.status === 'voided_by_undo' ? 'opacity-50 line-through' : ''
+                          }`}
                       >
                         <div>
                           <div className="font-medium text-[#1C1B18]">{tx.category}</div>
@@ -959,9 +952,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                         </div>
                         <div className="flex items-center gap-2">
                           <div
-                            className={`font-mono-num font-semibold ${
-                              tx.direction === 'in' ? 'text-[#15803D]' : 'text-[#B91C1C]'
-                            }`}
+                            className={`font-mono-num font-semibold ${tx.direction === 'in' ? 'text-[#15803D]' : 'text-[#B91C1C]'
+                              }`}
                           >
                             {tx.direction === 'in' ? '+' : '-'}
                             {formatCurrency(tx.amount)}
@@ -997,9 +989,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                         <div className="flex items-center justify-between">
                           <span className="font-medium text-[#1C1B18]">{adj.addedItemsSummary}</span>
                           <span
-                            className={`font-mono-num font-semibold ${
-                              adj.diffAmount >= 0 ? 'text-[#1B5E4B]' : 'text-[#B91C1C]'
-                            }`}
+                            className={`font-mono-num font-semibold ${adj.diffAmount >= 0 ? 'text-[#1B5E4B]' : 'text-[#B91C1C]'
+                              }`}
                           >
                             {adj.diffAmount > 0 ? '+' : ''}
                             {formatCurrency(adj.diffAmount)}
@@ -1544,23 +1535,23 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
 
                   {(booking.status === 'reserved' ||
                     (booking.status === 'checked_out' && isAdmin)) && (
-                    <>
-                      <div className="my-1 border-t border-[#F1EFEA]" />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMoreMenu(false);
-                          if (booking.status === 'reserved') handleCancel();
-                          else setPostStayMode('void_checked_out');
-                        }}
-                        className="w-full px-3.5 py-2 text-left hover:bg-[#FEF2F2] text-[#B91C1C] font-medium"
-                      >
-                        {booking.status === 'reserved'
-                          ? 'Hủy đặt phòng'
-                          : 'Hủy đơn đã trả phòng (Void)'}
-                      </button>
-                    </>
-                  )}
+                      <>
+                        <div className="my-1 border-t border-[#F1EFEA]" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowMoreMenu(false);
+                            if (booking.status === 'reserved') handleCancel();
+                            else setPostStayMode('void_checked_out');
+                          }}
+                          className="w-full px-3.5 py-2 text-left hover:bg-[#FEF2F2] text-[#B91C1C] font-medium"
+                        >
+                          {booking.status === 'reserved'
+                            ? 'Hủy đặt phòng'
+                            : 'Hủy đơn đã trả phòng (Void)'}
+                        </button>
+                      </>
+                    )}
                 </div>
               )}
             </div>

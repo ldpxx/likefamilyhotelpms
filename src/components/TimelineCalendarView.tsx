@@ -16,7 +16,6 @@ import { usePms } from '../context/PmsContext';
 import type { Booking, Room } from '../types/pms';
 import {
   addDays,
-  buildDailyRates,
   diffDays,
   formatCurrency,
   formatDateVN,
@@ -26,19 +25,17 @@ import {
   getSourceLabel,
   getStatusLabel,
   getWeekdayLabelVN,
-  isBookingBlockingCalendar,
   isWeekendISO,
   normalizeVietnamese,
   todayISO,
 } from '../lib/utils';
-import { doBookingIntervalsOverlap, isRoomBlockedByMaintenance } from '../lib/revenueMetrics';
-import { updateBookingPricing } from '../lib/pmsActions';
+import { isRoomBlockedByMaintenance } from '../lib/revenueMetrics';
 import { DateInputVN } from './DateInputVN';
 
 interface TimelineCalendarViewProps {
   onSelectBooking: (booking: Booking) => void;
-  onCreateFromRange: (params: { room: Room; checkIn: string; checkOut: string }) => void;
-  onRequestTransferRoom: (booking: Booking, targetRoom: Room) => void;
+  onCreateFromRange?: (params: { room: Room; checkIn: string; checkOut: string }) => void;
+  onRequestTransferRoom?: (booking: Booking, targetRoom: Room) => void;
 }
 
 type ZoomLevel = 'day' | 14 | 30 | 60;
@@ -62,12 +59,9 @@ function getBookingStayPermitExpiry(b: Booking): string | null {
 
 export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
   onSelectBooking,
-  onCreateFromRange,
-  onRequestTransferRoom,
 }) => {
-  const { activeRooms: rooms, bookings, maintenances, hotelConfig, roomTypes, actor, notify } = usePms();
+  const { activeRooms: rooms, bookings, maintenances } = usePms();
   const today = todayISO();
-  const bufferMinutes = hotelConfig.hourlyCleaningBufferMinutes ?? 5;
 
   const [zoomDays, setZoomDays] = useState<ZoomLevel>(30);
   const [windowStart, setWindowStart] = useState(() => addDays(today, -14));
@@ -83,32 +77,51 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
   const [colorBy, setColorBy] = useState<TimelineColorBy>('status');
   const [showSummaryRow, setShowSummaryRow] = useState(true);
 
-  // Rich Hover Tooltip (no click required to inspect booking!)
+  // Rich Hover Tooltip (desktop hover only — never stuck on mobile touch)
   const [hoveredInfo, setHoveredInfo] = useState<{
     booking: Booking;
     x: number;
     y: number;
   } | null>(null);
 
-  // Drag-select empty cells to create booking
-  const [dragSelect, setDragSelect] = useState<{
-    roomId: string;
-    startDate: string;
-    endDate: string;
-  } | null>(null);
-
-  // Drag-and-drop booking onto another room row
-  const [draggingBookingId, setDraggingBookingId] = useState<string | null>(null);
-  const [dropTargetRoomId, setDropTargetRoomId] = useState<string | null>(null);
+  // Guard against accidental booking tap when user is swiping/scrolling on touch screens
+  const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const touchMovedRef = useRef(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const initialScrolledRef = useRef(false);
 
   const colWidth = zoomDays === 'day' ? 88 : zoomDays === 14 ? 80 : zoomDays === 30 ? 50 : 32;
-  const stickyWidth = 180;
+  const stickyWidth = 148;
   const rowHeightClass = density === 'compact' ? 'h-9' : 'h-11';
   const barHeightClass = density === 'compact' ? 'top-1 h-7' : 'top-1.5 h-8';
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    if (!t) return;
+    touchStartPosRef.current = { x: t.clientX, y: t.clientY };
+    touchMovedRef.current = false;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    const start = touchStartPosRef.current;
+    if (!t || !start) return;
+    if (Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) {
+      touchMovedRef.current = true;
+    }
+  };
+
+  const handleBookingBarClick = (e: React.MouseEvent, b: Booking) => {
+    e.stopPropagation();
+    if (touchMovedRef.current) {
+      touchMovedRef.current = false;
+      return;
+    }
+    setHoveredInfo(null);
+    onSelectBooking(b);
+  };
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -271,137 +284,6 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
     return map;
   }, [bookings]);
 
-  // Finish drag-select range
-  useEffect(() => {
-    const handleMouseUp = () => {
-      if (!dragSelect) return;
-      const room = rooms.find((r) => r.id === dragSelect.roomId);
-      if (room) {
-        const start =
-          dragSelect.startDate <= dragSelect.endDate ? dragSelect.startDate : dragSelect.endDate;
-        const rawEnd =
-          dragSelect.startDate <= dragSelect.endDate ? dragSelect.endDate : dragSelect.startDate;
-        const checkOut = addDays(rawEnd, 1);
-
-        const maintBlocked =
-          isRoomBlockedByMaintenance(room.id, maintenances, start, checkOut) ||
-          (room.hkStatus === 'maintenance' && start <= today);
-        const conflict = bookings.some(
-          (b) =>
-            b.roomId === room.id &&
-            isBookingBlockingCalendar(b.status) &&
-            doBookingIntervalsOverlap(
-              b,
-              { bookingMode: 'daily', checkIn: start, checkOut },
-              hotelConfig.checkInTime || '14:00',
-              hotelConfig.checkOutTime || '12:00',
-              bufferMinutes
-            )
-        );
-        if (maintBlocked) {
-          notify(`P.${room.roomNumber} đang khóa bảo trì trong khoảng ngày đã chọn`, 'warning');
-        } else if (conflict) {
-          notify(`P.${room.roomNumber} đã có đơn trùng trong khoảng ngày đã chọn`, 'warning');
-        } else {
-          onCreateFromRange({ room, checkIn: start, checkOut });
-        }
-      }
-      setDragSelect(null);
-    };
-
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => window.removeEventListener('mouseup', handleMouseUp);
-  }, [dragSelect, rooms, bookings, maintenances, today, hotelConfig, bufferMinutes, notify, onCreateFromRange]);
-
-  const handleDropOnRoom = (targetRoom: Room) => {
-    setDropTargetRoomId(null);
-    if (!draggingBookingId) return;
-    const booking = bookings.find((b) => b.id === draggingBookingId);
-    setDraggingBookingId(null);
-    if (!booking || booking.roomId === targetRoom.id) return;
-
-    const rangeEnd = booking.bookingMode === 'hourly' ? addDays(booking.checkIn, 1) : booking.checkOut;
-    if (
-      isRoomBlockedByMaintenance(targetRoom.id, maintenances, booking.checkIn, rangeEnd) ||
-      (targetRoom.hkStatus === 'maintenance' && booking.checkIn <= today)
-    ) {
-      notify(`Không thể chuyển sang P.${targetRoom.roomNumber} vì phòng đang bảo trì`, 'error');
-      return;
-    }
-
-    const conflict = bookings.some(
-      (b) =>
-        b.id !== booking.id &&
-        b.roomId === targetRoom.id &&
-        isBookingBlockingCalendar(b.status) &&
-        doBookingIntervalsOverlap(
-          b,
-          booking,
-          hotelConfig.checkInTime || '14:00',
-          hotelConfig.checkOutTime || '12:00',
-          bufferMinutes
-        )
-    );
-    if (conflict) {
-      notify(
-        `Không thể chuyển sang P.${targetRoom.roomNumber} vì đã có đơn trùng ngày (${formatShortDate(
-          booking.checkIn
-        )} - ${formatShortDate(booking.checkOut)})`,
-        'error'
-      );
-      return;
-    }
-    onRequestTransferRoom(booking, targetRoom);
-  };
-
-  const handleExtendOneNight = async (e: React.MouseEvent, booking: Booking) => {
-    e.stopPropagation();
-    const nextCheckOut = addDays(booking.checkOut, 1);
-    if (isRoomBlockedByMaintenance(booking.roomId, maintenances, booking.checkOut, nextCheckOut)) {
-      notify(`P.${booking.roomNumber} có lịch bảo trì vào ngày ${formatShortDate(booking.checkOut)}`, 'warning');
-      return;
-    }
-    const conflict = bookings.some(
-      (b) =>
-        b.id !== booking.id &&
-        b.roomId === booking.roomId &&
-        isBookingBlockingCalendar(b.status) &&
-        doBookingIntervalsOverlap(
-          b,
-          { ...booking, checkOut: nextCheckOut },
-          hotelConfig.checkInTime || '14:00',
-          hotelConfig.checkOutTime || '12:00',
-          bufferMinutes
-        )
-    );
-    if (conflict) {
-      notify(
-        `P.${booking.roomNumber} đã có khách đặt vào ngày ${formatShortDate(booking.checkOut)}`,
-        'warning'
-      );
-      return;
-    }
-    const lastRate =
-      booking.dailyRates[booking.dailyRates.length - 1]?.rate ||
-      roomTypes.find((rt) => rt.id === booking.roomTypeId)?.priceTiers[0]?.price ||
-      350000;
-    const nextRates = buildDailyRates(booking.checkIn, nextCheckOut, lastRate, booking.dailyRates);
-    await updateBookingPricing(
-      booking,
-      {
-        dailyRates: nextRates,
-        checkOut: nextCheckOut,
-        reason: 'Gia hạn thêm 1 đêm trực tiếp trên lịch',
-      },
-      actor
-    );
-    notify(
-      `Đã gia hạn ${booking.bookingCode} (P.${booking.roomNumber}) thêm 1 đêm tới ${formatShortDate(
-        nextCheckOut
-      )}`
-    );
-  };
-
   // Like Family Brand Colors: Forest Emerald (#0F5132), Warm Amber (#D97706), Terracotta OTA (#C2410C), Slate Teal Checked-out (#335C67)
   const getBarClasses = (b: Booking) => {
     if (b.status === 'checked_out' || b.status === 'transferred') {
@@ -444,6 +326,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
   const nowDayLinePx = (nowHours / 24) * (DAY_SLOTS.length * colWidth);
 
   const handleBarHover = (e: React.MouseEvent, b: Booking) => {
+    if (typeof window !== 'undefined' && !window.matchMedia('(hover: hover)').matches) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const x = Math.min(window.innerWidth - 340, Math.max(16, rect.left));
     const y = rect.bottom + 8 + 220 > window.innerHeight ? Math.max(16, rect.top - 220) : rect.bottom + 8;
@@ -451,12 +334,12 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 w-full max-w-full overflow-x-clip">
       {/* Toolbar */}
-      <div className="bg-white border border-[#E7E3DA] rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex flex-wrap items-center gap-1.5">
+      <div className="bg-white border border-[#E7E3DA] rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5 max-w-full">
+        <div className="flex flex-wrap items-center gap-2 max-w-full">
           {/* Segmented Zoom: Ngày (Trục giờ) | 14 ngày | 30 ngày | 60 ngày */}
-          <div className="flex items-center p-0.5 rounded-lg bg-[#F3F0E9] mr-1">
+          <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-[#F3F0E9] max-w-full">
             {(
               [
                 { id: 'day', label: 'Ngày (Giờ)' },
@@ -515,8 +398,8 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative w-56">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <div className="relative flex-1 sm:flex-none sm:w-56 min-w-[160px]">
             <Search
               className="w-3.5 h-3.5 text-[#8A847C] absolute left-2.5 top-1/2 -translate-y-1/2"
               strokeWidth={1.5}
@@ -671,15 +554,19 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
           </span>
         </div>
         <div className="inline-flex items-center gap-1.5 text-[#8A847C]">
-          <MoveHorizontal className="w-3.5 h-3.5" strokeWidth={1.5} />
-          Rê chuột xem nhanh • Kéo ô trống để đặt phòng • Kéo thanh đơn đổi phòng • Bấm +1đ để gia hạn
+          <MoveHorizontal className="w-3.5 h-3.5 shrink-0" strokeWidth={1.5} />
+          Vuốt/cuộn để xem lịch • Chạm vào thanh đơn để xem chi tiết • Tạo đơn mới qua nút + Đặt phòng mới
         </div>
       </div>
 
       {/* HOURLY DAY VIEW (Trục 2 giờ 00:00–22:00 cho Nghỉ giờ & Bàn giao trong ngày) */}
       {zoomDays === 'day' ? (
-        <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-250px)] select-none isolate">
+        <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-hidden max-w-full">
+          <div
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-250px)] select-none isolate"
+          >
             <div style={{ width: stickyWidth + DAY_SLOTS.length * colWidth }}>
               <div className="sticky top-0 z-30 bg-[#FAF9F6] border-b border-[#E7E3DA]">
                 <div className="flex">
@@ -763,14 +650,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                             <div
                               key={h}
                               style={{ width: colWidth }}
-                              onClick={() =>
-                                onCreateFromRange({
-                                  room,
-                                  checkIn: jumpDate,
-                                  checkOut: addDays(jumpDate, 1),
-                                })
-                              }
-                              className="h-full shrink-0 border-r border-[#F3F0E9] hover:bg-[#FAF9F6] cursor-pointer"
+                              className="h-full shrink-0 border-r border-[#F3F0E9]"
                             />
                           ))}
 
@@ -800,7 +680,7 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                             return (
                               <div
                                 key={b.id}
-                                onClick={() => onSelectBooking(b)}
+                                onClick={(e) => handleBookingBarClick(e, b)}
                                 onMouseEnter={(e) => handleBarHover(e, b)}
                                 onMouseLeave={() => setHoveredInfo(null)}
                                 style={{ left: leftPx, width: widthPx }}
@@ -831,10 +711,12 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
         </div>
       ) : (
         /* MULTI-DAY CONTINUOUS TIMELINE MATRIX */
-        <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-hidden">
+        <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-hidden max-w-full">
           <div
             ref={scrollRef}
             onScroll={handleScroll}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
             className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-250px)] select-none isolate"
           >
             <div style={{ width: stickyWidth + dates.length * colWidth }}>
@@ -932,25 +814,11 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                         ? b.checkIn >= windowStart && b.checkIn <= windowEnd
                         : b.checkOut > windowStart && b.checkIn <= windowEnd
                     );
-                    const isDropTarget = dropTargetRoomId === room.id;
 
                     return (
                       <div
                         key={room.id}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          if (dropTargetRoomId !== room.id) setDropTargetRoomId(room.id);
-                        }}
-                        onDragLeave={() => {
-                          if (dropTargetRoomId === room.id) setDropTargetRoomId(null);
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          handleDropOnRoom(room);
-                        }}
-                        className={`flex border-b border-[#E7E3DA] relative ${rowHeightClass} ${
-                          isDropTarget ? 'bg-[#E8F3EC]/70' : 'bg-white'
-                        }`}
+                        className={`flex border-b border-[#E7E3DA] relative ${rowHeightClass} bg-white`}
                       >
                         {/* Sticky Left Room Cell */}
                         <div
@@ -987,21 +855,9 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                           )}
                         </div>
 
-                        {/* Grid Cells + Overlay Bars */}
+                        {/* Grid Cells + Overlay Bars (Pure View/Scroll — NO click/drag-to-create on empty cells) */}
                         <div className="relative flex flex-1 overflow-hidden">
                           {dates.map((d) => {
-                            const isSelected =
-                              dragSelect &&
-                              dragSelect.roomId === room.id &&
-                              d >=
-                                (dragSelect.startDate <= dragSelect.endDate
-                                  ? dragSelect.startDate
-                                  : dragSelect.endDate) &&
-                              d <=
-                                (dragSelect.startDate <= dragSelect.endDate
-                                  ? dragSelect.endDate
-                                  : dragSelect.startDate);
-
                             const isMaintDay =
                               isRoomBlockedByMaintenance(room.id, maintenances, d, addDays(d, 1)) ||
                               (room.hkStatus === 'maintenance' && d === today);
@@ -1011,24 +867,14 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                                 key={d}
                                 style={{ width: colWidth }}
                                 title={isMaintDay ? `P.${room.roomNumber} đang bảo trì` : undefined}
-                                onMouseDown={() =>
-                                  setDragSelect({ roomId: room.id, startDate: d, endDate: d })
-                                }
-                                onMouseEnter={() => {
-                                  if (dragSelect && dragSelect.roomId === room.id) {
-                                    setDragSelect({ ...dragSelect, endDate: d });
-                                  }
-                                }}
-                                className={`h-full shrink-0 border-r border-[#F3F0E9] cursor-crosshair transition-colors ${
+                                className={`h-full shrink-0 border-r border-[#F3F0E9] ${
                                   isMaintDay
                                     ? 'bg-[#FEF2F2] border-r-[#FECACA]'
-                                    : isSelected
-                                    ? 'bg-[#0F5132]/20'
                                     : d === today
                                     ? 'bg-[#0F5132]/[0.06] border-r-[#0F5132]/40'
                                     : isWeekendISO(d)
                                     ? 'bg-[#FAF8F3]'
-                                    : 'hover:bg-[#FAF9F6]'
+                                    : ''
                                 }`}
                               />
                             );
@@ -1063,26 +909,11 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                             return (
                               <div
                                 key={b.id}
-                                draggable={b.status === 'reserved' || b.status === 'in_house'}
-                                onDragStart={(e) => {
-                                  e.stopPropagation();
-                                  setHoveredInfo(null);
-                                  setDraggingBookingId(b.id);
-                                }}
-                                onDragEnd={() => {
-                                  setDraggingBookingId(null);
-                                  setDropTargetRoomId(null);
-                                }}
-                                onMouseDown={(e) => e.stopPropagation()}
                                 onMouseEnter={(e) => handleBarHover(e, b)}
                                 onMouseLeave={() => setHoveredInfo(null)}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setHoveredInfo(null);
-                                  onSelectBooking(b);
-                                }}
+                                onClick={(e) => handleBookingBarClick(e, b)}
                                 style={{ left: leftPx, width: widthPx }}
-                                className={`group absolute ${barHeightClass} rounded-md px-2 flex items-center justify-between gap-1 text-[11px] font-medium cursor-pointer overflow-hidden shadow-xs z-[5] ${getBarClasses(
+                                className={`absolute ${barHeightClass} rounded-md px-2 flex items-center justify-between gap-1 text-[11px] font-medium cursor-pointer overflow-hidden shadow-xs z-[5] ${getBarClasses(
                                   b
                                 )}`}
                               >
@@ -1125,16 +956,6 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                                   )}
                                   {widthPx > 60 && isPartiallyPaid && (
                                     <Check className="w-3 h-3 opacity-90" strokeWidth={2.2} />
-                                  )}
-                                  {(b.status === 'reserved' || b.status === 'in_house') && (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => handleExtendOneNight(e, b)}
-                                      title="Gia hạn thêm 1 đêm"
-                                      className="opacity-0 group-hover:opacity-100 px-1 py-0.5 rounded bg-black/25 hover:bg-black/45 text-[9px] font-mono-num transition-opacity"
-                                    >
-                                      +1đ
-                                    </button>
                                   )}
                                 </div>
                               </div>

@@ -319,16 +319,16 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/40 flex justify-end"
+      className="fixed inset-0 left-0 right-0 top-0 bottom-0 w-screen max-w-[100vw] z-50 bg-black/40 flex justify-end overflow-hidden"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white border-l border-[#E7E3DA] w-full max-w-2xl h-full flex flex-col shadow-2xl overflow-hidden">
-        <div className="shrink-0 bg-white border-b border-[#E7E3DA] px-6 py-4 flex items-center justify-between">
-          <div>
+      <div className="bg-white border-l border-[#E7E3DA] w-full max-w-[100vw] sm:max-w-2xl h-full flex flex-col shadow-2xl overflow-hidden">
+        <div className="shrink-0 bg-white border-b border-[#E7E3DA] px-4 sm:px-6 py-4 flex items-center justify-between gap-2">
+          <div className="min-w-0">
             <h2 className="text-[16px] font-semibold text-[#1C1B18]">Đặt phòng mới</h2>
-            <p className="text-[12px] text-[#57534E] font-mono-num">
+            <p className="text-[12px] text-[#57534E] font-mono-num truncate">
               {selectedRoom ? `P.${selectedRoom.roomNumber}` : 'Chọn phòng'} ·{' '}
               {bookingMode === 'hourly'
                 ? `${formatDateVN(checkIn)} (${hourlyHours} giờ)`
@@ -338,16 +338,16 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-lg hover:bg-[#FAF9F6] flex items-center justify-center text-[#57534E]"
+            className="w-8 h-8 rounded-lg hover:bg-[#FAF9F6] flex items-center justify-center text-[#57534E] shrink-0"
           >
             <X className="w-4 h-4" strokeWidth={1.5} />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
           {/* Booking Mode Toggle: Theo ngày/đêm vs Theo giờ */}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex p-1 rounded-xl bg-[#F3F0E9]">
+            <div className="inline-flex flex-wrap p-1 rounded-xl bg-[#F3F0E9] max-w-full">
               <button
                 type="button"
                 onClick={() => setBookingMode('daily')}
