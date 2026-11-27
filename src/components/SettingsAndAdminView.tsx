@@ -5,6 +5,7 @@ import {
   Clock,
   Database,
   Download,
+  Image as ImageIcon,
   KeyRound,
   Lock,
   Pencil,
@@ -15,6 +16,7 @@ import {
   Star,
   Trash2,
   Unlock,
+  Upload,
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { usePms } from '../context/PmsContext';
@@ -37,7 +39,11 @@ import {
   writeAuditLog,
 } from '../lib/pmsActions';
 import { exportFullBackupExcel, exportFullBackupJson } from '../lib/backupExport';
-import { formatFileSizeKB } from '../lib/imageCompression';
+import {
+  compressLogoImage,
+  estimateBase64Bytes,
+  formatFileSizeKB,
+} from '../lib/imageCompression';
 import { addDays, formatCurrency, formatDateVN, generateId, todayISO } from '../lib/utils';
 import { DateInputVN } from './DateInputVN';
 
@@ -67,12 +73,14 @@ export const SettingsAndAdminView: React.FC = () => {
     staffProfile?.role === 'owner' ||
     Boolean(staffProfile?.permissions?.canManageConfig);
   const canManageAccountingLock = isSuperAdmin || staffProfile?.role === 'owner';
+  const canManageHotelLogo = isSuperAdmin || staffProfile?.role === 'owner';
 
   const [tab, setTab] = useState<'hotel' | 'rooms' | 'sources' | 'gemini' | 'data'>('hotel');
 
-  // Hotel Config state (SuperAdmin only)
+  // Hotel Config state (SuperAdmin for VietQR/info; SuperAdmin & Owner for centralized hotel logo)
   const [cfg, setCfg] = useState<HotelConfig>(hotelConfig);
   const [savingCfg, setSavingCfg] = useState(false);
+  const [savingLogo, setSavingLogo] = useState(false);
 
   // Part C Rule 8: Accounting Period Lock state (SuperAdmin & Owner)
   const [lockDateInput, setLockDateInput] = useState<string>(
@@ -175,7 +183,7 @@ export const SettingsAndAdminView: React.FC = () => {
           setPreferredModel(data.preferredModel || '');
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const handleSaveHotelConfig = async (e: React.FormEvent) => {
@@ -191,6 +199,68 @@ export const SettingsAndAdminView: React.FC = () => {
       notify('Đã lưu cấu hình khách sạn & tài khoản VietQR');
     } finally {
       setSavingCfg(false);
+    }
+  };
+
+  const currentHotelLogo = cfg.hotelLogoBase64 || cfg.logoBase64 || '';
+
+  const handleUploadHotelLogo = async (file: File | undefined) => {
+    if (!file || !canManageHotelLogo) return;
+    setSavingLogo(true);
+    try {
+      const b64 = await compressLogoImage(file);
+      const nowIso = new Date().toISOString();
+      await setDoc(
+        doc(db, 'hotel_config', 'main'),
+        { hotelLogoBase64: b64, updatedAt: nowIso },
+        { merge: true }
+      );
+      setCfg((prev) => ({ ...prev, hotelLogoBase64: b64, updatedAt: nowIso }));
+      await writeAuditLog({
+        actionType: 'update_hotel_logo',
+        targetId: 'hotel_config_main',
+        targetLabel: 'Cập nhật Logo khách sạn tập trung',
+        newState: { sizeChars: b64.length },
+        reason: 'Tải lên logo khách sạn tại Cài đặt & Sao lưu',
+        actor,
+      }).catch(() => {});
+      notify(
+        `Đã lưu logo khách sạn thành công (${formatFileSizeKB(estimateBase64Bytes(b64))}) — đồng bộ tự động cho tất cả biểu mẫu`
+      );
+    } catch (err) {
+      notify(
+        err instanceof Error ? err.message : 'Không thể nén hoặc lưu ảnh logo khách sạn',
+        'error'
+      );
+    } finally {
+      setSavingLogo(false);
+    }
+  };
+
+  const handleRemoveHotelLogo = async () => {
+    if (!canManageHotelLogo) return;
+    setSavingLogo(true);
+    try {
+      const nowIso = new Date().toISOString();
+      await setDoc(
+        doc(db, 'hotel_config', 'main'),
+        { hotelLogoBase64: '', updatedAt: nowIso },
+        { merge: true }
+      );
+      setCfg((prev) => ({ ...prev, hotelLogoBase64: '', updatedAt: nowIso }));
+      await writeAuditLog({
+        actionType: 'update_hotel_logo',
+        targetId: 'hotel_config_main',
+        targetLabel: 'Gỡ Logo khách sạn tập trung',
+        newState: { sizeChars: 0 },
+        reason: 'Gỡ logo khách sạn tại Cài đặt & Sao lưu',
+        actor,
+      }).catch(() => {});
+      notify('Đã gỡ logo khách sạn khỏi hệ thống', 'info');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Không thể gỡ logo khách sạn', 'error');
+    } finally {
+      setSavingLogo(false);
     }
   };
 
@@ -240,8 +310,8 @@ export const SettingsAndAdminView: React.FC = () => {
         const listStr = activeChildren.map((r) => `P.${r.roomNumber}`).join(', ');
         const proceedDisableChildren = window.confirm(
           `Loại phòng "${rt.name}" hiện còn ${activeChildren.length} phòng con đang hoạt động (${listStr}).\n\n` +
-            `• Bấm OK để chuyển loại phòng "${rt.name}" VÀ toàn bộ ${activeChildren.length} phòng con sang "Ngừng sử dụng".\n` +
-            `• Bấm Hủy để giữ nguyên (bạn có thể đổi loại phòng cho các phòng trên trước).`
+          `• Bấm OK để chuyển loại phòng "${rt.name}" VÀ toàn bộ ${activeChildren.length} phòng con sang "Ngừng sử dụng".\n` +
+          `• Bấm Hủy để giữ nguyên (bạn có thể đổi loại phòng cho các phòng trên trước).`
         );
         if (!proceedDisableChildren) return;
         await Promise.all(
@@ -454,7 +524,7 @@ export const SettingsAndAdminView: React.FC = () => {
     if (res.ok && res.recommendedModel) {
       setPreferredModel(res.recommendedModel);
       if (isSuperAdmin) {
-        await saveSystemAiConfig(apiKeys, res.recommendedModel, actor.name).catch(() => {});
+        await saveSystemAiConfig(apiKeys, res.recommendedModel, actor.name).catch(() => { });
       }
     }
     setTestingKey(false);
@@ -524,9 +594,8 @@ export const SettingsAndAdminView: React.FC = () => {
             key={t.id}
             type="button"
             onClick={() => setTab(t.id as typeof tab)}
-            className={`h-8 px-3.5 rounded-lg text-[13px] font-medium ${
-              tab === t.id ? 'bg-white text-[#1C1B18] shadow-xs' : 'text-[#57534E]'
-            }`}
+            className={`h-8 px-3.5 rounded-lg text-[13px] font-medium ${tab === t.id ? 'bg-white text-[#1C1B18] shadow-xs' : 'text-[#57534E]'
+              }`}
           >
             {t.label}
           </button>
@@ -540,14 +609,14 @@ export const SettingsAndAdminView: React.FC = () => {
             onSubmit={handleSaveHotelConfig}
             className="bg-white border border-[#E5E2DC] rounded-2xl p-6 space-y-5"
           >
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-[15px] font-semibold text-[#1C1B18]">
                 Thông tin khách sạn & Tài khoản nhận VietQR
               </h3>
               {!isSuperAdmin && (
                 <p className="text-[12px] text-[#B45309] mt-0.5">
-                  Chỉ tài khoản SuperAdmin gốc (Firebase Auth) mới được phép chỉnh sửa thông số này.
+                  Thông tin cơ bản & tài khoản VietQR chỉ SuperAdmin gốc được sửa. Chủ khách sạn có thể tải lên hoặc gỡ Logo khách sạn bên dưới.
                 </p>
               )}
             </div>
@@ -563,98 +632,173 @@ export const SettingsAndAdminView: React.FC = () => {
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[12px] text-[#57534E] mb-1">Tên khách sạn</label>
-              <input
-                type="text"
-                disabled={!isSuperAdmin}
-                value={cfg.hotelName}
-                onChange={(e) => setCfg({ ...cfg, hotelName: e.target.value })}
-                className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
-              />
+          {/* Centralized Hotel Logo Management */}
+          <div className="p-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] flex flex-col sm:flex-row sm:items-center gap-4">
+            <div className="shrink-0">
+              {currentHotelLogo ? (
+                <img
+                  src={currentHotelLogo}
+                  alt="Logo khách sạn"
+                  data-testid="settings-hotel-logo-preview"
+                  className="w-20 h-20 object-contain rounded-xl border border-[#E5E2DC] bg-white p-1.5 shadow-2xs"
+                />
+              ) : (
+                <div
+                  data-testid="settings-hotel-logo-placeholder"
+                  className="w-20 h-20 rounded-xl border border-dashed border-[#D6D1C7] bg-white flex flex-col items-center justify-center gap-1 text-[#8A847C]"
+                >
+                  <ImageIcon className="w-5 h-5" strokeWidth={1.5} />
+                  <span className="text-[10px]">Chưa có logo</span>
+                </div>
+              )}
             </div>
-            <div>
-              <label className="block text-[12px] text-[#57534E] mb-1">Hotline lễ tân</label>
-              <input
-                type="text"
-                disabled={!isSuperAdmin}
-                value={cfg.phone}
-                onChange={(e) => setCfg({ ...cfg, phone: e.target.value })}
-                className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-[12px] text-[#57534E] mb-1">Địa chỉ</label>
-              <input
-                type="text"
-                disabled={!isSuperAdmin}
-                value={cfg.address}
-                onChange={(e) => setCfg({ ...cfg, address: e.target.value })}
-                className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
-              />
+            <div className="flex-1 min-w-0 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[13px] font-semibold text-[#1C1B18]">Logo khách sạn</span>
+                {currentHotelLogo && (
+                  <span className="px-2 py-0.5 rounded-full bg-[#E8F3EC] text-[#0F5132] text-[11px] font-mono-num font-medium">
+                    Đã lưu · {formatFileSizeKB(estimateBase64Bytes(currentHotelLogo))}
+                  </span>
+                )}
+              </div>
+              <p className="text-[12px] text-[#57534E] leading-relaxed">
+                Quản lý tập trung cho cả 3 mẫu biểu mẫu in. Ảnh tự động nén tối đa 320px (giữ nền trong suốt PNG/WebP, dưới 60 KB Base64).
+              </p>
+              {canManageHotelLogo ? (
+                <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                  <label
+                    className={`min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                      savingLogo ? 'opacity-60 pointer-events-none' : ''
+                    }`}
+                  >
+                    <Upload className="w-4 h-4 shrink-0" strokeWidth={1.75} />
+                    <span>{savingLogo ? 'Đang lưu logo...' : 'Tải logo lên'}</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/webp,image/jpeg,image/svg+xml"
+                      data-testid="hotel-logo-upload-input"
+                      disabled={savingLogo}
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        void handleUploadHotelLogo(file);
+                      }}
+                    />
+                  </label>
+                  {currentHotelLogo && (
+                    <button
+                      type="button"
+                      disabled={savingLogo}
+                      onClick={() => void handleRemoveHotelLogo()}
+                      data-testid="hotel-logo-remove-btn"
+                      className="min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg border border-[#FECACA] bg-white hover:bg-[#FEF2F2] text-[#B91C1C] text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 className="w-4 h-4 shrink-0" strokeWidth={1.5} />
+                      <span>Gỡ logo</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <p className="text-[11px] text-[#8A847C]">
+                  Chỉ Chủ khách sạn hoặc SuperAdmin mới có quyền tải lên hoặc gỡ Logo.
+                </p>
+              )}
             </div>
           </div>
 
-          <div className="pt-4 border-t border-[#E5E2DC] space-y-3">
-            <div className="text-[13px] font-semibold text-[#1C1B18]">
-              Cấu hình Ngân hàng VietQR động
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-[12px] text-[#57534E] mb-1">Ngân hàng</label>
-                <select
-                  disabled={!isSuperAdmin}
-                  value={cfg.bankAccount.bankId}
-                  onChange={(e) =>
-                    setCfg({
-                      ...cfg,
-                      bankAccount: { ...cfg.bankAccount, bankId: e.target.value },
-                    })
-                  }
-                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-                >
-                  {VIETNAM_BANKS.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[12px] text-[#57534E] mb-1">Số tài khoản</label>
+                <label className="block text-[12px] text-[#57534E] mb-1">Tên khách sạn</label>
                 <input
                   type="text"
                   disabled={!isSuperAdmin}
-                  value={cfg.bankAccount.accountNo}
-                  onChange={(e) =>
-                    setCfg({
-                      ...cfg,
-                      bankAccount: { ...cfg.bankAccount, accountNo: e.target.value },
-                    })
-                  }
-                  placeholder="Nhập số tài khoản nhận tiền"
-                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
+                  value={cfg.hotelName}
+                  onChange={(e) => setCfg({ ...cfg, hotelName: e.target.value })}
+                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
                 />
               </div>
               <div>
-                <label className="block text-[12px] text-[#57534E] mb-1">Tên chủ tài khoản</label>
+                <label className="block text-[12px] text-[#57534E] mb-1">Hotline lễ tân</label>
                 <input
                   type="text"
                   disabled={!isSuperAdmin}
-                  value={cfg.bankAccount.accountName}
-                  onChange={(e) =>
-                    setCfg({
-                      ...cfg,
-                      bankAccount: { ...cfg.bankAccount, accountName: e.target.value },
-                    })
-                  }
+                  value={cfg.phone}
+                  onChange={(e) => setCfg({ ...cfg, phone: e.target.value })}
+                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-[12px] text-[#57534E] mb-1">Địa chỉ</label>
+                <input
+                  type="text"
+                  disabled={!isSuperAdmin}
+                  value={cfg.address}
+                  onChange={(e) => setCfg({ ...cfg, address: e.target.value })}
                   className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
                 />
               </div>
             </div>
-          </div>
-        </form>
+
+            <div className="pt-4 border-t border-[#E5E2DC] space-y-3">
+              <div className="text-[13px] font-semibold text-[#1C1B18]">
+                Cấu hình Ngân hàng VietQR động
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[12px] text-[#57534E] mb-1">Ngân hàng</label>
+                  <select
+                    disabled={!isSuperAdmin}
+                    value={cfg.bankAccount.bankId}
+                    onChange={(e) =>
+                      setCfg({
+                        ...cfg,
+                        bankAccount: { ...cfg.bankAccount, bankId: e.target.value },
+                      })
+                    }
+                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+                  >
+                    {VIETNAM_BANKS.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[12px] text-[#57534E] mb-1">Số tài khoản</label>
+                  <input
+                    type="text"
+                    disabled={!isSuperAdmin}
+                    value={cfg.bankAccount.accountNo}
+                    onChange={(e) =>
+                      setCfg({
+                        ...cfg,
+                        bankAccount: { ...cfg.bankAccount, accountNo: e.target.value },
+                      })
+                    }
+                    placeholder="Nhập số tài khoản nhận tiền"
+                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[12px] text-[#57534E] mb-1">Tên chủ tài khoản</label>
+                  <input
+                    type="text"
+                    disabled={!isSuperAdmin}
+                    value={cfg.bankAccount.accountName}
+                    onChange={(e) =>
+                      setCfg({
+                        ...cfg,
+                        bankAccount: { ...cfg.bankAccount, accountName: e.target.value },
+                      })
+                    }
+                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                  />
+                </div>
+              </div>
+            </div>
+          </form>
 
           {/* Part C Rule 8: Accounting Period Lock (SuperAdmin & Owner) */}
           <div className="bg-white border border-[#E5E2DC] rounded-2xl p-6 space-y-4">
@@ -666,11 +810,10 @@ export const SettingsAndAdminView: React.FC = () => {
                 </h3>
               </div>
               <span
-                className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium font-mono-num ${
-                  hotelConfig.accountingLockDate
-                    ? 'bg-[#FFFBEB] text-[#92400E] border border-[#FDE68A]'
-                    : 'bg-[#F1EFEA] text-[#57534E]'
-                }`}
+                className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium font-mono-num ${hotelConfig.accountingLockDate
+                  ? 'bg-[#FFFBEB] text-[#92400E] border border-[#FDE68A]'
+                  : 'bg-[#F1EFEA] text-[#57534E]'
+                  }`}
               >
                 {hotelConfig.accountingLockDate
                   ? `Đang khóa đến hết ${formatDateVN(hotelConfig.accountingLockDate)}`
@@ -946,11 +1089,10 @@ export const SettingsAndAdminView: React.FC = () => {
                 return (
                   <div
                     key={rt.id}
-                    className={`p-4 rounded-xl border space-y-3 ${
-                      inactive
-                        ? 'border-[#E5E2DC] bg-[#F1EFEA]/60 opacity-75'
-                        : 'border-[#E5E2DC] bg-[#FAF9F6]'
-                    }`}
+                    className={`p-4 rounded-xl border space-y-3 ${inactive
+                      ? 'border-[#E5E2DC] bg-[#F1EFEA]/60 opacity-75'
+                      : 'border-[#E5E2DC] bg-[#FAF9F6]'
+                      }`}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
@@ -973,11 +1115,10 @@ export const SettingsAndAdminView: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => handleToggleRoomTypeActive(rt)}
-                            className={`h-7 px-2 rounded-md border text-[11px] font-medium inline-flex items-center gap-1 ${
-                              inactive
-                                ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#065F46]'
-                                : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
-                            }`}
+                            className={`h-7 px-2 rounded-md border text-[11px] font-medium inline-flex items-center gap-1 ${inactive
+                              ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#065F46]'
+                              : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
+                              }`}
                           >
                             <Power className="w-3 h-3" strokeWidth={1.5} />
                             {inactive ? 'Kích hoạt lại' : 'Ngừng dùng'}
@@ -1179,11 +1320,10 @@ export const SettingsAndAdminView: React.FC = () => {
                 return (
                   <div
                     key={r.id}
-                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
-                      inactive
-                        ? 'border-[#E5E2DC] bg-[#F1EFEA]/70 opacity-70'
-                        : 'border-[#E5E2DC] bg-[#FAF9F6]'
-                    }`}
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${inactive
+                      ? 'border-[#E5E2DC] bg-[#F1EFEA]/70 opacity-70'
+                      : 'border-[#E5E2DC] bg-[#FAF9F6]'
+                      }`}
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
@@ -1214,9 +1354,8 @@ export const SettingsAndAdminView: React.FC = () => {
                           type="button"
                           onClick={() => handleToggleRoomActive(r)}
                           title={inactive ? 'Mở lại phòng' : 'Ngừng sử dụng phòng'}
-                          className={`p-1.5 rounded-md hover:bg-white ${
-                            inactive ? 'text-[#15803D]' : 'text-[#B45309]'
-                          }`}
+                          className={`p-1.5 rounded-md hover:bg-white ${inactive ? 'text-[#15803D]' : 'text-[#B45309]'
+                            }`}
                         >
                           <Power className="w-3.5 h-3.5" strokeWidth={1.5} />
                         </button>
@@ -1287,18 +1426,16 @@ export const SettingsAndAdminView: React.FC = () => {
               return (
                 <div
                   key={src.id}
-                  className={`px-4 py-3 flex items-center justify-between gap-3 ${
-                    inactive ? 'bg-[#F7F6F3] opacity-70' : 'bg-white'
-                  }`}
+                  className={`px-4 py-3 flex items-center justify-between gap-3 ${inactive ? 'bg-[#F7F6F3] opacity-70' : 'bg-white'
+                    }`}
                 >
                   <div className="flex items-center gap-2.5">
                     <span className="text-[13px] font-medium text-[#1C1B18]">{src.name}</span>
                     <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                        src.kind === 'ota'
-                          ? 'bg-[#FFF7ED] text-[#C2410C]'
-                          : 'bg-[#E8F2EE] text-[#1B5E4B]'
-                      }`}
+                      className={`px-2 py-0.5 rounded text-[10px] font-medium ${src.kind === 'ota'
+                        ? 'bg-[#FFF7ED] text-[#C2410C]'
+                        : 'bg-[#E8F2EE] text-[#1B5E4B]'
+                        }`}
                     >
                       {src.kind === 'ota' ? 'Kênh OTA' : 'Nguồn trực tiếp'}
                     </span>
@@ -1321,11 +1458,10 @@ export const SettingsAndAdminView: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleToggleSourceActive(src)}
-                        className={`h-8 px-2.5 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1 ${
-                          inactive
-                            ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#065F46]'
-                            : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
-                        }`}
+                        className={`h-8 px-2.5 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1 ${inactive
+                          ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#065F46]'
+                          : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
+                          }`}
                       >
                         <Power className="w-3.5 h-3.5" strokeWidth={1.5} />
                         {inactive ? 'Sử dụng lại' : 'Không sử dụng'}

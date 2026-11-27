@@ -23,6 +23,7 @@ export const FormPaperPreview: React.FC<{
   hotelName: string;
   hotelAddress: string;
   hotelPhone: string;
+  hotelLogoBase64?: string | null;
   wifiPassword?: string;
   vietQrUrl: string | null;
   staffName: string;
@@ -32,28 +33,34 @@ export const FormPaperPreview: React.FC<{
   hotelName,
   hotelAddress,
   hotelPhone,
+  hotelLogoBase64,
   wifiPassword,
   vietQrUrl,
   staffName,
 }) => {
-  const vf = template.visibleFields || {};
-  const showVi = template.language === 'vi' || template.language === 'bilingual';
-  const showEn = template.language === 'en' || template.language === 'bilingual';
+    const vf = template.visibleFields || {};
+    const showVi = template.language === 'vi' || template.language === 'bilingual';
+    const showEn = template.language === 'en' || template.language === 'bilingual';
+  const shouldShowLogo = template.showLogo ?? true;
+  const resolvedLogo = shouldShowLogo
+    ? hotelLogoBase64 || template.logoBase64 || null
+    : null;
 
-  const balance = getBookingGuestBalance(booking);
-  const grandTotal =
-    booking.grossRoomTotal + (booking.serviceTotal || 0) + (booking.hourlySurcharge || 0);
+    const balance = getBookingGuestBalance(booking);
+    const grandTotal =
+      booking.grossRoomTotal + (booking.serviceTotal || 0) + (booking.hourlySurcharge || 0);
 
   return (
     <div className="bg-white text-[#1C1B18] p-4 sm:p-8 border border-[#E5E2DC] rounded-xl max-w-[740px] mx-auto space-y-4 sm:space-y-5">
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4 pb-4 border-b border-[#E5E2DC]">
-        <div className="flex items-center gap-3">
-          {template.logoBase64 && (
+        <div className="flex items-center gap-3 min-w-0">
+          {resolvedLogo && (
             <img
-              src={template.logoBase64}
-              alt="Logo"
-              className="w-12 h-12 object-contain rounded-lg border border-[#E5E2DC] p-1"
+              src={resolvedLogo}
+              alt="Logo khách sạn"
+              data-testid="form-paper-logo"
+              className="w-12 h-12 sm:w-14 sm:h-14 object-contain rounded-lg border border-[#E5E2DC] p-1 bg-white shrink-0"
             />
           )}
           <div>
@@ -69,256 +76,256 @@ export const FormPaperPreview: React.FC<{
           </div>
         </div>
         <div className="text-right">
-          {showVi && (
-            <div className="text-[15px] font-semibold text-[#1C1B18]">{template.headerTitleVi}</div>
-          )}
-          {showEn && (
-            <div className="text-[12px] text-[#57534E] font-medium">{template.headerTitleEn}</div>
-          )}
-          {vf.bookingCode !== false && (
-            <div className="mt-1 text-[12px] font-mono-num text-[#1B5E4B] font-semibold">
-              #{booking.bookingCode}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Guest & Stay Summary */}
-      <div className="grid grid-cols-2 gap-4 text-[13px]">
-        <div className="space-y-1">
-          <div>
-            <span className="text-[#57534E]">
-              {showVi ? 'Khách hàng' : ''}
-              {showVi && showEn ? ' / ' : ''}
-              {showEn ? 'Guest' : ''}:
-            </span>{' '}
-            <strong className="font-semibold">{booking.primaryGuestName}</strong>
+            {showVi && (
+              <div className="text-[15px] font-semibold text-[#1C1B18]">{template.headerTitleVi}</div>
+            )}
+            {showEn && (
+              <div className="text-[12px] text-[#57534E] font-medium">{template.headerTitleEn}</div>
+            )}
+            {vf.bookingCode !== false && (
+              <div className="mt-1 text-[12px] font-mono-num text-[#1B5E4B] font-semibold">
+                #{booking.bookingCode}
+              </div>
+            )}
           </div>
-          {vf.guestPhone !== false && (
-            <div>
-              <span className="text-[#57534E]">SĐT / Phone:</span>{' '}
-              <span className="font-mono-num">{booking.primaryGuestPhone || '—'}</span>
-            </div>
-          )}
-          {vf.guestIdNumber && (
-            <div>
-              <span className="text-[#57534E]">CCCD / Passport:</span>{' '}
-              <span className="font-mono-num">{booking.primaryGuestIdNumber || '—'}</span>
-            </div>
-          )}
-          {booking.groupName && (
-            <div>
-              <span className="text-[#57534E]">Đoàn / Group:</span> {booking.groupName}
-            </div>
-          )}
         </div>
 
-        <div className="space-y-1 text-right">
-          {vf.roomNumber !== false && (
+        {/* Guest & Stay Summary */}
+        <div className="grid grid-cols-2 gap-4 text-[13px]">
+          <div className="space-y-1">
             <div>
-              <span className="text-[#57534E]">Phòng / Room:</span>{' '}
-              <strong className="font-mono-num">P.{booking.roomNumber}</strong>
-              {vf.roomType !== false && ` (${booking.roomTypeName})`}
+              <span className="text-[#57534E]">
+                {showVi ? 'Khách hàng' : ''}
+                {showVi && showEn ? ' / ' : ''}
+                {showEn ? 'Guest' : ''}:
+              </span>{' '}
+              <strong className="font-semibold">{booking.primaryGuestName}</strong>
             </div>
-          )}
-          <div>
-            <span className="text-[#57534E]">Check-in:</span>{' '}
-            <span className="font-mono-num font-medium">{formatDateVN(booking.checkIn)}</span>
+            {vf.guestPhone !== false && (
+              <div>
+                <span className="text-[#57534E]">SĐT / Phone:</span>{' '}
+                <span className="font-mono-num">{booking.primaryGuestPhone || '—'}</span>
+              </div>
+            )}
+            {vf.guestIdNumber && (
+              <div>
+                <span className="text-[#57534E]">CCCD / Passport:</span>{' '}
+                <span className="font-mono-num">{booking.primaryGuestIdNumber || '—'}</span>
+              </div>
+            )}
+            {booking.groupName && (
+              <div>
+                <span className="text-[#57534E]">Đoàn / Group:</span> {booking.groupName}
+              </div>
+            )}
           </div>
-          <div>
-            <span className="text-[#57534E]">Check-out:</span>{' '}
-            <span className="font-mono-num font-medium">
-              {formatDateVN(booking.checkOut)} ({booking.nights} đêm)
-            </span>
-          </div>
-          {vf.wifiInfo && wifiPassword && (
+
+          <div className="space-y-1 text-right">
+            {vf.roomNumber !== false && (
+              <div>
+                <span className="text-[#57534E]">Phòng / Room:</span>{' '}
+                <strong className="font-mono-num">P.{booking.roomNumber}</strong>
+                {vf.roomType !== false && ` (${booking.roomTypeName})`}
+              </div>
+            )}
             <div>
-              <span className="text-[#57534E]">Wi-Fi:</span>{' '}
-              <span className="font-mono-num">{wifiPassword}</span>
+              <span className="text-[#57534E]">Check-in:</span>{' '}
+              <span className="font-mono-num font-medium">{formatDateVN(booking.checkIn)}</span>
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* Occupants List */}
-      {vf.occupantList && booking.occupants.length > 0 && (
-        <div className="space-y-1.5">
-          <div className="text-[12px] font-semibold text-[#57534E]">
-            Danh sách khách lưu trú / Registered Guests ({booking.occupants.length})
+            <div>
+              <span className="text-[#57534E]">Check-out:</span>{' '}
+              <span className="font-mono-num font-medium">
+                {formatDateVN(booking.checkOut)} ({booking.nights} đêm)
+              </span>
+            </div>
+            {vf.wifiInfo && wifiPassword && (
+              <div>
+                <span className="text-[#57534E]">Wi-Fi:</span>{' '}
+                <span className="font-mono-num">{wifiPassword}</span>
+              </div>
+            )}
           </div>
-          <table className="w-full text-[12px] border border-[#E5E2DC]">
-            <thead className="bg-[#FAF9F6] text-[#57534E]">
-              <tr>
-                <th className="text-left px-3 py-1.5 font-medium">Họ tên / Name</th>
-                <th className="text-left px-3 py-1.5 font-medium">Giấy tờ / ID</th>
-                <th className="text-left px-3 py-1.5 font-medium">Quốc tịch</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#E5E2DC]">
-              {booking.occupants.map((o) => (
-                <tr key={o.occupantId}>
-                  <td className="px-3 py-1.5 font-medium">{o.fullName}</td>
-                  <td className="px-3 py-1.5 font-mono-num">{o.idNumber || '—'}</td>
-                  <td className="px-3 py-1.5">{o.nationality || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
-      )}
 
-      {/* Daily Rates & Financial Breakdown */}
-      {(vf.dailyRates || vf.serviceBreakdown || vf.balanceDue !== false) && (
-        <div className="border border-[#E5E2DC] rounded-lg overflow-hidden">
-          <table className="w-full text-[12px]">
-            <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
-              <tr>
-                <th className="text-left px-3 py-2 font-medium">Hạng mục / Description</th>
-                <th className="text-right px-3 py-2 font-medium">Thành tiền / Amount</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#F1EFEA]">
-              {booking.bookingMode === 'hourly' ? (
+        {/* Occupants List */}
+        {vf.occupantList && booking.occupants.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="text-[12px] font-semibold text-[#57534E]">
+              Danh sách khách lưu trú / Registered Guests ({booking.occupants.length})
+            </div>
+            <table className="w-full text-[12px] border border-[#E5E2DC]">
+              <thead className="bg-[#FAF9F6] text-[#57534E]">
                 <tr>
-                  <td className="px-3 py-1.5">
-                    Tiền phòng theo giờ P.{booking.roomNumber} ({formatDateVN(booking.checkIn)} •{' '}
-                    {booking.hourlyHours || 1} giờ)
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-mono-num">
-                    {formatCurrency(booking.grossRoomTotal)}
-                  </td>
+                  <th className="text-left px-3 py-1.5 font-medium">Họ tên / Name</th>
+                  <th className="text-left px-3 py-1.5 font-medium">Giấy tờ / ID</th>
+                  <th className="text-left px-3 py-1.5 font-medium">Quốc tịch</th>
                 </tr>
-              ) : vf.dailyRates ? (
-                booking.dailyRates.map((d) => (
-                  <tr key={d.date}>
-                    <td className="px-3 py-1.5">
-                      Tiền phòng P.{booking.roomNumber} — Đêm {formatDateVN(d.date)}
-                    </td>
-                    <td className="px-3 py-1.5 text-right font-mono-num">
-                      {formatCurrency(d.rate)}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td className="px-3 py-1.5">
-                    Tiền phòng P.{booking.roomNumber} ({booking.nights} đêm)
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-mono-num">
-                    {formatCurrency(booking.grossRoomTotal)}
-                  </td>
-                </tr>
-              )}
-
-              {vf.serviceBreakdown &&
-                (booking.services || []).map((s) => (
-                  <tr key={s.id}>
-                    <td className="px-3 py-1.5">
-                      {s.name} (×{s.quantity})
-                    </td>
-                    <td className="px-3 py-1.5 text-right font-mono-num">
-                      {formatCurrency(s.total)}
-                    </td>
+              </thead>
+              <tbody className="divide-y divide-[#E5E2DC]">
+                {booking.occupants.map((o) => (
+                  <tr key={o.occupantId}>
+                    <td className="px-3 py-1.5 font-medium">{o.fullName}</td>
+                    <td className="px-3 py-1.5 font-mono-num">{o.idNumber || '—'}</td>
+                    <td className="px-3 py-1.5">{o.nationality || '—'}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-              {vf.hourlySurcharge && booking.hourlySurcharge > 0 && (
+        {/* Daily Rates & Financial Breakdown */}
+        {(vf.dailyRates || vf.serviceBreakdown || vf.balanceDue !== false) && (
+          <div className="border border-[#E5E2DC] rounded-lg overflow-hidden">
+            <table className="w-full text-[12px]">
+              <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
                 <tr>
-                  <td className="px-3 py-1.5">
-                    Phụ thu giờ ({booking.hourlySurchargeNote || 'Nhận sớm / Trả muộn'})
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-mono-num">
-                    {formatCurrency(booking.hourlySurcharge)}
-                  </td>
+                  <th className="text-left px-3 py-2 font-medium">Hạng mục / Description</th>
+                  <th className="text-right px-3 py-2 font-medium">Thành tiền / Amount</th>
                 </tr>
-              )}
-            </tbody>
-            <tfoot className="bg-[#FAF9F6] border-t border-[#E5E2DC] text-[13px]">
-              <tr>
-                <td className="px-3 py-2 font-semibold">Tổng cộng / Total</td>
-                <td className="px-3 py-2 text-right font-mono-num font-semibold">
-                  {formatCurrency(grandTotal)}
-                </td>
-              </tr>
-              {vf.depositPaid !== false && (booking.depositPaid > 0 || booking.guestPaid > 0) && (
-                <tr>
-                  <td className="px-3 py-1.5 text-[#57534E]">Đã thanh toán / Paid</td>
-                  <td className="px-3 py-1.5 text-right font-mono-num text-[#15803D]">
-                    -{formatCurrency((booking.depositPaid || 0) + (booking.guestPaid || 0))}
-                  </td>
-                </tr>
-              )}
-              {vf.balanceDue !== false && (
-                <tr>
-                  <td className="px-3 py-2 font-semibold text-[#1B5E4B]">
-                    Còn lại phải thanh toán / Balance Due
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono-num font-semibold text-[#1B5E4B]">
-                    {formatCurrency(Math.max(0, balance))}
-                  </td>
-                </tr>
-              )}
-            </tfoot>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody className="divide-y divide-[#F1EFEA]">
+                {booking.bookingMode === 'hourly' ? (
+                  <tr>
+                    <td className="px-3 py-1.5">
+                      Tiền phòng theo giờ P.{booking.roomNumber} ({formatDateVN(booking.checkIn)} •{' '}
+                      {booking.hourlyHours || 1} giờ)
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono-num">
+                      {formatCurrency(booking.grossRoomTotal)}
+                    </td>
+                  </tr>
+                ) : vf.dailyRates ? (
+                  booking.dailyRates.map((d) => (
+                    <tr key={d.date}>
+                      <td className="px-3 py-1.5">
+                        Tiền phòng P.{booking.roomNumber} — Đêm {formatDateVN(d.date)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono-num">
+                        {formatCurrency(d.rate)}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td className="px-3 py-1.5">
+                      Tiền phòng P.{booking.roomNumber} ({booking.nights} đêm)
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono-num">
+                      {formatCurrency(booking.grossRoomTotal)}
+                    </td>
+                  </tr>
+                )}
 
-      {/* Custom Fields */}
-      {(template.customFields || []).filter((c) => c.enabled).length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[12px] bg-[#FAF9F6] p-3 rounded-lg border border-[#E5E2DC]">
-          {template.customFields
-            .filter((c) => c.enabled)
-            .map((cf) => (
-              <div key={cf.id}>
-                <span className="text-[#57534E]">
-                  {showVi ? cf.labelVi : cf.labelEn}:
-                </span>{' '}
-                <span className="font-medium">{cf.value}</span>
+                {vf.serviceBreakdown &&
+                  (booking.services || []).map((s) => (
+                    <tr key={s.id}>
+                      <td className="px-3 py-1.5">
+                        {s.name} (×{s.quantity})
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono-num">
+                        {formatCurrency(s.total)}
+                      </td>
+                    </tr>
+                  ))}
+
+                {vf.hourlySurcharge && booking.hourlySurcharge > 0 && (
+                  <tr>
+                    <td className="px-3 py-1.5">
+                      Phụ thu giờ ({booking.hourlySurchargeNote || 'Nhận sớm / Trả muộn'})
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono-num">
+                      {formatCurrency(booking.hourlySurcharge)}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              <tfoot className="bg-[#FAF9F6] border-t border-[#E5E2DC] text-[13px]">
+                <tr>
+                  <td className="px-3 py-2 font-semibold">Tổng cộng / Total</td>
+                  <td className="px-3 py-2 text-right font-mono-num font-semibold">
+                    {formatCurrency(grandTotal)}
+                  </td>
+                </tr>
+                {vf.depositPaid !== false && (booking.depositPaid > 0 || booking.guestPaid > 0) && (
+                  <tr>
+                    <td className="px-3 py-1.5 text-[#57534E]">Đã thanh toán / Paid</td>
+                    <td className="px-3 py-1.5 text-right font-mono-num text-[#15803D]">
+                      -{formatCurrency((booking.depositPaid || 0) + (booking.guestPaid || 0))}
+                    </td>
+                  </tr>
+                )}
+                {vf.balanceDue !== false && (
+                  <tr>
+                    <td className="px-3 py-2 font-semibold text-[#1B5E4B]">
+                      Còn lại phải thanh toán / Balance Due
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono-num font-semibold text-[#1B5E4B]">
+                      {formatCurrency(Math.max(0, balance))}
+                    </td>
+                  </tr>
+                )}
+              </tfoot>
+            </table>
+          </div>
+        )}
+
+        {/* Custom Fields */}
+        {(template.customFields || []).filter((c) => c.enabled).length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[12px] bg-[#FAF9F6] p-3 rounded-lg border border-[#E5E2DC]">
+            {template.customFields
+              .filter((c) => c.enabled)
+              .map((cf) => (
+                <div key={cf.id}>
+                  <span className="text-[#57534E]">
+                    {showVi ? cf.labelVi : cf.labelEn}:
+                  </span>{' '}
+                  <span className="font-medium">{cf.value}</span>
+                </div>
+              ))}
+          </div>
+        )}
+
+        {/* VietQR & Signature Section */}
+        <div className="flex flex-wrap items-end justify-between gap-4 pt-2">
+          <div className="flex-1 min-w-[240px] space-y-1.5 text-[11px] text-[#57534E]">
+            {showVi && <p>{template.footerPolicyVi}</p>}
+            {showEn && <p className="text-[#8A847C]">{template.footerPolicyEn}</p>}
+            {vf.staffName !== false && (
+              <p className="pt-2 text-[11px] text-[#8A847C]">
+                Nhân viên lập phiếu: {staffName} • {formatDateVN(todayISO())}
+              </p>
+            )}
+          </div>
+
+          {template.showVietQr && balance > 0 && vietQrUrl && (
+            <div className="text-center border border-[#E5E2DC] rounded-xl p-2.5 bg-white">
+              <img src={vietQrUrl} alt="VietQR" className="w-36 h-auto mx-auto" />
+              <div className="text-[12px] font-mono-num text-[#1C1B18] font-semibold mt-1">
+                Quét mã VietQR • {formatCurrency(balance)}
               </div>
-            ))}
-        </div>
-      )}
-
-      {/* VietQR & Signature Section */}
-      <div className="flex flex-wrap items-end justify-between gap-4 pt-2">
-        <div className="flex-1 min-w-[240px] space-y-1.5 text-[11px] text-[#57534E]">
-          {showVi && <p>{template.footerPolicyVi}</p>}
-          {showEn && <p className="text-[#8A847C]">{template.footerPolicyEn}</p>}
-          {vf.staffName !== false && (
-            <p className="pt-2 text-[11px] text-[#8A847C]">
-              Nhân viên lập phiếu: {staffName} • {formatDateVN(todayISO())}
-            </p>
+              <div className="text-[12px] font-mono-num text-[#57534E]">
+                ND: THANH TOAN {booking.bookingCode} P{booking.roomNumber}
+              </div>
+            </div>
           )}
         </div>
 
-        {template.showVietQr && balance > 0 && vietQrUrl && (
-          <div className="text-center border border-[#E5E2DC] rounded-xl p-2.5 bg-white">
-            <img src={vietQrUrl} alt="VietQR" className="w-36 h-auto mx-auto" />
-            <div className="text-[12px] font-mono-num text-[#1C1B18] font-semibold mt-1">
-              Quét mã VietQR • {formatCurrency(balance)}
+        {vf.signatureBox && (
+          <div className="grid grid-cols-2 gap-8 pt-6 text-center text-[12px]">
+            <div>
+              <div className="font-medium">Chữ ký Khách hàng / Guest Signature</div>
+              <div className="h-14 border-b border-dashed border-[#D0CBC2] mt-2" />
             </div>
-            <div className="text-[12px] font-mono-num text-[#57534E]">
-              ND: THANH TOAN {booking.bookingCode} P{booking.roomNumber}
+            <div>
+              <div className="font-medium">Đại diện Lễ tân / Receptionist</div>
+              <div className="h-14 border-b border-dashed border-[#D0CBC2] mt-2" />
             </div>
           </div>
         )}
       </div>
-
-      {vf.signatureBox && (
-        <div className="grid grid-cols-2 gap-8 pt-6 text-center text-[12px]">
-          <div>
-            <div className="font-medium">Chữ ký Khách hàng / Guest Signature</div>
-            <div className="h-14 border-b border-dashed border-[#D0CBC2] mt-2" />
-          </div>
-          <div>
-            <div className="font-medium">Đại diện Lễ tân / Receptionist</div>
-            <div className="h-14 border-b border-dashed border-[#D0CBC2] mt-2" />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
+    );
+  };
 
 export const PrintableFormModal: React.FC<PrintableFormModalProps> = ({
   booking,
@@ -375,11 +382,10 @@ export const PrintableFormModal: React.FC<PrintableFormModalProps> = ({
                 key={id}
                 type="button"
                 onClick={() => setFormType(id)}
-                className={`h-8 px-3 rounded-lg text-[12px] font-medium transition-colors ${
-                  formType === id
-                    ? 'bg-[#1B5E4B] text-white'
-                    : 'bg-[#F1EFEA] text-[#57534E] hover:text-[#1C1B18]'
-                }`}
+                className={`h-8 px-3 rounded-lg text-[12px] font-medium transition-colors ${formType === id
+                  ? 'bg-[#1B5E4B] text-white'
+                  : 'bg-[#F1EFEA] text-[#57534E] hover:text-[#1C1B18]'
+                  }`}
               >
                 {label}
               </button>
@@ -422,6 +428,7 @@ export const PrintableFormModal: React.FC<PrintableFormModalProps> = ({
               hotelName={hotelConfig.hotelName}
               hotelAddress={hotelConfig.address}
               hotelPhone={hotelConfig.phone}
+              hotelLogoBase64={hotelConfig.hotelLogoBase64 || hotelConfig.logoBase64 || null}
               wifiPassword={hotelConfig.wifiByFloor?.[booking.floor]}
               vietQrUrl={vietQrUrl}
               staffName={actor.name}

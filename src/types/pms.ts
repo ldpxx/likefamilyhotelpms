@@ -58,6 +58,8 @@ export interface HotelConfig {
   /** Unified OTA & Direct booking sources (No delete — toggle isActive instead) */
   bookingSources: BookingSourceConfig[];
   expenseCategories: string[];
+  /** Centralized Hotel Logo (compressed PNG/WebP Base64 <= 60KB) stored in hotel_config/main */
+  hotelLogoBase64?: string;
   logoBase64?: string | null;
   checkInTime: string;
   checkOutTime: string;
@@ -538,6 +540,9 @@ export interface FormTemplate {
   id: FormTemplateType;
   headerTitleVi: string;
   headerTitleEn: string;
+  /** Toggle displaying centralized hotelConfig.hotelLogoBase64 (default true) */
+  showLogo?: boolean;
+  /** Legacy per-template logo fallback for backward compatibility */
   logoBase64?: string | null;
   hotelNameOverride?: string;
   hotelAddressOverride?: string;

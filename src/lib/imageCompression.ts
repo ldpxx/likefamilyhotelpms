@@ -64,15 +64,42 @@ export async function compressDocumentImage(file: File): Promise<CompressedImage
 
 export async function compressLogoImage(file: File): Promise<string> {
   const img = await loadImageFromFile(file);
-  const maxWidth = 360;
-  const scale = img.width > maxWidth ? maxWidth / img.width : 1;
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(img.width * scale));
-  canvas.height = Math.max(1, Math.round(img.height * scale));
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas không khả dụng');
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/png', 0.85);
+  const MAX_BASE64_CHARS = 60_000;
+  const widths = [320, 260, 200, 160];
+
+  const renderAt = (maxWidth: number, mime: 'image/webp' | 'image/png', quality?: number) => {
+    const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.width * scale));
+    canvas.height = Math.max(1, Math.round(img.height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas không khả dụng');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL(mime, quality);
+  };
+
+  // Prefer PNG if already compact (< 60KB) for crisp vector/logo edges with full alpha transparency
+  const png320 = renderAt(320, 'image/png');
+  if (png320.length < MAX_BASE64_CHARS) {
+    return png320;
+  }
+
+  // Try WebP (preserves alpha transparency with much smaller size) across decreasing widths & qualities
+  for (const w of widths) {
+    for (const q of [0.85, 0.72, 0.58, 0.45]) {
+      const webp = renderAt(w, 'image/webp', q);
+      if (webp.startsWith('data:image/webp') && webp.length < MAX_BASE64_CHARS) {
+        return webp;
+      }
+    }
+    const pngSmaller = renderAt(w, 'image/png');
+    if (pngSmaller.length < MAX_BASE64_CHARS) {
+      return pngSmaller;
+    }
+  }
+
+  throw new Error('Ảnh logo quá nặng, vui lòng chọn ảnh PNG/WebP gọn hơn (< 60 KB sau nén).');
 }
 
 export function formatFileSizeKB(bytes: number): string {

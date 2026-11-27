@@ -1,10 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { doc, setDoc } from 'firebase/firestore';
-import { Monitor, Plus, Save, Trash2, Upload } from 'lucide-react';
+import { Plus, Save, Trash2 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { usePms } from '../context/PmsContext';
 import type { Booking, FormTemplate, FormTemplateType } from '../types/pms';
-import { compressLogoImage } from '../lib/imageCompression';
 import { writeAuditLog } from '../lib/pmsActions';
 import { buildVietQrUrl } from '../lib/vietqr';
 import { FormPaperPreview } from './PrintableFormModal';
@@ -124,16 +123,6 @@ export const FormCustomizerView: React.FC = () => {
     }));
   };
 
-  const handleLogoUpload = async (file: File | undefined) => {
-    if (!file) return;
-    try {
-      const b64 = await compressLogoImage(file);
-      setDraft((prev) => ({ ...prev, logoBase64: b64 }));
-    } catch {
-      notify('Không thể nén ảnh logo', 'error');
-    }
-  };
-
   const handleAddCustomField = () => {
     setDraft((prev) => ({
       ...prev,
@@ -178,24 +167,14 @@ export const FormCustomizerView: React.FC = () => {
     }
   };
 
-  return (
-    <div className="space-y-4">
-      {/* Mobile-only notice (Form Customizer is Web App desktop only) */}
-      <div className="md:hidden bg-[#FFFBEB] border border-[#FDE68A] rounded-2xl p-5 text-[13px] text-[#92400E] flex gap-3">
-        <Monitor className="w-5 h-5 shrink-0 mt-0.5" strokeWidth={1.5} />
-        <div>
-          <div className="font-semibold">Trình tùy chỉnh biểu mẫu chỉ khả dụng trên máy tính (Web App)</div>
-          <p className="mt-1">
-            Để tránh thao tác nhầm bố cục hóa đơn, vui lòng mở mục này trên màn hình máy tính quầy lễ
-            tân.
-          </p>
-        </div>
-      </div>
+  const centralizedHotelLogo = hotelConfig.hotelLogoBase64 || hotelConfig.logoBase64 || null;
 
-      {/* Desktop Editor + Live Preview */}
-      <div className="hidden md:block space-y-4">
-        <div className="bg-white border border-[#E5E2DC] rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
+  return (
+    <div className="space-y-4 w-full max-w-full overflow-x-clip">
+      {/* Responsive Editor + Live Preview (works cleanly on both Mobile 390px and Desktop 1440px) */}
+      <div className="space-y-4">
+        <div className="no-print bg-white border border-[#E5E2DC] rounded-xl p-3 sm:p-4 flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             {(
               [
                 ['booking_confirmation', '1. Xác nhận đặt phòng'],
@@ -207,7 +186,7 @@ export const FormCustomizerView: React.FC = () => {
                 key={id}
                 type="button"
                 onClick={() => setActiveId(id)}
-                className={`h-9 px-3.5 rounded-lg text-[13px] font-medium transition-colors ${
+                className={`min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg text-[13px] font-medium transition-colors ${
                   activeId === id
                     ? 'bg-[#1B5E4B] text-white'
                     : 'bg-[#F1EFEA] text-[#57534E] hover:text-[#1C1B18]'
@@ -223,7 +202,7 @@ export const FormCustomizerView: React.FC = () => {
               type="button"
               onClick={handleSave}
               disabled={saving}
-              className="h-9 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] disabled:opacity-50 text-white text-[13px] font-medium inline-flex items-center gap-2"
+              className="w-full sm:w-auto min-h-[40px] sm:min-h-0 sm:h-9 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] disabled:opacity-50 text-white text-[13px] font-medium inline-flex items-center justify-center gap-2"
             >
               <Save className="w-4 h-4" strokeWidth={1.5} />
               {saving ? 'Đang lưu...' : 'Lưu mẫu biểu mẫu'}
@@ -231,14 +210,14 @@ export const FormCustomizerView: React.FC = () => {
           )}
         </div>
 
-        <div className="grid grid-cols-12 gap-5 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
           {/* Left Settings Column */}
-          <div className="col-span-5 bg-white border border-[#E5E2DC] rounded-2xl p-5 space-y-4">
+          <div className="no-print lg:col-span-5 bg-white border border-[#E5E2DC] rounded-2xl p-4 sm:p-5 space-y-4 min-w-0">
             <h3 className="text-[14px] font-semibold text-[#1C1B18]">
               Cấu hình nội dung & Ẩn/Hiện trường dữ liệu
             </h3>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-3">
               <div>
                 <label className="block text-[11px] text-[#57534E] mb-1">Ngôn ngữ biểu mẫu</label>
                 <select
@@ -247,25 +226,47 @@ export const FormCustomizerView: React.FC = () => {
                   onChange={(e) =>
                     setDraft({ ...draft, language: e.target.value as FormTemplate['language'] })
                   }
-                  className="w-full h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
                 >
                   <option value="bilingual">Song ngữ Việt – Anh</option>
                   <option value="vi">Chỉ Tiếng Việt</option>
                   <option value="en">Chỉ Tiếng Anh</option>
                 </select>
               </div>
-              <div className="flex items-end">
-                <label className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] flex items-center justify-between text-[12px] cursor-pointer">
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <label className="w-full min-h-[42px] sm:min-h-0 sm:h-10 px-3 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] flex items-center justify-between gap-2 text-[12px] font-medium text-[#1C1B18] cursor-pointer">
                   <span>Hiển thị mã VietQR</span>
                   <input
                     type="checkbox"
                     disabled={!canEdit}
                     checked={draft.showVietQr}
                     onChange={(e) => setDraft({ ...draft, showVietQr: e.target.checked })}
-                    className="accent-[#1B5E4B]"
+                    className="w-4 h-4 accent-[#1B5E4B] shrink-0"
+                  />
+                </label>
+
+                <label className="w-full min-h-[42px] sm:min-h-0 sm:h-10 px-3 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] flex items-center justify-between gap-2 text-[12px] font-medium text-[#1C1B18] cursor-pointer">
+                  <span>Hiển thị Logo khách sạn</span>
+                  <input
+                    type="checkbox"
+                    data-testid="toggle-show-logo"
+                    disabled={!canEdit}
+                    checked={draft.showLogo ?? true}
+                    onChange={(e) => setDraft({ ...draft, showLogo: e.target.checked })}
+                    className="w-4 h-4 accent-[#1B5E4B] shrink-0"
                   />
                 </label>
               </div>
+
+              {!centralizedHotelLogo && (
+                <p
+                  data-testid="missing-hotel-logo-hint"
+                  className="text-[12px] text-[#8A847C] -mt-1"
+                >
+                  Chưa có logo — tải lên tại Cài đặt &amp; Sao lưu
+                </p>
+              )}
             </div>
 
             <div className="space-y-2.5">
@@ -276,7 +277,7 @@ export const FormCustomizerView: React.FC = () => {
                   disabled={!canEdit}
                   value={draft.headerTitleVi}
                   onChange={(e) => setDraft({ ...draft, headerTitleVi: e.target.value })}
-                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
                 />
               </div>
               <div>
@@ -286,33 +287,8 @@ export const FormCustomizerView: React.FC = () => {
                   disabled={!canEdit}
                   value={draft.headerTitleEn}
                   onChange={(e) => setDraft({ ...draft, headerTitleEn: e.target.value })}
-                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
                 />
-              </div>
-              <div>
-                <label className="block text-[11px] text-[#57534E] mb-1">Logo khách sạn (Base64)</label>
-                <div className="flex items-center gap-2">
-                  <label className="h-8 px-3 rounded-lg border border-[#E5E2DC] hover:bg-[#F7F6F3] text-[12px] font-medium inline-flex items-center gap-1.5 cursor-pointer">
-                    <Upload className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    Tải logo lên
-                    <input
-                      type="file"
-                      accept="image/*"
-                      disabled={!canEdit}
-                      className="hidden"
-                      onChange={(e) => handleLogoUpload(e.target.files?.[0])}
-                    />
-                  </label>
-                  {draft.logoBase64 && canEdit && (
-                    <button
-                      type="button"
-                      onClick={() => setDraft({ ...draft, logoBase64: null })}
-                      className="text-[12px] text-[#B91C1C]"
-                    >
-                      Gỡ logo
-                    </button>
-                  )}
-                </div>
               </div>
             </div>
 
@@ -422,20 +398,23 @@ export const FormCustomizerView: React.FC = () => {
           </div>
 
           {/* Right Live Preview Column */}
-          <div className="col-span-7 space-y-2">
-            <div className="text-[12px] font-medium text-[#57534E] px-1">
+          <div className="lg:col-span-7 space-y-2 min-w-0">
+            <div className="no-print text-[12px] font-medium text-[#57534E] px-1">
               Xem trước trực tiếp theo thời gian thực (Live Preview)
             </div>
-            <FormPaperPreview
-              template={draft}
-              booking={previewBooking}
-              hotelName={hotelConfig.hotelName}
-              hotelAddress={hotelConfig.address}
-              hotelPhone={hotelConfig.phone}
-              wifiPassword={hotelConfig.wifiByFloor?.[previewBooking.floor]}
-              vietQrUrl={vietQrUrl}
-              staffName={actor.name}
-            />
+            <div className="print-sheet-root">
+              <FormPaperPreview
+                template={draft}
+                booking={previewBooking}
+                hotelName={hotelConfig.hotelName}
+                hotelAddress={hotelConfig.address}
+                hotelPhone={hotelConfig.phone}
+                hotelLogoBase64={centralizedHotelLogo}
+                wifiPassword={hotelConfig.wifiByFloor?.[previewBooking.floor]}
+                vietQrUrl={vietQrUrl}
+                staffName={actor.name}
+              />
+            </div>
           </div>
         </div>
       </div>

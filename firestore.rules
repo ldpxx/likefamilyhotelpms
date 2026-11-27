@@ -88,20 +88,31 @@ service cloud.firestore {
       allow list, write: if isSuperAdmin();
     }
 
-    // Bug #3: Hotel & VietQR global config — SuperAdmin full write; Owner may update accountingLockDate, bookingSources, otaChannels, hourlyCleaningBufferMinutes
+    // Protect Firestore 1MB document limit when saving centralized hotel logo Base64
+    function validHotelLogo() {
+      return !('hotelLogoBase64' in request.resource.data) ||
+        request.resource.data.hotelLogoBase64 == null ||
+        (request.resource.data.hotelLogoBase64 is string &&
+          request.resource.data.hotelLogoBase64.size() < 150000);
+    }
+
+    // Bug #3: Hotel & VietQR global config — SuperAdmin full write; Owner may update accountingLockDate, bookingSources, otaChannels, hourlyCleaningBufferMinutes, configMigrationVersion, hotelLogoBase64
     match /hotel_config/{docId} {
       allow read: if isActiveStaff();
-      allow create: if isSuperAdmin();
-      allow update: if isSuperAdmin() || (
-        isOwnerOrSuperAdmin() &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'accountingLockDate',
-          'bookingSources',
-          'otaChannels',
-          'hourlyCleaningBufferMinutes',
-          'configMigrationVersion',
-          'updatedAt'
-        ])
+      allow create: if isSuperAdmin() && validHotelLogo();
+      allow update: if validHotelLogo() && (
+        isSuperAdmin() || (
+          isOwnerOrSuperAdmin() &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'accountingLockDate',
+            'bookingSources',
+            'otaChannels',
+            'hourlyCleaningBufferMinutes',
+            'configMigrationVersion',
+            'hotelLogoBase64',
+            'updatedAt'
+          ])
+        )
       );
       allow delete: if false;
     }

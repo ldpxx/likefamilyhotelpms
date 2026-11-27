@@ -54,6 +54,7 @@ export const DEFAULT_FORM_TEMPLATES: Record<FormTemplate['id'], FormTemplate> = 
     headerTitleVi: 'PHIẾU XÁC NHẬN ĐẶT PHÒNG',
     headerTitleEn: 'BOOKING CONFIRMATION',
     language: 'bilingual',
+    showLogo: true,
     showVietQr: true,
     visibleFields: {
       bookingCode: true,
@@ -87,6 +88,7 @@ export const DEFAULT_FORM_TEMPLATES: Record<FormTemplate['id'], FormTemplate> = 
     headerTitleVi: 'HÓA ĐƠN THANH TOÁN / PHIẾU THU',
     headerTitleEn: 'PAYMENT RECEIPT & FOLIO',
     language: 'bilingual',
+    showLogo: true,
     showVietQr: true,
     visibleFields: {
       bookingCode: true,
@@ -112,6 +114,7 @@ export const DEFAULT_FORM_TEMPLATES: Record<FormTemplate['id'], FormTemplate> = 
     headerTitleVi: 'PHIẾU ĐĂNG KÝ NHẬN PHÒNG',
     headerTitleEn: 'GUEST REGISTRATION CARD',
     language: 'bilingual',
+    showLogo: true,
     showVietQr: false,
     visibleFields: {
       bookingCode: true,
