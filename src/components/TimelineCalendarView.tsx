@@ -11,6 +11,7 @@ import {
   MoveHorizontal,
   Search,
   SlidersHorizontal,
+  X,
 } from 'lucide-react';
 import { usePms } from '../context/PmsContext';
 import type { Booking, Room } from '../types/pms';
@@ -60,7 +61,7 @@ function getBookingStayPermitExpiry(b: Booking): string | null {
 export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
   onSelectBooking,
 }) => {
-  const { activeRooms: rooms, bookings, maintenances } = usePms();
+  const { activeRooms: rooms, roomTypes, bookings, maintenances } = usePms();
   const today = todayISO();
 
   const [zoomDays, setZoomDays] = useState<ZoomLevel>(30);
@@ -68,14 +69,17 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
   const [windowLength, setWindowLength] = useState<number>(75);
   const [jumpDate, setJumpDate] = useState(today);
   const [floorFilter, setFloorFilter] = useState('all');
+  const [roomTypeFilter, setRoomTypeFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Display Options Popover (GoHost-inspired personalizable view)
+  // Display Options Popover / Mobile Bottom Sheet
   const [showDisplayMenu, setShowDisplayMenu] = useState(false);
   const [density, setDensity] = useState<'full' | 'compact'>('full');
   const [groupBy, setGroupBy] = useState<TimelineGroupBy>('floor');
   const [colorBy, setColorBy] = useState<TimelineColorBy>('status');
   const [showSummaryRow, setShowSummaryRow] = useState(true);
+
+  const displayMenuRef = useRef<HTMLDivElement>(null);
 
   // Rich Hover Tooltip (desktop hover only — never stuck on mobile touch)
   const [hoveredInfo, setHoveredInfo] = useState<{
@@ -125,6 +129,10 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showDisplayMenu) {
+        setShowDisplayMenu(false);
+        return;
+      }
       if (
         e.key === '/' &&
         document.activeElement?.tagName !== 'INPUT' &&
@@ -137,7 +145,18 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [showDisplayMenu]);
+
+  useEffect(() => {
+    if (!showDisplayMenu) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (displayMenuRef.current && !displayMenuRef.current.contains(e.target as Node)) {
+        setShowDisplayMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [showDisplayMenu]);
 
   const dates = useMemo(() => {
     const arr: string[] = [];
@@ -155,9 +174,19 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
 
   const normalizedQuery = normalizeVietnamese(searchQuery.trim());
 
+  const roomTypeOptions = useMemo(() => {
+    if (roomTypes.length > 0) {
+      return roomTypes.map((rt) => ({ id: rt.id, name: rt.name }));
+    }
+    const map = new Map<string, string>();
+    rooms.forEach((r) => map.set(r.roomTypeId, r.roomTypeName));
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [roomTypes, rooms]);
+
   const visibleRooms = useMemo(() => {
     return rooms.filter((r) => {
       if (floorFilter !== 'all' && r.floor !== floorFilter) return false;
+      if (roomTypeFilter !== 'all' && r.roomTypeId !== roomTypeFilter) return false;
       if (!normalizedQuery) return true;
       const roomMatch = normalizeVietnamese(`${r.roomNumber} ${r.roomTypeName}`).includes(
         normalizedQuery
@@ -173,7 +202,10 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
           ).includes(normalizedQuery)
       );
     });
-  }, [rooms, floorFilter, normalizedQuery, bookings]);
+  }, [rooms, floorFilter, roomTypeFilter, normalizedQuery, bookings]);
+
+  const hasActiveFilters =
+    floorFilter !== 'all' || roomTypeFilter !== 'all' || normalizedQuery.length > 0;
 
   const floors = useMemo(() => {
     const set = new Set<string>();
@@ -321,6 +353,90 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
     return Array.from(map.entries()).map(([label, list]) => ({ label, rooms: list }));
   }, [visibleRooms, groupBy]);
 
+  // Per-group daily availability summary (used on room_type group header rows so receptionists can quote room availability by type immediately)
+  const groupDailySummaryMap = useMemo(() => {
+    const map = new Map<
+      string,
+      Array<{ date: string; vacant: number; occupied: number; total: number }>
+    >();
+    if (groupBy !== 'room_type') return map;
+
+    const activeBookings = bookings.filter(
+      (b) => b.status !== 'cancelled' && b.status !== 'no_show'
+    );
+
+    for (const group of groupedRooms) {
+      if (!group.label) continue;
+      const total = group.rooms.length;
+      const groupRoomIds = new Set(group.rooms.map((r) => r.id));
+      const groupBookings = activeBookings.filter((b) => groupRoomIds.has(b.roomId));
+
+      const perDay = dates.map((d) => {
+        const occupiedIds = new Set<string>();
+        for (const r of group.rooms) {
+          if (
+            isRoomBlockedByMaintenance(r.id, maintenances, d, addDays(d, 1)) ||
+            (r.hkStatus === 'maintenance' && d === today)
+          ) {
+            occupiedIds.add(r.id);
+          }
+        }
+        for (const b of groupBookings) {
+          const covers =
+            b.bookingMode === 'hourly' ? b.checkIn === d : b.checkIn <= d && b.checkOut > d;
+          if (covers) occupiedIds.add(b.roomId);
+        }
+        const occupied = occupiedIds.size;
+        const vacant = Math.max(0, total - occupied);
+        return { date: d, vacant, occupied, total };
+      });
+
+      map.set(group.label, perDay);
+    }
+    return map;
+  }, [groupBy, groupedRooms, dates, bookings, maintenances, today]);
+
+  // Per-group summary for the selected jumpDate (Hourly Day View)
+  const groupJumpDaySummaryMap = useMemo(() => {
+    const map = new Map<string, { vacant: number; occupied: number; total: number }>();
+    if (groupBy !== 'room_type') return map;
+
+    const activeBookings = bookings.filter(
+      (b) => b.status !== 'cancelled' && b.status !== 'no_show'
+    );
+
+    for (const group of groupedRooms) {
+      if (!group.label) continue;
+      const total = group.rooms.length;
+      const groupRoomIds = new Set(group.rooms.map((r) => r.id));
+      const occupiedIds = new Set<string>();
+
+      for (const r of group.rooms) {
+        if (
+          isRoomBlockedByMaintenance(r.id, maintenances, jumpDate, addDays(jumpDate, 1)) ||
+          (r.hkStatus === 'maintenance' && jumpDate === today)
+        ) {
+          occupiedIds.add(r.id);
+        }
+      }
+      for (const b of activeBookings) {
+        if (!groupRoomIds.has(b.roomId)) continue;
+        const covers =
+          b.bookingMode === 'hourly'
+            ? b.checkIn === jumpDate
+            : b.checkIn <= jumpDate && b.checkOut > jumpDate;
+        if (covers) occupiedIds.add(b.roomId);
+      }
+
+      map.set(group.label, {
+        vacant: Math.max(0, total - occupiedIds.size),
+        occupied: occupiedIds.size,
+        total,
+      });
+    }
+    return map;
+  }, [groupBy, groupedRooms, bookings, maintenances, jumpDate, today]);
+
   const windowEnd = dates[dates.length - 1];
   const nowHours = new Date().getHours() + new Date().getMinutes() / 60;
   const nowDayLinePx = (nowHours / 24) * (DAY_SLOTS.length * colWidth);
@@ -398,8 +514,8 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-          <div className="relative flex-1 sm:flex-none sm:w-56 min-w-[160px]">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full sm:w-auto">
+          <div className="relative col-span-2 sm:col-span-1 sm:w-52 min-w-0">
             <Search
               className="w-3.5 h-3.5 text-[#8A847C] absolute left-2.5 top-1/2 -translate-y-1/2"
               strokeWidth={1.5}
@@ -410,17 +526,32 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Tìm mã ĐP, khách, phòng..."
-              className="w-full h-8 pl-8 pr-6 rounded-lg border border-[#E7E3DA] bg-white text-[12px] focus:outline-none focus:border-[#0F5132]"
+              className="w-full min-h-[40px] sm:min-h-0 sm:h-8 pl-8 pr-6 rounded-lg border border-[#E7E3DA] bg-white text-[13px] sm:text-[12px] focus:outline-none focus:border-[#0F5132]"
             />
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono-num text-[#8A847C]">
+            <span className="hidden sm:inline absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono-num text-[#8A847C]">
               /
             </span>
           </div>
 
           <select
+            aria-label="Lọc theo loại phòng"
+            value={roomTypeFilter}
+            onChange={(e) => setRoomTypeFilter(e.target.value)}
+            className="w-full sm:w-auto min-w-0 min-h-[40px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E7E3DA] bg-white text-[13px] sm:text-[12px] text-[#1C1B18] focus:outline-none focus:border-[#0F5132]"
+          >
+            <option value="all">Tất cả loại phòng</option>
+            {roomTypeOptions.map((rt) => (
+              <option key={rt.id} value={rt.id}>
+                {rt.name}
+              </option>
+            ))}
+          </select>
+
+          <select
+            aria-label="Lọc theo tầng"
             value={floorFilter}
             onChange={(e) => setFloorFilter(e.target.value)}
-            className="h-8 px-2.5 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
+            className="w-full sm:w-auto min-w-0 min-h-[40px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E7E3DA] bg-white text-[13px] sm:text-[12px] text-[#1C1B18] focus:outline-none focus:border-[#0F5132]"
           >
             <option value="all">Tất cả tầng</option>
             {floors.map((f) => (
@@ -430,102 +561,155 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
             ))}
           </select>
 
-          {/* Display Options Popover */}
-          <div className="relative">
+          <select
+            aria-label="Chế độ gom nhóm lịch"
+            value={groupBy}
+            onChange={(e) => setGroupBy(e.target.value as TimelineGroupBy)}
+            className="w-full sm:w-auto min-w-0 min-h-[40px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E7E3DA] bg-white text-[13px] sm:text-[12px] text-[#1C1B18] focus:outline-none focus:border-[#0F5132]"
+          >
+            <option value="floor">Nhóm: Theo Tầng</option>
+            <option value="room_type">Nhóm: Loại phòng</option>
+            <option value="none">Xem tất cả ({rooms.length} phòng)</option>
+          </select>
+
+          {/* Display Options: Mobile/Tablet Bottom Sheet (< lg) & Desktop Popover (lg:) */}
+          <div ref={displayMenuRef} className="relative w-full sm:w-auto">
             <button
               type="button"
               onClick={() => setShowDisplayMenu((v) => !v)}
-              className={`h-8 px-3 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1.5 ${
+              aria-expanded={showDisplayMenu}
+              aria-haspopup="dialog"
+              className={`w-full sm:w-auto min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border text-[13px] sm:text-[12px] font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                 showDisplayMenu
                   ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132]'
                   : 'border-[#E7E3DA] bg-white text-[#1C1B18] hover:bg-[#FAF9F6]'
               }`}
             >
-              <SlidersHorizontal className="w-3.5 h-3.5" strokeWidth={1.5} />
-              Hiển thị
+              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" strokeWidth={1.5} />
+              <span>Hiển thị</span>
             </button>
 
             {showDisplayMenu && (
-              <div className="absolute right-0 mt-1.5 w-64 bg-white border border-[#E7E3DA] rounded-xl shadow-lg p-3.5 z-40 space-y-3 text-[12px]">
-                <div className="font-semibold text-[#1C1B18]">Tuỳ chọn hiển thị lịch</div>
-
-                <div className="space-y-1">
-                  <div className="text-[11px] font-medium text-[#8A847C] uppercase">Mật độ</div>
-                  <div className="grid grid-cols-2 gap-1 p-0.5 rounded-lg bg-[#F3F0E9]">
+              <>
+                <div
+                  className="fixed inset-0 z-40 bg-black/35 lg:hidden"
+                  onClick={() => setShowDisplayMenu(false)}
+                  aria-hidden="true"
+                />
+                <div
+                  role="dialog"
+                  aria-label="Tuỳ chọn hiển thị lịch"
+                  data-testid="calendar-display-popover"
+                  className="fixed inset-x-3 bottom-4 z-50 w-[calc(100vw-24px)] max-w-md mx-auto max-h-[82vh] overflow-y-auto bg-white border border-[#E7E3DA] rounded-2xl shadow-2xl p-4 space-y-3.5 text-[13px] lg:absolute lg:inset-x-auto lg:bottom-auto lg:right-0 lg:top-full lg:mt-1.5 lg:w-72 lg:max-w-none lg:mx-0 lg:max-h-none lg:overflow-visible lg:rounded-xl lg:shadow-lg lg:p-3.5 lg:space-y-3 lg:text-[12px]"
+                >
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#F1EFEA] lg:border-b-0 lg:pb-0">
+                    <div className="font-semibold text-[#1C1B18] text-[14px] lg:text-[12px]">
+                      Tuỳ chọn hiển thị lịch
+                    </div>
                     <button
                       type="button"
-                      onClick={() => setDensity('full')}
-                      className={`h-7 rounded-md font-medium ${
-                        density === 'full' ? 'bg-white text-[#0F5132] shadow-xs' : 'text-[#57534E]'
-                      }`}
+                      onClick={() => setShowDisplayMenu(false)}
+                      aria-label="Đóng tuỳ chọn hiển thị"
+                      className="w-8 h-8 lg:w-6 lg:h-6 rounded-lg hover:bg-[#F3F0E9] inline-flex items-center justify-center text-[#57534E] shrink-0"
                     >
-                      Đầy đủ
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDensity('compact')}
-                      className={`h-7 rounded-md font-medium ${
-                        density === 'compact' ? 'bg-white text-[#0F5132] shadow-xs' : 'text-[#57534E]'
-                      }`}
-                    >
-                      Thu gọn
+                      <X className="w-4 h-4" strokeWidth={1.75} />
                     </button>
                   </div>
-                </div>
 
-                <div className="space-y-1">
-                  <div className="text-[11px] font-medium text-[#8A847C] uppercase">Nhóm theo</div>
-                  {(
-                    [
-                      { id: 'floor', label: 'Tầng' },
-                      { id: 'room_type', label: 'Loại phòng' },
-                      { id: 'none', label: 'Chỉ phòng' },
-                    ] as Array<{ id: TimelineGroupBy; label: string }>
-                  ).map((opt) => (
-                    <label key={opt.id} className="flex items-center gap-2 cursor-pointer py-0.5">
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] font-medium text-[#8A847C] uppercase">Mật độ</div>
+                    <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-[#F3F0E9]">
+                      <button
+                        type="button"
+                        onClick={() => setDensity('full')}
+                        className={`min-h-[38px] lg:min-h-0 lg:h-7 rounded-md font-medium transition-colors ${
+                          density === 'full' ? 'bg-white text-[#0F5132] shadow-xs' : 'text-[#57534E]'
+                        }`}
+                      >
+                        Đầy đủ
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDensity('compact')}
+                        className={`min-h-[38px] lg:min-h-0 lg:h-7 rounded-md font-medium transition-colors ${
+                          density === 'compact' ? 'bg-white text-[#0F5132] shadow-xs' : 'text-[#57534E]'
+                        }`}
+                      >
+                        Thu gọn
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-medium text-[#8A847C] uppercase">Nhóm theo</div>
+                    {(
+                      [
+                        { id: 'floor', label: 'Theo Tầng' },
+                        { id: 'room_type', label: 'Theo Loại phòng' },
+                        { id: 'none', label: 'Xem tất cả (Không gom nhóm)' },
+                      ] as Array<{ id: TimelineGroupBy; label: string }>
+                    ).map((opt) => (
+                      <label
+                        key={opt.id}
+                        className="flex items-center gap-2.5 cursor-pointer py-1.5 lg:py-0.5 text-[#1C1B18]"
+                      >
+                        <input
+                          type="radio"
+                          name="timeline-group-by"
+                          checked={groupBy === opt.id}
+                          onChange={() => setGroupBy(opt.id)}
+                          className="accent-[#0F5132] w-4 h-4 lg:w-3.5 lg:h-3.5 shrink-0"
+                        />
+                        <span className="leading-snug">{opt.label}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-medium text-[#8A847C] uppercase">
+                      Màu thanh theo
+                    </div>
+                    <label className="flex items-center gap-2.5 cursor-pointer py-1.5 lg:py-0.5 text-[#1C1B18]">
                       <input
                         type="radio"
-                        checked={groupBy === opt.id}
-                        onChange={() => setGroupBy(opt.id)}
-                        className="accent-[#0F5132]"
+                        name="timeline-color-by"
+                        checked={colorBy === 'status'}
+                        onChange={() => setColorBy('status')}
+                        className="accent-[#0F5132] w-4 h-4 lg:w-3.5 lg:h-3.5 shrink-0"
                       />
-                      <span>{opt.label}</span>
+                      <span className="leading-snug">Trạng thái nhận phòng</span>
                     </label>
-                  ))}
-                </div>
+                    <label className="flex items-center gap-2.5 cursor-pointer py-1.5 lg:py-0.5 text-[#1C1B18]">
+                      <input
+                        type="radio"
+                        name="timeline-color-by"
+                        checked={colorBy === 'source'}
+                        onChange={() => setColorBy('source')}
+                        className="accent-[#0F5132] w-4 h-4 lg:w-3.5 lg:h-3.5 shrink-0"
+                      />
+                      <span className="leading-snug">Nguồn đặt phòng</span>
+                    </label>
+                  </div>
 
-                <div className="space-y-1">
-                  <div className="text-[11px] font-medium text-[#8A847C] uppercase">Màu thanh theo</div>
-                  <label className="flex items-center gap-2 cursor-pointer py-0.5">
+                  <label className="flex items-center justify-between gap-3 pt-2.5 border-t border-[#F1EFEA] cursor-pointer text-[#1C1B18]">
+                    <span className="leading-snug">Hiện hàng Trống / Lấp đầy</span>
                     <input
-                      type="radio"
-                      checked={colorBy === 'status'}
-                      onChange={() => setColorBy('status')}
-                      className="accent-[#0F5132]"
+                      type="checkbox"
+                      checked={showSummaryRow}
+                      onChange={(e) => setShowSummaryRow(e.target.checked)}
+                      className="accent-[#0F5132] w-4 h-4 shrink-0"
                     />
-                    <span>Trạng thái nhận phòng</span>
                   </label>
-                  <label className="flex items-center gap-2 cursor-pointer py-0.5">
-                    <input
-                      type="radio"
-                      checked={colorBy === 'source'}
-                      onChange={() => setColorBy('source')}
-                      className="accent-[#0F5132]"
-                    />
-                    <span>Nguồn đặt phòng</span>
-                  </label>
-                </div>
 
-                <label className="flex items-center justify-between pt-2 border-t border-[#F1EFEA] cursor-pointer">
-                  <span>Hiện hàng Trống / Lấp đầy</span>
-                  <input
-                    type="checkbox"
-                    checked={showSummaryRow}
-                    onChange={(e) => setShowSummaryRow(e.target.checked)}
-                    className="accent-[#0F5132]"
-                  />
-                </label>
-              </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowDisplayMenu(false)}
+                    className="lg:hidden w-full min-h-[42px] rounded-xl bg-[#0F5132] hover:bg-[#0B3D26] text-white font-semibold text-[13px] transition-colors"
+                  >
+                    Xong
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -600,17 +784,35 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                 </div>
               </div>
 
-              {groupedRooms.map((group) => (
+              {groupedRooms.map((group) => {
+                const dayGroupSummary = groupJumpDaySummaryMap.get(group.label);
+                return (
                 <React.Fragment key={group.label || 'all'}>
                   {group.label && (
                     <div className="flex bg-[#F3F0E9]/90 border-b border-[#E7E3DA]">
                       <div
                         style={{ width: stickyWidth }}
-                        className="sticky left-0 z-20 bg-[#F3F0E9] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-1 text-[11px] font-semibold text-[#57534E]"
+                        className="sticky left-0 z-20 bg-[#F3F0E9] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-1.5 text-[11px] font-semibold text-[#57534E] shrink-0"
                       >
-                        {group.label} ({group.rooms.length} phòng)
+                        <div className="truncate">{group.label}</div>
+                        <div className="text-[10px] font-normal text-[#8A847C]">
+                          {group.rooms.length} phòng
+                        </div>
                       </div>
-                      <div className="flex-1" />
+                      <div className="flex-1 flex items-center px-3">
+                        {dayGroupSummary && (
+                          <span
+                            data-testid="room-type-hourly-summary"
+                            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-mono-num font-medium ${
+                              dayGroupSummary.vacant === 0
+                                ? 'bg-[#FEF2F2] text-[#B91C1C]'
+                                : 'bg-[#E8F3EC] text-[#0F5132]'
+                            }`}
+                          >
+                            {dayGroupSummary.vacant} trống · {dayGroupSummary.occupied} đang dùng
+                          </span>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -705,7 +907,8 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                     );
                   })}
                 </React.Fragment>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -794,19 +997,82 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
               </div>
 
               {/* Room Rows */}
-              {groupedRooms.map((group) => (
-                <React.Fragment key={group.label || 'all'}>
-                  {group.label && (
-                    <div className="flex bg-[#F3F0E9]/85 border-b border-[#E7E3DA]">
-                      <div
-                        style={{ width: stickyWidth }}
-                        className="sticky left-0 z-20 bg-[#F3F0E9] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-1 text-[11px] font-semibold text-[#57534E]"
-                      >
-                        {group.label} ({group.rooms.length} phòng)
-                      </div>
-                      <div className="flex-1" />
-                    </div>
+              {visibleRooms.length === 0 ? (
+                <div className="p-8 text-center">
+                  <p className="text-[13px] text-[#57534E] mb-3">
+                    Không có phòng phù hợp với bộ lọc hiện tại.
+                  </p>
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFloorFilter('all');
+                        setRoomTypeFilter('all');
+                        setSearchQuery('');
+                      }}
+                      className="min-h-[38px] px-4 rounded-lg bg-[#0F5132] text-white text-[12px] font-medium hover:bg-[#0B3D26]"
+                    >
+                      Xóa bộ lọc
+                    </button>
                   )}
+                </div>
+              ) : (
+                groupedRooms.map((group) => {
+                  const perDaySummary = groupDailySummaryMap.get(group.label);
+                  return (
+                    <React.Fragment key={group.label || 'all'}>
+                      {group.label && (
+                        <div
+                          data-testid={`calendar-group-header-${groupBy}`}
+                          className="flex bg-[#F3F0E9]/90 border-b border-[#E7E3DA]"
+                        >
+                          <div
+                            style={{ width: stickyWidth }}
+                            className="sticky left-0 z-20 bg-[#F3F0E9] border-r border-[#E7E3DA] shadow-[2px_0_6px_-2px_rgba(28,27,24,0.08)] px-3 py-1.5 text-[11px] font-semibold text-[#1C1B18] shrink-0 flex flex-col justify-center"
+                          >
+                            <span className="truncate" title={group.label}>
+                              {group.label}
+                            </span>
+                            <span className="text-[10px] font-normal text-[#57534E]">
+                              {group.rooms.length} phòng
+                            </span>
+                          </div>
+                          {perDaySummary ? (
+                            <div
+                              className="flex flex-1"
+                              data-testid="room-type-daily-summary-row"
+                            >
+                              {perDaySummary.map((s) => (
+                                <div
+                                  key={s.date}
+                                  style={{ width: colWidth }}
+                                  title={`${group.label} · ${formatDateVN(s.date)}: ${s.vacant} trống / ${s.occupied} đang dùng (tổng ${s.total} phòng)`}
+                                  className={`shrink-0 border-r border-[#E7E3DA] py-1 text-center font-mono-num leading-tight flex flex-col justify-center ${
+                                    s.date === today
+                                      ? 'bg-[#E8F3EC]/85'
+                                      : s.vacant === 0
+                                      ? 'bg-[#FEF2F2]/70'
+                                      : ''
+                                  }`}
+                                >
+                                  <div
+                                    className={`text-[10px] font-semibold ${
+                                      s.vacant === 0 ? 'text-[#B91C1C]' : 'text-[#0F5132]'
+                                    }`}
+                                  >
+                                    {zoomDays === 60 ? s.vacant : `${s.vacant} tr`}
+                                  </div>
+                                  {zoomDays !== 60 && (
+                                    <div className="text-[9px] text-[#57534E]">{s.occupied} ở</div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="flex-1" />
+                          )}
+                        </div>
+                      )}
 
                   {group.rooms.map((room) => {
                     const roomBookings = (bookingsByRoom.get(room.id) || []).filter((b) =>
@@ -966,7 +1232,9 @@ export const TimelineCalendarView: React.FC<TimelineCalendarViewProps> = ({
                     );
                   })}
                 </React.Fragment>
-              ))}
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
