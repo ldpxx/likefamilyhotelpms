@@ -12,11 +12,11 @@ import {
 // - Firebase Cloud Storage is intentionally NEVER imported.
 // - Google Sign-In (GoogleAuthProvider) is intentionally NEVER imported.
 // - All accounts (SuperAdmin + Owner + Staff) authenticate via Firebase Auth Email/Password.
-//   Staff usernames map cleanly to `<username>@likefamilypms.local` (no real inbox needed).
+//   Staff usernames map cleanly to `<username>@likefamilyhotel.com` (no real inbox needed).
 // - A Secondary Firebase App (`StaffCreator`) lets Owner/SuperAdmin create staff Auth accounts
 //   without signing out their own active session (zero Cloud Functions needed).
 
-export const STAFF_EMAIL_DOMAIN = 'likefamilypms.local';
+export const STAFF_EMAIL_DOMAIN = 'likefamilyhotel.com';
 
 export function usernameToInternalEmail(usernameOrEmail: string): string {
   const clean = usernameOrEmail.trim().toLowerCase().replace(/\s+/g, '');

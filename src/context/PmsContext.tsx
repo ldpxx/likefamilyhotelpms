@@ -220,7 +220,7 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const emailMatches = Boolean(rootEmail && currentEmail && rootEmail === currentEmail);
 
           if (!uidMatches && !emailMatches) {
-            // Bug #8: Authenticated Owner / Manager / Staff via Firebase Auth Email/Password (`<username>@likefamilypms.local`)
+            // Bug #8: Authenticated Owner / Manager / Staff via Firebase Auth Email/Password (`<username>@likefamilyhotel.com`)
             const staffSnap = await getDoc(doc(db, 'staff_users', user.uid));
             if (!staffSnap.exists()) {
               await signOut(auth);
@@ -312,7 +312,7 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => unsub();
   }, []);
 
-  // Bug #8: Authenticate Owner & Staff via Firebase Auth Email/Password (`<username>@likefamilypms.local`)
+  // Bug #8: Authenticate Owner & Staff via Firebase Auth Email/Password (`<username>@likefamilyhotel.com`)
   const loginWithStaffCredentials = useCallback(async (username: string, password: string) => {
     const cleanUser = username.trim().toLowerCase();
     if (!cleanUser || !password) {

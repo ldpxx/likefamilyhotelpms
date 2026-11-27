@@ -519,7 +519,7 @@ export const StaffAndAuditView: React.FC = () => {
                           <div className="text-[12px] text-[#57534E] font-mono-num mt-0.5">
                             {isRoot
                               ? `Firebase Auth (SuperAdmin): ${st.email}`
-                              : `Firebase Auth nội bộ: ${st.email || `${st.username}@likefamilypms.local`}`}
+                              : `Firebase Auth nội bộ: ${st.email || `${st.username}@likefamilyhotel.com`}`}
                             {st.phone ? ` • SĐT: ${st.phone}` : ''}
                           </div>
                         </div>

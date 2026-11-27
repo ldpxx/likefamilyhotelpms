@@ -13,7 +13,7 @@ Bản vá **Bảo mật, Kế toán lõi & Đồng bộ Vận hành** toàn di�
 
 ### Security (P0)
 - **#8 — Chuyển xác thực Nhân viên sang Firebase Auth Email/Password & khóa triệt để `staff_users`:**
-  - Chuyển toàn bộ tài khoản Chủ KS & Nhân viên sang Firebase Auth với email nội bộ `<username>@likefamilypms.local` (không cần hộp thư thật), dùng **Secondary Firebase App (`StaffCreator`)** trong [src/lib/firebase.ts](./src/lib/firebase.ts) để Chủ KS/Quản lý tạo tài khoản mới mà không bị văng phiên đăng nhập.
+  - Chuyển toàn bộ tài khoản Chủ KS & Nhân viên sang Firebase Auth với email nội bộ `<username>@likefamilyhotel.com` (không cần hộp thư thật), dùng **Secondary Firebase App (`StaffCreator`)** trong [src/lib/firebase.ts](./src/lib/firebase.ts) để Chủ KS/Quản lý tạo tài khoản mới mà không bị văng phiên đăng nhập.
   - Bổ sung cờ `mustChangePassword: true` và màn hình bắt buộc đổi mật khẩu lần đầu đăng nhập trong [src/App.tsx](./src/App.tsx); cập nhật [src/components/StaffAndAuditView.tsx](./src/components/StaffAndAuditView.tsx) với luồng **Khóa & Cấp lại tài khoản mới** (`replaceForgottenStaffAccount`) và tự đổi mật khẩu bằng `reauthenticateWithCredential` + `updatePassword`.
   - Xóa hoàn toàn trường `passwordHash`, migrate tài khoản Chủ KS `@likefamilyhotel` sang UID Firebase Auth mới và siết chặt [firestore.rules](./firestore.rules) chặn 100% truy cập `unauthenticated` trên toàn bộ collection (`staff_users`, `bookings`, `transactions`...).
 - **#3 — Sửa quyền Chủ khách sạn trên `hotel_config/main`:**
