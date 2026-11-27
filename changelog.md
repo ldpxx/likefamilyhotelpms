@@ -9,7 +9,12 @@ Tất cả các thay đổi quan trọng của dự án **Like Family PMS** đ�
 
 ## [2.2.2] - 27/11/2026
 
-Bản vá kỹ thuật & kiểm thử nghiệm thu toàn diện theo tài liệu [`Phuong_An_Sua_Loi_Like_Family_PMS_v2_2_2_FINAL.md`](./Phuong_An_Sua_Loi_Like_Family_PMS_v2_2_2_FINAL.md) (nhánh GitHub `fix/v2.2.2` — **chưa deploy Production**, chờ Chủ dự án phê duyệt Go-Live theo Cổng Dừng). Giữ nguyên 100% ràng buộc 0đ Firebase Spark (không Cloud Functions, không Storage, không Google Sign-In) và bảo toàn nguyên trạng dữ liệu Staging 2 tháng `QA2M_*`.
+Bản vá kỹ thuật, kiểm toán bảo mật/kế toán, kiểm toán UI/UX hình học DOM & triển khai Live UAT lên **https://likefamilypms.web.app** (nhánh GitHub `fix/v2.2.2`; **giữ nguyên bộ dữ liệu mẫu 2 tháng `QA2M_*` và tài khoản `qa_runner` theo quyết định của Chủ dự án để trải nghiệm thực tế trên máy tính & điện thoại**). Duy trì 100% ràng buộc 0đ Firebase Spark (không Cloud Functions, không Storage, không Google Sign-In).
+
+### UI/UX & Print Hardening (`QA_REPORTS/UI_UX_AUDIT_v2.2.2/`)
+- **Quét hình học DOM 4 độ phân giải (`1440×900`, `768×1024`, `390×844`, `360×800`) qua [`scripts/qa_ui_ux_audit.mjs`](./scripts/qa_ui_ux_audit.mjs):** Đạt **19/19 tổ hợp sạch lỗi** (`0` overflow, `0` occluded, `0` nút `< 40×40px`, `0` cặp nút `< 8px`, `0` chữ `< 12px`, `0` console error).
+- **VietQR & Hóa đơn in A4/A5 ([PrintableFormModal.tsx](./src/components/PrintableFormModal.tsx), [BookingDetailModal.tsx](./src/components/BookingDetailModal.tsx), [src/index.css](./src/index.css)):** Gỡ `crossOrigin="anonymous"` gây lỗi CORS trên ảnh `img.vietqr.io`, khóa ẩn tuyệt đối VietQR khi công nợ `<= 0đ`, hiển thị rõ số tiền & nội dung chuyển khoản, cô lập `.print-sheet-root` trong `@media print` cho khổ A4/A5 không lẫn nền ứng dụng và không cắt chữ ký.
+- **Responsive Mobile `360px` & Touch Accessibility ([FinanceReportsView.tsx](./src/components/FinanceReportsView.tsx), [BookingDetailModal.tsx](./src/components/BookingDetailModal.tsx), [src/index.css](./src/index.css)):** Chống tràn ngang cụm lọc ngày & vỡ thẻ KPI trên `360px`, thêm `shrink-0` chống chồng chữ tab drawer & ghim nút đóng `X`, nâng sàn vùng chạm `>= 40×40px` / khoảng cách `>= 8px` trên Mobile/Tablet và sàn cỡ chữ `>= 12px`.
 
 ### Fixed
 - **`BUG-01` [High] — Cố định `businessDate` dịch vụ & tách bạch phụ thu trong P&L:**

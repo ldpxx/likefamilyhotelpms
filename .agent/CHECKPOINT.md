@@ -1,13 +1,14 @@
 # Checkpoint — Like Family PMS
 
-- **Timestamp:** 2026-11-27 20:49 (UTC+7)
-- **Version:** `v2.2.2` (Bugfix + 5-Item Final Pre-Handover Audit & QA Cleanup DRY RUN)
-- **Status:** COMPLETED & VERIFIED — **HELD AT MANDATORY STOP GATE (NO QA DELETE, NO `qa_runner` REVOKE, NO PRODUCTION DEPLOY)**
+- **Timestamp:** 2026-11-27 21:43 (UTC+7)
+- **Version:** `v2.2.2` (Deployed Live for Owner Real-Device UAT UI/UX Testing)
+- **Status:** DEPLOYED LIVE AT `https://likefamilypms.web.app` — **QA DATA CLEANUP HELD AT STOP GATE (`QA2M_*` & `qa_runner` INTACT PER OWNER DECISION)**
 - **GitHub Branch:** `fix/v2.2.2` (`https://github.com/ldpxx/likefamilyhotelpms/tree/fix/v2.2.2`)
-- **Latest Audit Results (`14_FINAL_AUDIT_AND_QA_CLEANUP_DRYRUN.md`):**
-  - `npm run build` (`tsc -b && vite build`): **PASS** (`0` errors, `5.89s`)
-  - Local Emulator Audit Suite (`AUDIT-1-P502-ALL15`, `AUDIT-2-RULES-VALIDOCC`, `AUDIT-2-ZERO-ORPHAN-TX`, `AUDIT-3A..3D`, `AUDIT-4-ADMIN-RECOVERY`): **`8/8 PASS`**
-  - Playwright UI Audit Suite (`AUDIT-2-UI-CONFLICT-UX`, `AUDIT-4-1CLICK-BACKUP-UI`): **`2/2 PASS`** (0 orphan bookings, 0 orphan transactions, 0 orphan guests; downloaded `LikeFamilyPMS_Backup_27-11-2026.json` = `1,920.2 KB`, exact `500/681/260/15` counts)
-  - 4 Real Hardening Fixes Sealed Before Go-Live: (1) `validOccupancyDoc()` in `firestore.rules`, (2) sealed `undoBookingAction()` + hourly `updateBookingPricing()` in `runTransaction()`, (3) `stripUndefined()` preventing `tx.set()` `invalid-argument` on daily bookings + post-transaction `upsertGuestProfile()` (zero orphan guests), (4) `voidBookingService()` cross-month lock-aware voiding + voided `services[]` fallback guard in `revenueMetrics.ts`.
-  - Live `likefamilypms` DRY RUN (READ-ONLY, 0 deletes): **`1,496` QA docs (`QA2M_*`)** + **`1` temp account `qa_runner`** (`POtrN1IKzHVHBoULChYpINezSQ32`) proposed for cleanup; **`45` system/config/audit/real-staff docs 100% protected**.
-- **Next Pending Owner Decision:** Approve (1) `v2.2.2` Go-Live deploy (`firestore:rules` + `hosting`), (2) QA data cleanup (`1,496` docs) + 15-room reset (`hkStatus: 'clean'`, `currentBookingId: null`), and (3) revocation of `qa_runner@likefamilyhotel.com`.
+- **Live Verification (`likefamilypms`):**
+  - Hot backup before deploy: `backups/firestore_backup_pre_uat_ui_v2.2.2_2026-11-27.json` (`2,077.9 KB`)
+  - `firestore.rules` `v2.2.2` (`validOccupancyDoc()`, `configMigrationVersion`) deployed: **PASS**
+  - P.502 sample maintenance `QA2M_MNT_0014` marked `completed` & `auditAndRebuildOccupancy` executed live: **`75/75` `room_occupancy` docs built, `15/15` rooms = `0` conflicts (`missing=0, mismatch=0`)**
+  - `hotel_config/main` `bookingSources` migration executed live: **`12` sources, `configMigrationVersion: 1`**
+  - Hosting `v2.2.2` deployed (`npm run build` 0 errors, `5.46s`): `https://likefamilypms.web.app` (`HTTP 200`) & `/superadmin` (`HTTP 200`)
+  - UI/UX Geometric Audit (`scripts/qa_ui_ux_audit.mjs` + `QA_REPORTS/UI_UX_AUDIT_v2.2.2/UI_UX_AUDIT_REPORT.md`): **19/19 PASS** (`0` overflow, `0` occluded, `0` buttons `< 40px`, `0` pairs `< 8px`, `0` text `< 12px`, `0` console errors; VietQR, Base64 OCR modal & A4/A5 `@media print` verified)
+- **Next Pending Owner Decision:** After completing real-device UX/UI testing on `https://likefamilypms.web.app`, approve final QA cleanup (`1,496` `QA2M_*` docs + 15-room reset + `qa_runner` revocation) to hand over for official hotel operations.
