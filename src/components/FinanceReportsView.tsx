@@ -404,9 +404,9 @@ export const FinanceReportsView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 max-w-full overflow-x-clip">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex flex-wrap p-1 rounded-xl bg-[#F3F0E9] border border-[#E7E3DA]">
+        <div className="w-full sm:w-auto max-w-full inline-flex flex-wrap gap-2 p-1.5 rounded-xl bg-[#F3F0E9] border border-[#E7E3DA]">
           {[
             { id: 'pnl', label: 'Báo cáo Lãi / Lỗ (P&L) & Công suất' },
             { id: 'monthly', label: 'Báo cáo 12 tháng' },
@@ -465,11 +465,11 @@ export const FinanceReportsView: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <div className="flex items-center gap-1.5 text-[12px]">
+            <div className="flex flex-wrap items-center gap-2 text-[12px] max-w-full">
               <span className="text-[#57534E]">Từ</span>
-              <DateInputVN value={fromDate} onChange={setFromDate} className="h-8 text-[12px] w-36" />
+              <DateInputVN value={fromDate} onChange={setFromDate} className="h-9 text-[12px] w-[132px] sm:w-36" />
               <span className="text-[#57534E]">đến</span>
-              <DateInputVN value={toDate} onChange={setToDate} className="h-8 text-[12px] w-36" />
+              <DateInputVN value={toDate} onChange={setToDate} className="h-9 text-[12px] w-[132px] sm:w-36" />
             </div>
 
             <select
@@ -516,10 +516,10 @@ export const FinanceReportsView: React.FC = () => {
 
       {subTab === 'pnl' && (
         <div className="space-y-5">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="bg-white border border-[#E5E2DC] rounded-xl p-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-white border border-[#E5E2DC] rounded-xl p-4 min-w-0">
               <div className="text-[12px] text-[#57534E]">Tổng doanh thu phòng, DV & phí hủy</div>
-              <div className="mt-1 text-[20px] font-semibold font-mono-num text-[#1B5E4B]">
+              <div className="mt-1 text-[18px] sm:text-[20px] font-semibold font-mono-num text-[#1B5E4B] break-words">
                 {formatCurrency(metrics.totalRevenue)}
               </div>
               <div className="text-[11px] text-[#8A847C] font-mono-num mt-0.5">

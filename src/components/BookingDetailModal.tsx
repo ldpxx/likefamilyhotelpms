@@ -417,8 +417,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
     >
       <div className="bg-white border-l border-[#E7E3DA] w-full max-w-3xl h-full flex flex-col shadow-2xl overflow-hidden">
         {/* Top Drawer Header with Initials Avatar & 1-Click Copy */}
-        <div className="px-6 py-4 border-b border-[#E7E3DA] flex flex-wrap items-center justify-between gap-3 bg-white shrink-0">
-          <div className="flex items-start gap-3 min-w-0">
+        <div className="px-4 sm:px-6 py-4 border-b border-[#E7E3DA] flex flex-nowrap items-start justify-between gap-3 bg-white shrink-0">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-[#E8F3EC] text-[#0F5132] font-bold text-[13px] flex items-center justify-center shrink-0 uppercase">
               {(booking.primaryGuestName || 'KH')
                 .split(/\s+/)
@@ -576,7 +576,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   setEditHourlyTotal(booking.grossRoomTotal);
                 }
               }}
-              className={`px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap border-b-2 transition-colors ${
+              className={`shrink-0 px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap border-b-2 transition-colors ${
                 tab === t.id
                   ? 'border-[#1B5E4B] text-[#1B5E4B]'
                   : 'border-transparent text-[#57534E] hover:text-[#1C1B18]'
@@ -919,16 +919,19 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   placeholder="Ghi chú phiếu thu (tùy chọn)..."
                   className="w-full h-8 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
                 />
-                {showInlineQr && vietQrUrl && (
-                  <div className="pt-2 flex flex-col items-center gap-1 border-t border-[#E7E3DA]">
+                {showInlineQr && guestBalance > 0 && vietQrUrl && (
+                  <div className="pt-3 flex flex-col items-center gap-1.5 border-t border-[#E7E3DA] text-center">
                     <img
                       src={vietQrUrl}
                       alt="VietQR"
-                      className="w-44 h-auto rounded-xl border border-[#E7E3DA] bg-white p-2"
+                      className="w-44 max-w-full h-auto rounded-xl border border-[#E7E3DA] bg-white p-2"
                     />
-                    <span className="text-[11px] font-mono-num text-[#57534E]">
+                    <span className="text-[12px] font-mono-num font-semibold text-[#1C1B18]">
                       {hotelConfig.bankAccount.bankId} • {hotelConfig.bankAccount.accountNo} •{' '}
                       {formatCurrency(Math.max(0, payAmount || guestBalance))}
+                    </span>
+                    <span className="text-[12px] font-mono-num text-[#57534E]">
+                      ND: THANH TOAN {booking.bookingCode} P{booking.roomNumber}
                     </span>
                   </div>
                 )}

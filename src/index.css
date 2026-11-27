@@ -2,16 +2,21 @@
 
 @layer base {
   :root {
-    --bg-canvas: #F7F6F3;
+    /* Like Family Hotel Brand Palette: Forest Emerald + Warm Cream + Amber */
+    --bg-canvas: #FAF9F6;
     --bg-surface: #FFFFFF;
-    --bg-recessed: #F1EFEA;
-    --border-hairline: #E5E2DC;
+    --bg-recessed: #F3F0E9;
+    --border-hairline: #E7E3DA;
     --text-primary: #1C1B18;
     --text-secondary: #57534E;
     --text-muted: #8A847C;
-    --accent: #1B5E4B;
-    --accent-hover: #144839;
-    --accent-soft: #E8F2EE;
+    --accent: #0F5132;
+    --accent-secondary: #1B5E20;
+    --accent-hover: #0B3D26;
+    --accent-soft: #E8F3EC;
+    --amber: #D97706;
+    --amber-hover: #B45309;
+    --amber-soft: #FFFBEB;
   }
 
   body {
@@ -38,21 +43,88 @@
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #F1EFEA;
+  background: #F3F0E9;
 }
 ::-webkit-scrollbar-thumb {
-  background: #D0CBC2;
+  background: #D3CDC2;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #A9A398;
+  background: #A9A295;
+}
+
+/* Minimum readable typography floor (>= 12px across screens) */
+.text-\[10px\],
+.text-\[11px\] {
+  font-size: 12px !important;
+  line-height: 1.4;
+}
+
+/* Mobile & Tablet touch target accessibility (>= 40x40px & >= 8px sibling spacing) */
+@media (max-width: 768px) {
+  button:not([data-compact-touch="true"]) {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  .gap-1,
+  .gap-1\.5 {
+    gap: 8px;
+  }
+
+  .inline-flex {
+    gap: 8px;
+  }
 }
 
 @media print {
+  @page {
+    margin: 8mm;
+  }
+
+  html,
+  body {
+    background: #FFFFFF !important;
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
   .no-print {
     display: none !important;
   }
-  body {
+
+  /* Isolate ONLY the printable invoice/confirmation sheet so background app never bleeds onto printouts */
+  body * {
+    visibility: hidden !important;
+  }
+
+  .print-sheet-root,
+  .print-sheet-root * {
+    visibility: visible !important;
+  }
+
+  .print-sheet-root {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 4mm !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
     background: #FFFFFF !important;
+    overflow: visible !important;
+  }
+
+  /* Compact spacing for A5 paper width */
+  @media (max-width: 620px) {
+    .print-sheet-root {
+      padding: 2mm !important;
+      font-size: 12px !important;
+    }
   }
 }

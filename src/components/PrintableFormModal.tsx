@@ -45,9 +45,9 @@ export const FormPaperPreview: React.FC<{
     booking.grossRoomTotal + (booking.serviceTotal || 0) + (booking.hourlySurcharge || 0);
 
   return (
-    <div className="bg-white text-[#1C1B18] p-8 border border-[#E5E2DC] rounded-xl max-w-[740px] mx-auto space-y-5">
+    <div className="bg-white text-[#1C1B18] p-4 sm:p-8 border border-[#E5E2DC] rounded-xl max-w-[740px] mx-auto space-y-4 sm:space-y-5">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 pb-4 border-b border-[#E5E2DC]">
+      <div className="flex flex-wrap items-start justify-between gap-4 pb-4 border-b border-[#E5E2DC]">
         <div className="flex items-center gap-3">
           {template.logoBase64 && (
             <img
@@ -291,11 +291,14 @@ export const FormPaperPreview: React.FC<{
           )}
         </div>
 
-        {template.showVietQr && vietQrUrl && (
-          <div className="text-center border border-[#E5E2DC] rounded-xl p-2 bg-white">
-            <img src={vietQrUrl} alt="VietQR" className="w-36 h-auto mx-auto" crossOrigin="anonymous" />
-            <div className="text-[10px] font-mono-num text-[#57534E] mt-1">
-              Quét mã VietQR thanh toán
+        {template.showVietQr && balance > 0 && vietQrUrl && (
+          <div className="text-center border border-[#E5E2DC] rounded-xl p-2.5 bg-white">
+            <img src={vietQrUrl} alt="VietQR" className="w-36 h-auto mx-auto" />
+            <div className="text-[12px] font-mono-num text-[#1C1B18] font-semibold mt-1">
+              Quét mã VietQR • {formatCurrency(balance)}
+            </div>
+            <div className="text-[12px] font-mono-num text-[#57534E]">
+              ND: THANH TOAN {booking.bookingCode} P{booking.roomNumber}
             </div>
           </div>
         )}
@@ -411,8 +414,8 @@ export const PrintableFormModal: React.FC<PrintableFormModalProps> = ({
           </div>
         </div>
 
-        <div className="p-6 overflow-y-auto flex-1">
-          <div ref={paperRef}>
+        <div className="p-4 sm:p-6 overflow-y-auto flex-1">
+          <div ref={paperRef} className="print-sheet-root">
             <FormPaperPreview
               template={template}
               booking={booking}
