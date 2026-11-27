@@ -49,6 +49,8 @@ export const StaffAndAuditView: React.FC = () => {
   const [myPhone, setMyPhone] = useState(staffProfile?.phone || '');
   const [myCurPass, setMyCurPass] = useState('');
   const [myNewPass, setMyNewPass] = useState('');
+  const [myConfirmPass, setMyConfirmPass] = useState('');
+  const [selfPassError, setSelfPassError] = useState<string | null>(null);
   const [savingSelf, setSavingSelf] = useState(false);
 
   // Audit filter & GoHost-inspired Staff Activity Summary view
@@ -231,9 +233,28 @@ export const StaffAndAuditView: React.FC = () => {
     notify(`Đã cập nhật quyền cho ${staff.fullName}`, 'info');
   };
 
+  const isSelfPassMismatch = Boolean(
+    (myNewPass || myConfirmPass) && myNewPass !== myConfirmPass
+  );
+
   const handleSelfUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!staffProfile) return;
+    setSelfPassError(null);
+    if (myNewPass || myConfirmPass) {
+      if (myNewPass.trim().length < 6) {
+        const msg = 'Mật khẩu mới cần ít nhất 6 ký tự.';
+        setSelfPassError(msg);
+        notify(msg, 'error');
+        return;
+      }
+      if (myNewPass !== myConfirmPass) {
+        const msg = 'Mật khẩu nhập 2 lần không giống nhau. Vui lòng kiểm tra và nhập lại.';
+        setSelfPassError(msg);
+        notify(msg, 'error');
+        return;
+      }
+    }
     setSavingSelf(true);
     try {
       await updateOwnProfileAndPassword({
@@ -246,9 +267,13 @@ export const StaffAndAuditView: React.FC = () => {
       });
       setMyCurPass('');
       setMyNewPass('');
+      setMyConfirmPass('');
+      setSelfPassError(null);
       notify('Đã cập nhật thông tin tài khoản cá nhân thành công');
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Lỗi cập nhật tài khoản', 'error');
+      const msg = err instanceof Error ? err.message : 'Lỗi cập nhật tài khoản';
+      setSelfPassError(msg);
+      notify(msg, 'error');
     } finally {
       setSavingSelf(false);
     }
@@ -312,21 +337,21 @@ export const StaffAndAuditView: React.FC = () => {
                 )}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
                 <input
                   type="text"
                   required
                   value={myFullName}
                   onChange={(e) => setMyFullName(e.target.value)}
                   placeholder="Họ và tên"
-                  className="h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                  className="h-9 px-3 rounded-lg border border-[#E7E3DA] text-[13px]"
                 />
                 <input
                   type="tel"
                   value={myPhone}
                   onChange={(e) => setMyPhone(e.target.value)}
                   placeholder="Số điện thoại"
-                  className="h-9 px-3 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
+                  className="h-9 px-3 rounded-lg border border-[#E7E3DA] font-mono-num text-[13px]"
                 />
                 {(staffProfile.authSource === 'firebase_staff' ||
                   staffProfile.authSource === 'firestore_staff') && (
@@ -334,26 +359,54 @@ export const StaffAndAuditView: React.FC = () => {
                     <input
                       type="password"
                       value={myCurPass}
-                      onChange={(e) => setMyCurPass(e.target.value)}
-                      placeholder="Mật khẩu hiện tại (bắt buộc khi đổi)"
-                      className="h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                      onChange={(e) => {
+                        setMyCurPass(e.target.value);
+                        setSelfPassError(null);
+                      }}
+                      placeholder="Mật khẩu hiện tại (khi đổi)"
+                      className="h-9 px-3 rounded-lg border border-[#E7E3DA] text-[13px]"
                     />
                     <input
                       type="password"
                       minLength={6}
                       value={myNewPass}
-                      onChange={(e) => setMyNewPass(e.target.value)}
-                      placeholder="Mật khẩu mới ≥ 6 ký tự (tùy chọn)"
-                      className="h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                      onChange={(e) => {
+                        setMyNewPass(e.target.value);
+                        setSelfPassError(null);
+                      }}
+                      placeholder="Mật khẩu mới ≥ 6 ký tự"
+                      className="h-9 px-3 rounded-lg border border-[#E7E3DA] text-[13px]"
+                    />
+                    <input
+                      type="password"
+                      minLength={6}
+                      value={myConfirmPass}
+                      onChange={(e) => {
+                        setMyConfirmPass(e.target.value);
+                        setSelfPassError(null);
+                      }}
+                      placeholder="Nhập lại mật khẩu mới"
+                      className={`h-9 px-3 rounded-lg border text-[13px] focus:outline-none ${
+                        isSelfPassMismatch
+                          ? 'border-[#DC2626] bg-[#FEF2F2]/40 focus:border-[#DC2626]'
+                          : 'border-[#E7E3DA] focus:border-[#0F5132]'
+                      }`}
                     />
                   </>
                 )}
               </div>
+              {(isSelfPassMismatch || selfPassError) && (
+                <div className="p-2.5 rounded-lg bg-[#FEF2F2] border border-[#FECACA] text-[12px] font-medium text-[#B91C1C]">
+                  {isSelfPassMismatch
+                    ? 'Cảnh báo: Mật khẩu nhập 2 lần không giống nhau. Vui lòng nhập lại cho khớp.'
+                    : selfPassError}
+                </div>
+              )}
               <div className="flex justify-end">
                 <button
                   type="submit"
                   disabled={savingSelf}
-                  className="h-8 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[12px] font-medium"
+                  className="h-8 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[12px] font-medium"
                 >
                   {savingSelf ? 'Đang lưu...' : 'Lưu thông tin cá nhân'}
                 </button>

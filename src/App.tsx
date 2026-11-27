@@ -70,6 +70,7 @@ export const App: React.FC = () => {
 
   const [firstPass, setFirstPass] = useState('');
   const [firstPassConfirm, setFirstPassConfirm] = useState('');
+  const [firstPassError, setFirstPassError] = useState<string | null>(null);
   const [savingFirstPass, setSavingFirstPass] = useState(false);
 
   const [nav, setNav] = useState<NavKey>('rooms');
@@ -142,14 +143,21 @@ export const App: React.FC = () => {
   }
 
   if (staffProfile.mustChangePassword) {
+    const isFirstPassMismatch = Boolean(firstPassConfirm && firstPass !== firstPassConfirm);
+
     const handleForcePasswordSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
+      setFirstPassError(null);
       if (firstPass.trim().length < 6) {
-        notify('Mật khẩu mới cần ít nhất 6 ký tự.', 'error');
+        const msg = 'Mật khẩu mới cần ít nhất 6 ký tự.';
+        setFirstPassError(msg);
+        notify(msg, 'error');
         return;
       }
       if (firstPass !== firstPassConfirm) {
-        notify('Xác nhận mật khẩu chưa khớp.', 'error');
+        const msg = 'Mật khẩu nhập 2 lần không giống nhau. Vui lòng kiểm tra và nhập lại.';
+        setFirstPassError(msg);
+        notify(msg, 'error');
         return;
       }
       setSavingFirstPass(true);
@@ -157,9 +165,12 @@ export const App: React.FC = () => {
         await completeFirstLoginPasswordChange(firstPass);
         setFirstPass('');
         setFirstPassConfirm('');
+        setFirstPassError(null);
         notify('Đã đổi mật khẩu bảo mật thành công');
       } catch (err) {
-        notify(err instanceof Error ? err.message : 'Lỗi đổi mật khẩu', 'error');
+        const msg = err instanceof Error ? err.message : 'Lỗi đổi mật khẩu';
+        setFirstPassError(msg);
+        notify(msg, 'error');
       } finally {
         setSavingFirstPass(false);
       }
@@ -192,9 +203,12 @@ export const App: React.FC = () => {
                 required
                 minLength={6}
                 value={firstPass}
-                onChange={(e) => setFirstPass(e.target.value)}
+                onChange={(e) => {
+                  setFirstPass(e.target.value);
+                  setFirstPassError(null);
+                }}
                 placeholder="Nhập mật khẩu mới..."
-                className="w-full h-10 px-3 rounded-lg border border-[#E7E3DA] text-[13px]"
+                className="w-full h-10 px-3 rounded-lg border border-[#E7E3DA] text-[13px] focus:outline-none focus:border-[#0F5132]"
               />
             </div>
             <div>
@@ -206,11 +220,30 @@ export const App: React.FC = () => {
                 required
                 minLength={6}
                 value={firstPassConfirm}
-                onChange={(e) => setFirstPassConfirm(e.target.value)}
+                onChange={(e) => {
+                  setFirstPassConfirm(e.target.value);
+                  setFirstPassError(null);
+                }}
                 placeholder="Xác nhận mật khẩu mới..."
-                className="w-full h-10 px-3 rounded-lg border border-[#E7E3DA] text-[13px]"
+                className={`w-full h-10 px-3 rounded-lg border text-[13px] focus:outline-none ${
+                  isFirstPassMismatch
+                    ? 'border-[#DC2626] bg-[#FEF2F2]/40 focus:border-[#DC2626]'
+                    : 'border-[#E7E3DA] focus:border-[#0F5132]'
+                }`}
               />
+              {isFirstPassMismatch && (
+                <p className="mt-1.5 text-[12px] font-medium text-[#B91C1C]">
+                  Cảnh báo: Mật khẩu nhập 2 lần không giống nhau. Vui lòng nhập lại cho khớp.
+                </p>
+              )}
             </div>
+
+            {firstPassError && !isFirstPassMismatch && (
+              <div className="p-2.5 rounded-lg bg-[#FEF2F2] border border-[#FECACA] text-[12px] font-medium text-[#B91C1C]">
+                {firstPassError}
+              </div>
+            )}
+
             <div className="flex items-center justify-between pt-2 gap-2">
               <button
                 type="button"
@@ -239,7 +272,7 @@ export const App: React.FC = () => {
     icon: LucideIcon;
     group: 'frontdesk' | 'management';
   }> = [
-    { id: 'dashboard', label: 'Tổng quan', icon: LayoutDashboard, group: 'frontdesk' },
+      { id: 'dashboard', label: 'Tổng quan', icon: LayoutDashboard, group: 'frontdesk' },
       { id: 'rooms', label: 'Sơ đồ phòng', icon: BedDouble, group: 'frontdesk' },
       { id: 'calendar', label: 'Lịch Calendar', icon: CalendarRange, group: 'frontdesk' },
       { id: 'finder', label: 'Tìm phòng trống', icon: Search, group: 'frontdesk' },
@@ -305,11 +338,10 @@ export const App: React.FC = () => {
                       key={item.id}
                       type="button"
                       onClick={() => setNav(item.id)}
-                      className={`w-full h-9 px-2.5 rounded-lg text-[13px] font-medium flex items-center gap-2.5 transition-colors ${
-                        active
-                          ? 'bg-[#E8F3EC] text-[#0F5132]'
-                          : 'text-[#57534E] hover:bg-[#FAF9F6] hover:text-[#1C1B18]'
-                      }`}
+                      className={`w-full h-9 px-2.5 rounded-lg text-[13px] font-medium flex items-center gap-2.5 transition-colors ${active
+                        ? 'bg-[#E8F3EC] text-[#0F5132]'
+                        : 'text-[#57534E] hover:bg-[#FAF9F6] hover:text-[#1C1B18]'
+                        }`}
                     >
                       <Icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
                       <span className="truncate">{item.label}</span>
@@ -334,11 +366,10 @@ export const App: React.FC = () => {
                       key={item.id}
                       type="button"
                       onClick={() => setNav(item.id)}
-                      className={`w-full h-9 px-2.5 rounded-lg text-[13px] font-medium flex items-center gap-2.5 transition-colors ${
-                        active
-                          ? 'bg-[#E8F3EC] text-[#0F5132]'
-                          : 'text-[#57534E] hover:bg-[#FAF9F6] hover:text-[#1C1B18]'
-                      }`}
+                      className={`w-full h-9 px-2.5 rounded-lg text-[13px] font-medium flex items-center gap-2.5 transition-colors ${active
+                        ? 'bg-[#E8F3EC] text-[#0F5132]'
+                        : 'text-[#57534E] hover:bg-[#FAF9F6] hover:text-[#1C1B18]'
+                        }`}
                     >
                       <Icon className="w-4 h-4 shrink-0" strokeWidth={1.5} />
                       <span className="truncate">{item.label}</span>
