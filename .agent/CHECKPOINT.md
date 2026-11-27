@@ -1,20 +1,13 @@
 # Checkpoint — Like Family PMS
 
-- **Timestamp:** 2026-11-27 19:56 (UTC+7)
-- **Version:** `v2.2.2` (Technical Bugfix & Regression Release — `BUG-01`, `BUG-02`, `BUG-03`, `UI-01..UI-04`, Restore Drill)
-- **Status:** COMPLETED & VERIFIED ON LOCAL EMULATOR — **HELD AT STOP GATE (NOT DEPLOYED TO PRODUCTION, `QA2M_*` INTACT)**
-- **GitHub Branch:** `fix/v2.2.2` (`https://github.com/ldpxx/likefamilyhotelpms`)
-- **Production URL (still running `v2.2.1` pending Owner Go-Live approval):** `https://likefamilypms.web.app`
-- **Verification Results (`v2.2.2`):**
-  - Forbidden imports (`GoogleAuthProvider`, `firebase/storage`): `0`
-  - `npm run build` (`tsc -b && vite build`): **PASS** (`0` errors, `5.60s`)
-  - Firebase Local Emulator Suite (`DRILL-01..02`, `BUG01`, `BUG02` 12-req storm + 5m buffer + group atomic + release, `BUG03` idempotent migration, `SEC-OCC/CFG/RBAC`): **`14/14 PASS`**
-  - Playwright Automated UI Suite (`UI-01` Desktop 1440×900, `UI-02` Tablet 768×1024, `UI-03` Mobile 390×844, `UI-04` Password mismatch + Hourly drawer + Restore Sources button, `UI-CONSOLE-01`): **`5/5 PASS`** (`0` pageErrors, `0` consoleErrors)
-  - Total `v2.2.2` QA: **`19/19 PASS` (`0 FAIL`, `0 BLOCKED`, `0 NOT RUN`)** | Cumulative (`v2.2.1` + `v2.2.2`): **`54/54 PASS`**
-- **Key Financial & Concurrency Proof:**
-  - `serviceRev(T10) = 30.320.000đ`, `serviceRev(T11) = 28.205.000đ`, `T10+T11 = 58.525.000đ === 2M (58.525.000đ) === Sum 61 days` (**`0đ` variance**); `roomRev = 362.750.000đ / 730 đêm`.
-  - Concurrency Storm (12 simultaneous `runTransaction` requests for P.201): **1 succeeded / 11 atomically rejected (`OCCUPANCY_CONFLICT`)**.
-  - Historical audit finding surfaced by `auditAndRebuildOccupancy()`: `1` pre-existing seeded overlap on `room_502_2026-11-28` (`QA2M_BKG_0433` vs `QA2M_MNT_0014`) — preserved untouched for Owner review.
-  - Restore Drill on Emulator: `1,519` docs restored from `backups/firestore_backup_pre_v2.2.2_2026-11-27.json` in `3,136ms` (`100%` count parity).
-- **Mandatory Reports:** All **13 reports** (`00_ENVIRONMENT_GATE.md` → `12_FINAL_UAT_READINESS.md`) + `9` screenshots saved in `QA_REPORTS/BUG_FIX_REGRESSION_v2.2.2/`.
-- **UAT Readiness Recommendation:** **`GO`** (awaiting Owner approval before `firebase deploy` or `QA2M_*` cleanup).
+- **Timestamp:** 2026-11-27 20:49 (UTC+7)
+- **Version:** `v2.2.2` (Bugfix + 5-Item Final Pre-Handover Audit & QA Cleanup DRY RUN)
+- **Status:** COMPLETED & VERIFIED — **HELD AT MANDATORY STOP GATE (NO QA DELETE, NO `qa_runner` REVOKE, NO PRODUCTION DEPLOY)**
+- **GitHub Branch:** `fix/v2.2.2` (`https://github.com/ldpxx/likefamilyhotelpms/tree/fix/v2.2.2`)
+- **Latest Audit Results (`14_FINAL_AUDIT_AND_QA_CLEANUP_DRYRUN.md`):**
+  - `npm run build` (`tsc -b && vite build`): **PASS** (`0` errors, `5.89s`)
+  - Local Emulator Audit Suite (`AUDIT-1-P502-ALL15`, `AUDIT-2-RULES-VALIDOCC`, `AUDIT-2-ZERO-ORPHAN-TX`, `AUDIT-3A..3D`, `AUDIT-4-ADMIN-RECOVERY`): **`8/8 PASS`**
+  - Playwright UI Audit Suite (`AUDIT-2-UI-CONFLICT-UX`, `AUDIT-4-1CLICK-BACKUP-UI`): **`2/2 PASS`** (0 orphan bookings, 0 orphan transactions, 0 orphan guests; downloaded `LikeFamilyPMS_Backup_27-11-2026.json` = `1,920.2 KB`, exact `500/681/260/15` counts)
+  - 4 Real Hardening Fixes Sealed Before Go-Live: (1) `validOccupancyDoc()` in `firestore.rules`, (2) sealed `undoBookingAction()` + hourly `updateBookingPricing()` in `runTransaction()`, (3) `stripUndefined()` preventing `tx.set()` `invalid-argument` on daily bookings + post-transaction `upsertGuestProfile()` (zero orphan guests), (4) `voidBookingService()` cross-month lock-aware voiding + voided `services[]` fallback guard in `revenueMetrics.ts`.
+  - Live `likefamilypms` DRY RUN (READ-ONLY, 0 deletes): **`1,496` QA docs (`QA2M_*`)** + **`1` temp account `qa_runner`** (`POtrN1IKzHVHBoULChYpINezSQ32`) proposed for cleanup; **`45` system/config/audit/real-staff docs 100% protected**.
+- **Next Pending Owner Decision:** Approve (1) `v2.2.2` Go-Live deploy (`firestore:rules` + `hosting`), (2) QA data cleanup (`1,496` docs) + 15-room reset (`hkStatus: 'clean'`, `currentBookingId: null`), and (3) revocation of `qa_runner@likefamilyhotel.com`.
