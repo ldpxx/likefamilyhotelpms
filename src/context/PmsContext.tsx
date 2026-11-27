@@ -22,6 +22,7 @@ import { auth, db, usernameToInternalEmail } from '../lib/firebase';
 import {
   DEFAULT_FORM_TEMPLATES,
   DEFAULT_HOTEL_CONFIG,
+  DEFAULT_SERVICE_CATALOG,
   seedLikeFamilyHotelSampleData,
 } from '../lib/seedData';
 import { getDefaultPermissionsForRole } from '../lib/utils';
@@ -423,6 +424,9 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...DEFAULT_HOTEL_CONFIG,
             ...data,
             bookingSources: sources,
+            serviceCatalog: Array.isArray(data.serviceCatalog)
+              ? data.serviceCatalog
+              : DEFAULT_SERVICE_CATALOG,
           });
         }
       })

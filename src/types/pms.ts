@@ -47,6 +47,17 @@ export interface GeminiApiKeyEntry {
   enabled: boolean;
 }
 
+export type ServiceItemGroup = 'food' | 'drink' | 'service';
+
+export interface ServiceCatalogItem {
+  id: string;
+  name: string;
+  category: ServiceItemGroup;
+  price: number;
+  isActive: boolean;
+  order?: number;
+}
+
 export interface HotelConfig {
   hotelName: string;
   address: string;
@@ -57,6 +68,8 @@ export interface HotelConfig {
   bankAccount: BankAccountConfig;
   /** Unified OTA & Direct booking sources (No delete — toggle isActive instead) */
   bookingSources: BookingSourceConfig[];
+  /** Centralized Hotel Service & F&B Catalog (food / drink / service — no inventory tracking) */
+  serviceCatalog?: ServiceCatalogItem[];
   expenseCategories: string[];
   /** Centralized Hotel Logo (compressed PNG/WebP Base64 <= 60KB) stored in hotel_config/main */
   hotelLogoBase64?: string;
@@ -221,13 +234,24 @@ export interface DailyRate {
 
 export interface BookingServiceItem {
   id: string;
+  /** Optional link back to hotelConfig.serviceCatalog item */
+  catalogItemId?: string;
   name: string;
   quantity: number;
   unitPrice: number;
   total: number;
   /** Fixed accounting business date (YYYY-MM-DD, Asia/Ho_Chi_Minh) — v2.2.2 BUG-01 */
   businessDate?: string;
-  category?: string;
+  category?:
+    | 'food'
+    | 'drink'
+    | 'service'
+    | 'minibar'
+    | 'laundry'
+    | 'surcharge'
+    | 'damage'
+    | 'other'
+    | string;
   occurredAt?: string;
   status?: 'active' | 'voided';
   addedAt: string;

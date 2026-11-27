@@ -110,6 +110,7 @@ service cloud.firestore {
             'hourlyCleaningBufferMinutes',
             'configMigrationVersion',
             'hotelLogoBase64',
+            'serviceCatalog',
             'updatedAt'
           ])
         )

@@ -1,6 +1,27 @@
 import { doc, writeBatch } from 'firebase/firestore';
 import { db } from './firebase';
-import type { FormTemplate, HotelConfig, Room, RoomType } from '../types/pms';
+import type {
+  FormTemplate,
+  HotelConfig,
+  Room,
+  RoomType,
+  ServiceCatalogItem,
+} from '../types/pms';
+
+export const DEFAULT_SERVICE_CATALOG: ServiceCatalogItem[] = [
+  { id: 'svc_water', name: 'Nước suối Lavie', category: 'drink', price: 15000, isActive: true, order: 1 },
+  { id: 'svc_soda', name: 'Nước ngọt lon (Coca / Pepsi / 7Up)', category: 'drink', price: 20000, isActive: true, order: 2 },
+  { id: 'svc_energy', name: 'Nước tăng lực (Bò húc)', category: 'drink', price: 25000, isActive: true, order: 3 },
+  { id: 'svc_beer', name: 'Bia lon (Tiger / Heineken)', category: 'drink', price: 30000, isActive: true, order: 4 },
+  { id: 'svc_coffee', name: 'Cà phê / Trà pha sẵn', category: 'drink', price: 20000, isActive: true, order: 5 },
+  { id: 'svc_noodle', name: 'Mì ly / Mì gói', category: 'food', price: 20000, isActive: true, order: 6 },
+  { id: 'svc_snack', name: 'Snack / Khoai tây chiên', category: 'food', price: 25000, isActive: true, order: 7 },
+  { id: 'svc_breakfast', name: 'Bữa sáng phục vụ tại phòng', category: 'food', price: 60000, isActive: true, order: 8 },
+  { id: 'svc_laundry', name: 'Giặt ủi quần áo (theo kg)', category: 'service', price: 40000, isActive: true, order: 9 },
+  { id: 'svc_motorbike', name: 'Thuê xe máy (1 ngày)', category: 'service', price: 150000, isActive: true, order: 10 },
+  { id: 'svc_airport', name: 'Đưa đón sân bay', category: 'service', price: 250000, isActive: true, order: 11 },
+  { id: 'svc_extra_person', name: 'Phụ thu thêm người / Giường phụ', category: 'service', price: 150000, isActive: true, order: 12 },
+];
 
 export const DEFAULT_HOTEL_CONFIG: HotelConfig = {
   hotelName: 'Like Family Hotel',
@@ -33,6 +54,7 @@ export const DEFAULT_HOTEL_CONFIG: HotelConfig = {
     { id: 'ota_trip', name: 'Trip.com', kind: 'ota', color: '#0F766E', isActive: true },
     { id: 'ota_airbnb', name: 'Airbnb', kind: 'ota', color: '#BE123C', isActive: true },
   ],
+  serviceCatalog: DEFAULT_SERVICE_CATALOG,
   expenseCategories: [
     'Điện / Nước / Internet',
     'Giặt ủi & Đồ vải',

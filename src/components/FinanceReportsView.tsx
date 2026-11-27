@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { ArrowRightLeft, Download, Lock, Plus, RotateCcw, Wallet } from 'lucide-react';
+import { ArrowRightLeft, Download, Lock, Plus, RotateCcw, Search, Wallet } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { db } from '../lib/firebase';
 import { usePms } from '../context/PmsContext';
@@ -21,9 +21,10 @@ import {
   formatDateVN,
   generateId,
   getPaymentMethodLabel,
+  normalizeVietnamese,
   todayISO,
 } from '../lib/utils';
-import { getRoomRevenueInRange } from '../lib/revenueMetrics';
+import { getRoomRevenueInRange, type RevenueServiceGroup } from '../lib/revenueMetrics';
 import { recordTransaction, voidTransactionWithUndo } from '../lib/pmsActions';
 import { DateInputVN } from './DateInputVN';
 import { ReclassifyPaymentModal } from './ReclassifyPaymentModal';
@@ -50,6 +51,11 @@ export const FinanceReportsView: React.FC = () => {
   const [sourceFilter, setSourceFilter] = useState('all');
   const [roomTypeFilter, setRoomTypeFilter] = useState('all');
   const [methodFilter, setMethodFilter] = useState('all');
+
+  // Service Revenue Breakdown & Multi-Dimensional Detail Table Filters
+  const [svcGroupFilter, setSvcGroupFilter] = useState<'all' | RevenueServiceGroup>('all');
+  const [svcRoomFilter, setSvcRoomFilter] = useState('all');
+  const [svcSearchQuery, setSvcSearchQuery] = useState('');
 
   const [txDirection, setTxDirection] = useState<'out' | 'in'>('out');
   const [txCategory, setTxCategory] = useState(
@@ -79,6 +85,45 @@ export const FinanceReportsView: React.FC = () => {
 
   const filteredBookings = rangeRev.eligibleBookings;
   const forfeitedCancelFees = rangeRev.forfeitedCancelFees;
+
+  const filteredServiceRows = useMemo(() => {
+    const normQ = normalizeVietnamese(svcSearchQuery.trim());
+    return rangeRev.serviceDetailRows.filter((row) => {
+      if (svcGroupFilter !== 'all' && row.group !== svcGroupFilter) return false;
+      if (svcRoomFilter !== 'all' && row.roomNumber !== svcRoomFilter) return false;
+      if (normQ) {
+        const hay = normalizeVietnamese(
+          `${row.serviceName} ${row.bookingCode} ${row.guestName} P.${row.roomNumber} ${row.groupLabel}`
+        );
+        if (!hay.includes(normQ)) return false;
+      }
+      return true;
+    });
+  }, [rangeRev.serviceDetailRows, svcGroupFilter, svcRoomFilter, svcSearchQuery]);
+
+  const filteredServiceTotal = useMemo(
+    () => filteredServiceRows.reduce((s, r) => s + r.total, 0),
+    [filteredServiceRows]
+  );
+
+  const handleExportServiceDetailExcel = () => {
+    const data = filteredServiceRows.map((r) => ({
+      'Ngày phát sinh': formatDateVN(r.businessDate),
+      'Mã đơn': r.bookingCode,
+      Phòng: `P.${r.roomNumber}`,
+      'Tên khách': r.guestName,
+      'Tên món / Dịch vụ': r.serviceName,
+      'Phân loại': r.groupLabel,
+      'Số lượng': r.quantity,
+      'Đơn giá (VNĐ)': r.unitPrice,
+      'Thành tiền (VNĐ)': r.total,
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'DoanhThuDichVu');
+    XLSX.writeFile(wb, `LikeFamily_DichVu_${fromDate}_${toDate}.xlsx`);
+    notify('Đã xuất file Excel Bảng kê Doanh thu Dịch vụ');
+  };
 
   // Rule 4 & Rule 5: Track Pending Deposits (excluded from revenue!)
   const pendingDepositsTotal = useMemo(
@@ -417,9 +462,8 @@ export const FinanceReportsView: React.FC = () => {
               key={t.id}
               type="button"
               onClick={() => setSubTab(t.id as typeof subTab)}
-              className={`h-8 px-3.5 rounded-lg text-[13px] font-medium transition-colors ${
-                subTab === t.id ? 'bg-[#0F5132] text-white' : 'text-[#57534E] hover:text-[#1C1B18]'
-              }`}
+              className={`h-8 px-3.5 rounded-lg text-[13px] font-medium transition-colors ${subTab === t.id ? 'bg-[#0F5132] text-white' : 'text-[#57534E] hover:text-[#1C1B18]'
+                }`}
             >
               {t.label}
             </button>
@@ -551,13 +595,12 @@ export const FinanceReportsView: React.FC = () => {
             <div className="bg-white border border-[#E5E2DC] rounded-xl p-4">
               <div className="text-[12px] text-[#57534E]">Lợi nhuận ròng (P&L)</div>
               <div
-                className={`mt-1 text-[20px] font-semibold font-mono-num ${
-                  !canViewProfit
-                    ? 'text-[#8A847C]'
-                    : metrics.netProfit >= 0
+                className={`mt-1 text-[20px] font-semibold font-mono-num ${!canViewProfit
+                  ? 'text-[#8A847C]'
+                  : metrics.netProfit >= 0
                     ? 'text-[#15803D]'
                     : 'text-[#B91C1C]'
-                }`}
+                  }`}
               >
                 {canViewProfit ? formatCurrency(metrics.netProfit) : 'Ẩn theo phân quyền'}
               </div>
@@ -565,7 +608,7 @@ export const FinanceReportsView: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="bg-white border border-[#E5E2DC] rounded-xl p-4">
               <div className="text-[12px] text-[#57534E]">Công suất phòng (Occupancy)</div>
               <div className="mt-1 text-[22px] font-semibold font-mono-num text-[#1C1B18]">
@@ -681,6 +724,224 @@ export const FinanceReportsView: React.FC = () => {
               </table>
             </div>
           </div>
+
+          {/* Service Revenue Breakdown by Group (Food / Drink / Service / Hourly Surcharge) & Multi-Dimensional Detail Table */}
+          <div
+            data-testid="pnl-service-revenue-section"
+            className="bg-white border border-[#E7E3DA] rounded-2xl p-4 sm:p-5 space-y-4"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-[14px] font-semibold text-[#1C1B18]">
+                  Cơ cấu Doanh thu Dịch vụ &amp; Bảng kê chi tiết
+                </h3>
+                <p className="text-[12px] text-[#57534E]">
+                  Hạch toán theo ngày phát sinh bất biến ({formatDateVN(fromDate)} →{' '}
+                  {formatDateVN(toDate)}) • Tổng doanh thu DV &amp; Phụ thu:{' '}
+                  <strong className="font-mono-num text-[#0F5132]">
+                    {formatCurrency(rangeRev.serviceRev)}
+                  </strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleExportServiceDetailExcel}
+                disabled={filteredServiceRows.length === 0}
+                className="min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] disabled:opacity-40 text-white text-[12px] font-medium inline-flex items-center gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" strokeWidth={1.5} />
+                Xuất Excel DV ({filteredServiceRows.length})
+              </button>
+            </div>
+
+            {/* 4 Breakdown Cards: Food, Drink, Service, Surcharge */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+              {rangeRev.serviceBreakdownByGroup.map((g) => {
+                const isSelected = svcGroupFilter === g.group;
+                const accent =
+                  g.group === 'food'
+                    ? 'text-[#B45309] bg-[#FFFBEB] border-[#FDE68A]'
+                    : g.group === 'drink'
+                    ? 'text-[#0F5132] bg-[#E8F3EC] border-[#BBF7D0]'
+                    : g.group === 'surcharge'
+                    ? 'text-[#C2410C] bg-[#FFF7ED] border-[#FED7AA]'
+                    : 'text-[#335C67] bg-[#F0F7F9] border-[#BFD5DA]';
+                return (
+                  <button
+                    key={g.group}
+                    type="button"
+                    data-testid={`service-group-card-${g.group}`}
+                    onClick={() =>
+                      setSvcGroupFilter((prev) => (prev === g.group ? 'all' : g.group))
+                    }
+                    className={`p-3.5 rounded-xl border text-left transition-all ${
+                      isSelected
+                        ? 'border-[#0F5132] ring-2 ring-[#0F5132]/20 bg-[#FAF9F6]'
+                        : 'border-[#E7E3DA] bg-white hover:border-[#0F5132]/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${accent}`}
+                      >
+                        {g.label}
+                      </span>
+                      <span className="text-[11px] font-mono-num font-semibold text-[#57534E]">
+                        {g.sharePct}%
+                      </span>
+                    </div>
+                    <div className="mt-2 text-[16px] sm:text-[18px] font-bold font-mono-num text-[#1C1B18] break-words">
+                      {formatCurrency(g.revenue)}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-[#8A847C] font-mono-num">
+                      {g.count} lượt bán • SL: {g.quantity}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Multi-Dimensional Filter Controls */}
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+              <div className="sm:col-span-5 flex flex-wrap items-center gap-1.5">
+                {(
+                  [
+                    { id: 'all', label: 'Tất cả' },
+                    { id: 'food', label: 'Thức ăn' },
+                    { id: 'drink', label: 'Đồ uống' },
+                    { id: 'service', label: 'Dịch vụ' },
+                    { id: 'surcharge', label: 'Phụ thu giờ' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    data-testid={`service-filter-pill-${opt.id}`}
+                    onClick={() => setSvcGroupFilter(opt.id)}
+                    className={`min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg text-[12px] font-medium transition-colors ${
+                      svcGroupFilter === opt.id
+                        ? 'bg-[#0F5132] text-white'
+                        : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              <select
+                aria-label="Lọc dịch vụ theo phòng"
+                value={svcRoomFilter}
+                onChange={(e) => setSvcRoomFilter(e.target.value)}
+                className="sm:col-span-3 min-h-[40px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
+              >
+                <option value="all">Tất cả phòng</option>
+                {rooms.map((r) => (
+                  <option key={r.id} value={r.roomNumber}>
+                    P.{r.roomNumber} ({r.floor})
+                  </option>
+                ))}
+              </select>
+
+              <div className="sm:col-span-4 relative">
+                <Search
+                  className="w-3.5 h-3.5 text-[#8A847C] absolute left-2.5 top-1/2 -translate-y-1/2"
+                  strokeWidth={1.5}
+                />
+                <input
+                  type="text"
+                  value={svcSearchQuery}
+                  onChange={(e) => setSvcSearchQuery(e.target.value)}
+                  placeholder="Tìm tên món, mã đơn, khách..."
+                  data-testid="service-detail-search-input"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-8 pl-8 pr-3 rounded-lg border border-[#E7E3DA] bg-white text-[12px] focus:outline-none focus:border-[#0F5132]"
+                />
+              </div>
+            </div>
+
+            {/* Detailed Service Ledger Table */}
+            <div className="overflow-x-auto border border-[#E7E3DA] rounded-xl">
+              <table className="w-full text-[12px] min-w-[760px]">
+                <thead className="bg-[#FAF9F6] border-b border-[#E7E3DA] text-[#57534E]">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium">Ngày phát sinh</th>
+                    <th className="text-left px-3 py-2 font-medium">Mã đơn</th>
+                    <th className="text-left px-3 py-2 font-medium">Phòng</th>
+                    <th className="text-left px-3 py-2 font-medium">Tên khách</th>
+                    <th className="text-left px-3 py-2 font-medium">Tên món / Dịch vụ</th>
+                    <th className="text-left px-3 py-2 font-medium">Phân loại</th>
+                    <th className="text-right px-3 py-2 font-medium">SL</th>
+                    <th className="text-right px-3 py-2 font-medium">Đơn giá</th>
+                    <th className="text-right px-3 py-2 font-medium">Thành tiền</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#F1EFEA]">
+                  {filteredServiceRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-6 text-center text-[#8A847C]">
+                        Không có giao dịch dịch vụ nào khớp bộ lọc trong kỳ này.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredServiceRows.slice(0, 120).map((r) => (
+                      <tr key={r.id} className="hover:bg-[#FAF9F6]">
+                        <td className="px-3 py-2 font-mono-num text-[#57534E]">
+                          {formatDateVN(r.businessDate)}
+                        </td>
+                        <td className="px-3 py-2 font-mono-num font-medium text-[#1C1B18]">
+                          {r.bookingCode}
+                        </td>
+                        <td className="px-3 py-2 font-mono-num font-semibold text-[#0F5132]">
+                          P.{r.roomNumber}
+                        </td>
+                        <td className="px-3 py-2 text-[#1C1B18]">{r.guestName}</td>
+                        <td className="px-3 py-2 font-medium text-[#1C1B18]">{r.serviceName}</td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                              r.group === 'food'
+                                ? 'bg-[#FFFBEB] text-[#B45309]'
+                                : r.group === 'drink'
+                                ? 'bg-[#E8F3EC] text-[#0F5132]'
+                                : r.group === 'surcharge'
+                                ? 'bg-[#FFF7ED] text-[#C2410C]'
+                                : 'bg-[#F0F7F9] text-[#335C67]'
+                            }`}
+                          >
+                            {r.groupLabel}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono-num">{r.quantity}</td>
+                        <td className="px-3 py-2 text-right font-mono-num text-[#57534E]">
+                          {formatCurrency(r.unitPrice)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono-num font-semibold text-[#0F5132]">
+                          {formatCurrency(r.total)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+                {filteredServiceRows.length > 0 && (
+                  <tfoot className="bg-[#FAF9F6] border-t border-[#E7E3DA] font-semibold">
+                    <tr>
+                      <td colSpan={6} className="px-3 py-2.5 text-[#1C1B18]">
+                        Tổng cộng bộ lọc ({filteredServiceRows.length} dòng
+                        {filteredServiceRows.length > 120 ? ', hiển thị 120 dòng gần nhất' : ''})
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-mono-num">
+                        {filteredServiceRows.reduce((s, r) => s + r.quantity, 0)}
+                      </td>
+                      <td className="px-3 py-2.5" />
+                      <td className="px-3 py-2.5 text-right font-mono-num text-[#0F5132]">
+                        {formatCurrency(filteredServiceTotal)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
@@ -775,13 +1036,12 @@ export const FinanceReportsView: React.FC = () => {
                       {formatCurrency(r.expense)}
                     </td>
                     <td
-                      className={`px-3 py-2.5 text-right font-semibold ${
-                        !canViewProfit
-                          ? 'text-[#8A847C] font-sans font-normal'
-                          : r.profit >= 0
+                      className={`px-3 py-2.5 text-right font-semibold ${!canViewProfit
+                        ? 'text-[#8A847C] font-sans font-normal'
+                        : r.profit >= 0
                           ? 'text-[#0F5132]'
                           : 'text-[#B91C1C]'
-                      }`}
+                        }`}
                     >
                       {canViewProfit ? formatCurrency(r.profit) : 'Ẩn'}
                     </td>
@@ -931,15 +1191,14 @@ export const FinanceReportsView: React.FC = () => {
                     <td className="px-4 py-2.5">{getPaymentMethodLabel(tx.method)}</td>
                     <td className="px-4 py-2.5 text-[#57534E]">{tx.createdByName}</td>
                     <td
-                      className={`px-4 py-2.5 text-right font-mono-num font-semibold ${
-                        tx.status === 'voided_by_undo'
-                          ? 'line-through text-[#8A847C]'
-                          : tx.method === 'ota_debt'
+                      className={`px-4 py-2.5 text-right font-mono-num font-semibold ${tx.status === 'voided_by_undo'
+                        ? 'line-through text-[#8A847C]'
+                        : tx.method === 'ota_debt'
                           ? 'text-[#C2410C]'
                           : tx.direction === 'in'
-                          ? 'text-[#15803D]'
-                          : 'text-[#B91C1C]'
-                      }`}
+                            ? 'text-[#15803D]'
+                            : 'text-[#B91C1C]'
+                        }`}
                     >
                       {tx.direction === 'in' ? '+' : '-'}
                       {formatCurrency(tx.amount)}

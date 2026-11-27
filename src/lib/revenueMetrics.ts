@@ -1,10 +1,60 @@
-import type { AuditLog, Booking, BookingServiceItem, RoomMaintenance, Transaction } from '../types/pms';
+import type {
+  AuditLog,
+  Booking,
+  BookingServiceItem,
+  RoomMaintenance,
+  ServiceItemGroup,
+  Transaction,
+} from '../types/pms';
 import {
   diffDays,
   getSourceLabel,
   isBookingEligibleForPnLRevenue,
+  normalizeVietnamese,
   parseISODate,
 } from './utils';
+
+export type RevenueServiceGroup = ServiceItemGroup | 'surcharge';
+
+export function getServiceGroupLabel(group: RevenueServiceGroup): string {
+  if (group === 'food') return 'Thức ăn';
+  if (group === 'drink') return 'Đồ uống';
+  if (group === 'surcharge') return 'Phụ thu giờ';
+  return 'Dịch vụ';
+}
+
+/**
+ * Maps both new structured categories (`food` | `drink` | `service`) AND legacy categories
+ * (`minibar`, `laundry`, `damage`, `other`, `Dịch vụ phòng`, etc.) into one of the 3 clean
+ * reporting groups (`food` | `drink` | `service`) with 100% backward compatibility.
+ */
+export function classifyServiceGroup(category?: string, name?: string): ServiceItemGroup {
+  const cat = (category || '').trim().toLowerCase();
+  if (cat === 'food') return 'food';
+  if (cat === 'drink') return 'drink';
+  if (cat === 'service') return 'service';
+
+  const normName = normalizeVietnamese(name || '');
+  const isFoodByName =
+    /\b(mi |mi ly|mi goi|snack|banh|an sang|bua sang|do an|com|pho|bun|trung|xuc xich|khoai tay|food|breakfast)\b/.test(
+      normName
+    );
+  const isDrinkByName =
+    /\b(nuoc|lavie|aquafina|dasani|bia|beer|tiger|heineken|saigon|coca|pepsi|7up|sprite|sting|bo huc|tang luc|tra |cafe|ca phe|coffee|sua|drink|soda|redbull)\b/.test(
+      normName
+    );
+
+  if (cat === 'minibar') {
+    if (isFoodByName) return 'food';
+    return 'drink';
+  }
+  if (cat === 'laundry' || cat === 'damage' || cat === 'other') {
+    return 'service';
+  }
+  if (isFoodByName) return 'food';
+  if (isDrinkByName) return 'drink';
+  return 'service';
+}
 
 const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -146,10 +196,38 @@ export interface RevenueRangeOptions {
   roomTypeFilter?: string;
 }
 
+export interface ServiceGroupSummary {
+  group: RevenueServiceGroup;
+  label: string;
+  revenue: number;
+  count: number;
+  quantity: number;
+  sharePct: number;
+}
+
+export interface ServiceDetailRow {
+  id: string;
+  businessDate: string; // YYYY-MM-DD (immutable)
+  bookingId: string;
+  bookingCode: string;
+  roomNumber: string;
+  roomTypeName: string;
+  guestName: string;
+  serviceName: string;
+  group: RevenueServiceGroup;
+  groupLabel: string;
+  rawCategory: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+}
+
 export interface RevenueRangeMetrics {
   eligibleBookings: Booking[];
   roomRev: number;
   serviceRev: number;
+  serviceBreakdownByGroup: ServiceGroupSummary[];
+  serviceDetailRows: ServiceDetailRow[];
   forfeitedCancelFees: number;
   totalRevenue: number;
   soldNights: number;
@@ -269,6 +347,14 @@ export function getRoomRevenueInRange(
   // v2.2.2 BUG-01 FIX: Attribute every active service item & surcharge to ONE immutable
   // businessDate (Asia/Ho_Chi_Minh YYYY-MM-DD), completely independent of `[fromDateISO, toDateISO]`.
   // Guarantees `serviceRev(A, B) + serviceRev(B+1, C) === serviceRev(A, C)` with 0đ variance!
+  const groupAcc: Record<RevenueServiceGroup, { revenue: number; count: number; quantity: number }> = {
+    food: { revenue: 0, count: 0, quantity: 0 },
+    drink: { revenue: 0, count: 0, quantity: 0 },
+    service: { revenue: 0, count: 0, quantity: 0 },
+    surcharge: { revenue: 0, count: 0, quantity: 0 },
+  };
+  const serviceDetailRows: ServiceDetailRow[] = [];
+
   for (const b of allPnLEligible) {
     const allServices = b.services || [];
     if (allServices.length > 0) {
@@ -276,23 +362,111 @@ export function getRoomRevenueInRange(
       for (const srv of activeServices) {
         const { businessDate } = resolveServiceBusinessDate(srv, b, allTransactions);
         if (businessDate >= fromDateISO && businessDate <= toDateISO) {
-          serviceRev += srv.total || 0;
+          const amt = srv.total || 0;
+          const qty = srv.quantity || 1;
+          const group: RevenueServiceGroup =
+            (srv.category || '').toLowerCase() === 'surcharge'
+              ? 'surcharge'
+              : classifyServiceGroup(srv.category, srv.name);
+          serviceRev += amt;
+          groupAcc[group].revenue += amt;
+          groupAcc[group].count += 1;
+          groupAcc[group].quantity += qty;
+          serviceDetailRows.push({
+            id: `${b.id}_${srv.id}`,
+            businessDate,
+            bookingId: b.id,
+            bookingCode: b.bookingCode,
+            roomNumber: b.roomNumber,
+            roomTypeName: b.roomTypeName,
+            guestName: b.primaryGuestName,
+            serviceName: srv.name,
+            group,
+            groupLabel: getServiceGroupLabel(group),
+            rawCategory: srv.category || group,
+            quantity: qty,
+            unitPrice: srv.unitPrice || amt,
+            total: amt,
+          });
         }
       }
     } else if ((b.serviceTotal || 0) > 0) {
       // Legacy booking with aggregate serviceTotal but empty services[]
       if (b.checkIn >= fromDateISO && b.checkIn <= toDateISO) {
-        serviceRev += b.serviceTotal || 0;
+        const amt = b.serviceTotal || 0;
+        serviceRev += amt;
+        groupAcc.service.revenue += amt;
+        groupAcc.service.count += 1;
+        groupAcc.service.quantity += 1;
+        serviceDetailRows.push({
+          id: `${b.id}_legacy_service`,
+          businessDate: b.checkIn,
+          bookingId: b.id,
+          bookingCode: b.bookingCode,
+          roomNumber: b.roomNumber,
+          roomTypeName: b.roomTypeName,
+          guestName: b.primaryGuestName,
+          serviceName: 'Dịch vụ phòng (dữ liệu tổng hợp)',
+          group: 'service',
+          groupLabel: getServiceGroupLabel('service'),
+          rawCategory: 'other',
+          quantity: 1,
+          unitPrice: amt,
+          total: amt,
+        });
       }
     }
 
     if ((b.hourlySurcharge || 0) > 0) {
       const surchargeDate = resolveSurchargeBusinessDate(b);
       if (surchargeDate >= fromDateISO && surchargeDate <= toDateISO) {
-        serviceRev += b.hourlySurcharge || 0;
+        const amt = b.hourlySurcharge || 0;
+        serviceRev += amt;
+        groupAcc.surcharge.revenue += amt;
+        groupAcc.surcharge.count += 1;
+        groupAcc.surcharge.quantity += 1;
+        serviceDetailRows.push({
+          id: `${b.id}_hourly_surcharge`,
+          businessDate: surchargeDate,
+          bookingId: b.id,
+          bookingCode: b.bookingCode,
+          roomNumber: b.roomNumber,
+          roomTypeName: b.roomTypeName,
+          guestName: b.primaryGuestName,
+          serviceName: b.hourlySurchargeNote?.trim() || 'Phụ thu nhận sớm / trả muộn',
+          group: 'surcharge',
+          groupLabel: getServiceGroupLabel('surcharge'),
+          rawCategory: 'surcharge',
+          quantity: 1,
+          unitPrice: amt,
+          total: amt,
+        });
       }
     }
   }
+
+  serviceDetailRows.sort(
+    (a, b) =>
+      b.businessDate.localeCompare(a.businessDate) ||
+      a.roomNumber.localeCompare(b.roomNumber) ||
+      b.total - a.total
+  );
+
+  const serviceBreakdownByGroup: ServiceGroupSummary[] = (
+    ['food', 'drink', 'service', 'surcharge'] as RevenueServiceGroup[]
+  ).map((group) => {
+    const acc = groupAcc[group];
+    const sharePct =
+      serviceRev > 0 ? Math.round((acc.revenue / serviceRev) * 1000) / 10 : 0;
+    return {
+      group,
+      label: getServiceGroupLabel(group),
+      revenue: acc.revenue,
+      count: acc.count,
+      quantity: acc.quantity,
+      sharePct,
+    };
+  });
 
   // Only explicit forfeited cancellation fees count into P&L revenue (NEVER pending_deposit_resolution!)
   const forfeitedCancelFees = allBookings
@@ -320,6 +494,8 @@ export function getRoomRevenueInRange(
     eligibleBookings,
     roomRev,
     serviceRev,
+    serviceBreakdownByGroup,
+    serviceDetailRows,
     forfeitedCancelFees,
     totalRevenue,
     soldNights,

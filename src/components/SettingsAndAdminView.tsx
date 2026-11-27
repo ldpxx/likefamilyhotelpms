@@ -12,6 +12,7 @@ import {
   Plus,
   Power,
   Save,
+  Search,
   ShieldAlert,
   Star,
   Trash2,
@@ -28,23 +29,34 @@ import type {
   PriceTier,
   Room,
   RoomType,
+  ServiceCatalogItem,
+  ServiceItemGroup,
   SystemAiConfig,
 } from '../types/pms';
 import { VIETNAM_BANKS } from '../lib/vietqr';
 import { saveSystemAiConfig, testGeminiApiKey } from '../lib/geminiOcr';
 import {
   cleanupOldGuestDocumentPhotos,
+  ensureServiceCatalogConfig,
   restoreMissingDefaultBookingSources,
   scanOldGuestDocumentPhotos,
   writeAuditLog,
 } from '../lib/pmsActions';
+import { DEFAULT_SERVICE_CATALOG } from '../lib/seedData';
 import { exportFullBackupExcel, exportFullBackupJson } from '../lib/backupExport';
 import {
   compressLogoImage,
   estimateBase64Bytes,
   formatFileSizeKB,
 } from '../lib/imageCompression';
-import { addDays, formatCurrency, formatDateVN, generateId, todayISO } from '../lib/utils';
+import {
+  addDays,
+  formatCurrency,
+  formatDateVN,
+  generateId,
+  normalizeVietnamese,
+  todayISO,
+} from '../lib/utils';
 import { DateInputVN } from './DateInputVN';
 
 export const SettingsAndAdminView: React.FC = () => {
@@ -74,8 +86,19 @@ export const SettingsAndAdminView: React.FC = () => {
     Boolean(staffProfile?.permissions?.canManageConfig);
   const canManageAccountingLock = isSuperAdmin || staffProfile?.role === 'owner';
   const canManageHotelLogo = isSuperAdmin || staffProfile?.role === 'owner';
+  const canManageServiceCatalog = isSuperAdmin || staffProfile?.role === 'owner';
 
-  const [tab, setTab] = useState<'hotel' | 'rooms' | 'sources' | 'gemini' | 'data'>('hotel');
+  const [tab, setTab] = useState<'hotel' | 'rooms' | 'services' | 'sources' | 'gemini' | 'data'>('hotel');
+
+  // Service & F&B Catalog state (Owner / SuperAdmin)
+  const [svcGroupFilter, setSvcGroupFilter] = useState<'all' | ServiceItemGroup>('all');
+  const [svcSearch, setSvcSearch] = useState('');
+  const [newSvcName, setNewSvcName] = useState('');
+  const [newSvcCategory, setNewSvcCategory] = useState<ServiceItemGroup>('drink');
+  const [newSvcPrice, setNewSvcPrice] = useState(20000);
+  const [editingSvc, setEditingSvc] = useState<ServiceCatalogItem | null>(null);
+  const [savingSvc, setSavingSvc] = useState(false);
+  const svcInitAttemptedRef = React.useRef(false);
 
   // Hotel Config state (SuperAdmin for VietQR/info; SuperAdmin & Owner for centralized hotel logo)
   const [cfg, setCfg] = useState<HotelConfig>(hotelConfig);
@@ -168,6 +191,89 @@ export const SettingsAndAdminView: React.FC = () => {
     } finally {
       setSavingLock(false);
     }
+  };
+
+  useEffect(() => {
+    if (tab !== 'services' || !canManageServiceCatalog || svcInitAttemptedRef.current) return;
+    svcInitAttemptedRef.current = true;
+    void ensureServiceCatalogConfig(actor).catch(() => {});
+  }, [tab, canManageServiceCatalog, actor]);
+
+  const currentServiceCatalog: ServiceCatalogItem[] = Array.isArray(hotelConfig.serviceCatalog)
+    ? hotelConfig.serviceCatalog
+    : DEFAULT_SERVICE_CATALOG;
+
+  const saveServiceCatalog = async (nextList: ServiceCatalogItem[], label: string) => {
+    if (!canManageServiceCatalog) return;
+    setSavingSvc(true);
+    try {
+      const nowIso = new Date().toISOString();
+      await setDoc(
+        doc(db, 'hotel_config', 'main'),
+        { serviceCatalog: nextList, updatedAt: nowIso },
+        { merge: true }
+      );
+      await writeAuditLog({
+        actionType: 'update_service_catalog',
+        targetId: 'hotel_config_main',
+        targetLabel: label,
+        newState: { count: nextList.length },
+        reason: 'Cập nhật danh mục dịch vụ & bảng giá bán',
+        actor,
+      }).catch(() => {});
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi lưu bảng giá dịch vụ', 'error');
+      throw err;
+    } finally {
+      setSavingSvc(false);
+    }
+  };
+
+  const handleAddServiceCatalogItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canManageServiceCatalog || !newSvcName.trim()) return;
+    const item: ServiceCatalogItem = {
+      id: generateId('svc'),
+      name: newSvcName.trim(),
+      category: newSvcCategory,
+      price: Math.max(0, Math.round(newSvcPrice)),
+      isActive: true,
+      order: currentServiceCatalog.length + 1,
+    };
+    await saveServiceCatalog([...currentServiceCatalog, item], `Thêm dịch vụ "${item.name}"`);
+    setNewSvcName('');
+    setNewSvcPrice(20000);
+    notify(`Đã thêm "${item.name}" (${formatCurrency(item.price)}) vào bảng giá`);
+  };
+
+  const handleSaveEditedServiceCatalogItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canManageServiceCatalog || !editingSvc || !editingSvc.name.trim()) return;
+    const clean: ServiceCatalogItem = {
+      ...editingSvc,
+      name: editingSvc.name.trim(),
+      price: Math.max(0, Math.round(editingSvc.price)),
+    };
+    const nextList = currentServiceCatalog.map((it) => (it.id === clean.id ? clean : it));
+    await saveServiceCatalog(nextList, `Cập nhật dịch vụ "${clean.name}"`);
+    setEditingSvc(null);
+    notify(`Đã cập nhật "${clean.name}" (${formatCurrency(clean.price)})`);
+  };
+
+  const handleToggleServiceCatalogActive = async (item: ServiceCatalogItem) => {
+    if (!canManageServiceCatalog) return;
+    const nextActive = item.isActive === false;
+    const nextList = currentServiceCatalog.map((it) =>
+      it.id === item.id ? { ...it, isActive: nextActive } : it
+    );
+    await saveServiceCatalog(
+      nextList,
+      `${nextActive ? 'Mở bán lại' : 'Tạm ngừng'} dịch vụ "${item.name}"`
+    );
+    notify(
+      nextActive ? `Đã mở bán lại "${item.name}"` : `Đã tạm ngừng bán "${item.name}"`,
+      'info'
+    );
   };
 
   useEffect(() => {
@@ -586,6 +692,7 @@ export const SettingsAndAdminView: React.FC = () => {
         {[
           { id: 'hotel', label: 'Khách sạn & VietQR' },
           { id: 'rooms', label: 'Loại phòng, Giá ngày/giờ & Phòng' },
+          { id: 'services', label: 'Dịch vụ & Bảng giá' },
           { id: 'sources', label: 'Kênh OTA & Nguồn khách' },
           { id: 'gemini', label: 'Gemini AI OCR (SuperAdmin)' },
           { id: 'data', label: 'Dọn ảnh cũ & Sao lưu (SuperAdmin)' },
@@ -1474,6 +1581,275 @@ export const SettingsAndAdminView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* TAB: SERVICE & F&B CATALOG (Food / Drink / Service — No Inventory Tracking) */}
+      {tab === 'services' && (() => {
+        const groupDefs: Array<{ id: ServiceItemGroup; label: string; badgeClass: string }> = [
+          { id: 'food', label: 'Thức ăn', badgeClass: 'bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]' },
+          { id: 'drink', label: 'Đồ uống', badgeClass: 'bg-[#E8F3EC] text-[#0F5132] border border-[#BBF7D0]' },
+          { id: 'service', label: 'Dịch vụ', badgeClass: 'bg-[#F0F7F9] text-[#335C67] border border-[#BFD5DA]' },
+        ];
+        const normQ = normalizeVietnamese(svcSearch.trim());
+        const filteredItems = currentServiceCatalog.filter((it) => {
+          if (svcGroupFilter !== 'all' && it.category !== svcGroupFilter) return false;
+          if (normQ && !normalizeVietnamese(it.name).includes(normQ)) return false;
+          return true;
+        });
+        const visibleGroups = groupDefs.filter(
+          (g) => svcGroupFilter === 'all' || svcGroupFilter === g.id
+        );
+
+        return (
+          <div className="bg-white border border-[#E5E2DC] rounded-2xl p-4 sm:p-6 space-y-5 max-w-4xl">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-[15px] font-semibold text-[#1C1B18]">
+                  Quản lý Danh mục Dịch vụ &amp; Bảng giá bán ({currentServiceCatalog.length} mục)
+                </h3>
+                <p className="text-[12px] text-[#57534E] mt-0.5">
+                  Chia 3 nhóm: <strong>Thức ăn</strong>, <strong>Đồ uống</strong> và <strong>Dịch vụ</strong> (không quản lý tồn kho). Lễ tân chọn nhanh khi thêm dịch vụ cho phòng.
+                </p>
+                {!canManageServiceCatalog && (
+                  <p className="text-[12px] text-[#B45309] mt-1">
+                    Chỉ Chủ khách sạn hoặc SuperAdmin mới có quyền thêm/sửa bảng giá bán.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Filter Pills + Search */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSvcGroupFilter('all')}
+                  className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium transition-colors ${
+                    svcGroupFilter === 'all'
+                      ? 'bg-[#0F5132] text-white'
+                      : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
+                  }`}
+                >
+                  Tất cả ({currentServiceCatalog.length})
+                </button>
+                {groupDefs.map((g) => {
+                  const cnt = currentServiceCatalog.filter((it) => it.category === g.id).length;
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={() => setSvcGroupFilter(g.id)}
+                      className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium transition-colors ${
+                        svcGroupFilter === g.id
+                          ? 'bg-[#0F5132] text-white'
+                          : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
+                      }`}
+                    >
+                      {g.label} ({cnt})
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="relative w-full sm:w-64">
+                <Search
+                  className="w-3.5 h-3.5 text-[#8A847C] absolute left-3 top-1/2 -translate-y-1/2"
+                  strokeWidth={1.5}
+                />
+                <input
+                  type="text"
+                  value={svcSearch}
+                  onChange={(e) => setSvcSearch(e.target.value)}
+                  placeholder="Tìm tên món, đồ uống, dịch vụ..."
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-8 pl-8 pr-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px] sm:text-[12px] focus:outline-none focus:border-[#0F5132]"
+                />
+              </div>
+            </div>
+
+            {/* Add New Service Item Form (Owner / SuperAdmin) */}
+            {canManageServiceCatalog && (
+              <form
+                onSubmit={handleAddServiceCatalogItem}
+                className="p-3.5 rounded-xl bg-[#FAF9F6] border border-[#E5E2DC] grid grid-cols-1 sm:grid-cols-12 gap-2.5"
+              >
+                <input
+                  type="text"
+                  required
+                  value={newSvcName}
+                  onChange={(e) => setNewSvcName(e.target.value)}
+                  placeholder="Tên món ăn, đồ uống hoặc dịch vụ (VD: Nước dừa tươi, Giặt nhanh...)"
+                  data-testid="new-service-name-input"
+                  className="sm:col-span-5 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+                />
+                <select
+                  aria-label="Phân loại dịch vụ"
+                  value={newSvcCategory}
+                  onChange={(e) => setNewSvcCategory(e.target.value as ServiceItemGroup)}
+                  data-testid="new-service-category-select"
+                  className="sm:col-span-3 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+                >
+                  <option value="food">Thức ăn</option>
+                  <option value="drink">Đồ uống</option>
+                  <option value="service">Dịch vụ</option>
+                </select>
+                <input
+                  type="number"
+                  required
+                  min={0}
+                  step={5000}
+                  value={newSvcPrice}
+                  onChange={(e) => setNewSvcPrice(Math.max(0, Number(e.target.value) || 0))}
+                  placeholder="Giá bán (VNĐ)"
+                  data-testid="new-service-price-input"
+                  className="sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-right text-[13px]"
+                />
+                <button
+                  type="submit"
+                  disabled={savingSvc}
+                  data-testid="add-service-catalog-btn"
+                  className="sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center justify-center gap-1 disabled:opacity-50"
+                >
+                  <Plus className="w-4 h-4 shrink-0" strokeWidth={1.75} />
+                  <span>Thêm mới</span>
+                </button>
+              </form>
+            )}
+
+            {/* Inline Edit Box */}
+            {editingSvc && canManageServiceCatalog && (
+              <form
+                onSubmit={handleSaveEditedServiceCatalogItem}
+                className="p-3.5 rounded-xl bg-[#E8F3EC]/70 border border-[#0F5132]/35 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center"
+              >
+                <input
+                  type="text"
+                  required
+                  value={editingSvc.name}
+                  onChange={(e) => setEditingSvc({ ...editingSvc, name: e.target.value })}
+                  className="sm:col-span-4 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+                />
+                <select
+                  value={editingSvc.category}
+                  onChange={(e) =>
+                    setEditingSvc({ ...editingSvc, category: e.target.value as ServiceItemGroup })
+                  }
+                  className="sm:col-span-3 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+                >
+                  <option value="food">Thức ăn</option>
+                  <option value="drink">Đồ uống</option>
+                  <option value="service">Dịch vụ</option>
+                </select>
+                <input
+                  type="number"
+                  min={0}
+                  step={5000}
+                  value={editingSvc.price}
+                  onChange={(e) =>
+                    setEditingSvc({ ...editingSvc, price: Math.max(0, Number(e.target.value) || 0) })
+                  }
+                  className="sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-right text-[13px]"
+                />
+                <div className="sm:col-span-3 flex items-center gap-2">
+                  <button
+                    type="submit"
+                    disabled={savingSvc}
+                    className="flex-1 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg bg-[#0F5132] text-white text-[12px] font-medium"
+                  >
+                    Lưu sửa
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingSvc(null)}
+                    className="min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[12px] text-[#57534E]"
+                  >
+                    Hủy
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Grouped Catalog List */}
+            <div className="space-y-4">
+              {visibleGroups.map((g) => {
+                const groupItems = filteredItems.filter((it) => it.category === g.id);
+                return (
+                  <div key={g.id} className="border border-[#E5E2DC] rounded-xl overflow-hidden">
+                    <div className="px-4 py-2.5 bg-[#FAF9F6] border-b border-[#E5E2DC] flex items-center justify-between">
+                      <span className="text-[13px] font-semibold text-[#1C1B18]">{g.label}</span>
+                      <span className="text-[11px] font-mono-num text-[#57534E]">
+                        {groupItems.filter((x) => x.isActive !== false).length} đang bán / {groupItems.length} mục
+                      </span>
+                    </div>
+
+                    {groupItems.length === 0 ? (
+                      <div className="px-4 py-4 text-[12px] text-[#8A847C]">
+                        Chưa có mục nào trong nhóm {g.label} khớp bộ lọc.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-[#F1EFEA]">
+                        {groupItems.map((it) => {
+                          const inactive = it.isActive === false;
+                          return (
+                            <div
+                              key={it.id}
+                              className={`px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+                                inactive ? 'bg-[#F7F6F3] opacity-70' : 'bg-white'
+                              }`}
+                            >
+                              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                                <span className="text-[13px] font-medium text-[#1C1B18]">
+                                  {it.name}
+                                </span>
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${g.badgeClass}`}>
+                                  {g.label}
+                                </span>
+                                {inactive && (
+                                  <span className="px-2 py-0.5 rounded bg-[#E5E2DC] text-[#57534E] text-[10px] font-medium">
+                                    Ngừng bán
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2.5 shrink-0">
+                                <span className="font-mono-num text-[14px] font-semibold text-[#0F5132]">
+                                  {formatCurrency(it.price)}
+                                </span>
+                                {canManageServiceCatalog && (
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingSvc({ ...it })}
+                                      className="min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white hover:bg-[#FAF9F6] text-[12px] inline-flex items-center gap-1"
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" strokeWidth={1.5} /> Sửa
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={savingSvc}
+                                      onClick={() => void handleToggleServiceCatalogActive(it)}
+                                      className={`min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1 ${
+                                        inactive
+                                          ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#065F46]'
+                                          : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
+                                      }`}
+                                    >
+                                      <Power className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                      {inactive ? 'Mở bán' : 'Ngừng bán'}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* TAB 4: GEMINI VISION OCR KEYS (SuperAdmin ONLY) */}
       {tab === 'gemini' && (

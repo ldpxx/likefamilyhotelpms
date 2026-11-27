@@ -16,7 +16,16 @@ import {
   X,
 } from 'lucide-react';
 import { usePms } from '../context/PmsContext';
-import type { Booking, DailyRate, FormTemplateType, PaymentMethod, Room } from '../types/pms';
+import type {
+  Booking,
+  DailyRate,
+  FormTemplateType,
+  PaymentMethod,
+  Room,
+  ServiceCatalogItem,
+  ServiceItemGroup,
+} from '../types/pms';
+import { classifyServiceGroup, getServiceGroupLabel } from '../lib/revenueMetrics';
 import {
   calculateHourlyRoomTotal,
   diffDays,
@@ -101,7 +110,11 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
   const [editHourlyHours, setEditHourlyHours] = useState<number>(booking?.hourlyHours || 2);
   const [editHourlyTotal, setEditHourlyTotal] = useState<number>(booking?.grossRoomTotal || 0);
 
-  // Service state
+  // Service state (quick-pick from centralized serviceCatalog OR custom entry)
+  const [serviceCatalogFilter, setServiceCatalogFilter] = useState<'all' | ServiceItemGroup>('all');
+  const [serviceCustomMode, setServiceCustomMode] = useState(false);
+  const [selectedCatalogId, setSelectedCatalogId] = useState('');
+  const [serviceCategory, setServiceCategory] = useState<ServiceItemGroup>('drink');
   const [serviceName, setServiceName] = useState('');
   const [serviceQty, setServiceQty] = useState(1);
   const [servicePrice, setServicePrice] = useState(20000);
@@ -286,17 +299,46 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
     }
   };
 
+  const activeServiceCatalog = useMemo(
+    () => (hotelConfig.serviceCatalog || []).filter((it) => it.isActive !== false),
+    [hotelConfig.serviceCatalog]
+  );
+
+  const handlePickCatalogItem = (item: ServiceCatalogItem) => {
+    setServiceCustomMode(false);
+    setSelectedCatalogId(item.id);
+    setServiceName(item.name);
+    setServiceCategory(item.category);
+    setServicePrice(item.price);
+    setServiceQty(1);
+  };
+
   const handleAddService = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!serviceName.trim()) return;
-    await addBookingService(
-      booking,
-      { name: serviceName, quantity: serviceQty, unitPrice: servicePrice },
-      actor
-    );
-    setServiceName('');
-    setServiceQty(1);
-    notify('Đã thêm dịch vụ vào hóa đơn phòng');
+    setBusy(true);
+    try {
+      await addBookingService(
+        booking,
+        {
+          name: serviceName,
+          quantity: serviceQty,
+          unitPrice: servicePrice,
+          catalogItemId: serviceCustomMode ? undefined : selectedCatalogId || undefined,
+          category: serviceCategory,
+          accountingLockDate: hotelConfig.accountingLockDate,
+        },
+        actor
+      );
+      setServiceName('');
+      setSelectedCatalogId('');
+      setServiceQty(1);
+      notify('Đã thêm dịch vụ vào hóa đơn phòng');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Không thể thêm dịch vụ', 'error');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleSaveSurcharge = async () => {
@@ -1120,66 +1162,208 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                 </div>
               </div>
 
-              {/* Services */}
-              <div className="rounded-xl border border-[#E5E2DC] p-4 space-y-3">
-                <div className="text-[13px] font-semibold text-[#1C1B18]">
-                  Dịch vụ phát sinh / Minibar / Giặt ủi
+              {/* Services — Quick-Pick from Service Catalog + Custom Entry */}
+              <div className="rounded-xl border border-[#E5E2DC] p-3.5 sm:p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[13px] font-semibold text-[#1C1B18]">
+                    Dịch vụ phát sinh (Thức ăn / Đồ uống / Dịch vụ)
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="toggle-custom-service-mode"
+                    onClick={() => {
+                      setServiceCustomMode((prev) => !prev);
+                      setSelectedCatalogId('');
+                      if (!serviceCustomMode) {
+                        setServiceName('');
+                        setServicePrice(20000);
+                      }
+                    }}
+                    className={`min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border text-[11px] font-medium transition-colors ${
+                      serviceCustomMode
+                        ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132]'
+                        : 'border-[#E5E2DC] bg-[#FAF9F6] text-[#57534E] hover:text-[#1C1B18]'
+                    }`}
+                  >
+                    {serviceCustomMode ? '← Chọn từ bảng giá chuẩn' : '+ Nhập dịch vụ ngoài danh mục'}
+                  </button>
                 </div>
-                <form onSubmit={handleAddService} className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+
+                {!serviceCustomMode && (
+                  <div className="space-y-2.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(
+                        [
+                          { id: 'all', label: 'Tất cả' },
+                          { id: 'food', label: 'Thức ăn' },
+                          { id: 'drink', label: 'Đồ uống' },
+                          { id: 'service', label: 'Dịch vụ' },
+                        ] as const
+                      ).map((g) => (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() => setServiceCatalogFilter(g.id)}
+                          className={`min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg text-[11px] font-medium transition-colors ${
+                            serviceCatalogFilter === g.id
+                              ? 'bg-[#0F5132] text-white'
+                              : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
+                          }`}
+                        >
+                          {g.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div
+                      data-testid="service-catalog-quick-pick"
+                      className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto pr-0.5"
+                    >
+                      {activeServiceCatalog
+                        .filter(
+                          (it) =>
+                            serviceCatalogFilter === 'all' || it.category === serviceCatalogFilter
+                        )
+                        .map((item) => {
+                          const isSelected = selectedCatalogId === item.id;
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => handlePickCatalogItem(item)}
+                              className={`min-h-[40px] px-3 py-1.5 rounded-lg border text-left flex items-center justify-between gap-2 text-[12px] transition-colors ${
+                                isSelected
+                                  ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132] font-semibold'
+                                  : 'border-[#E7E3DA] bg-[#FAF9F6] hover:border-[#0F5132]/50 text-[#1C1B18]'
+                              }`}
+                            >
+                              <span className="truncate">{item.name}</span>
+                              <span className="font-mono-num text-[11px] font-semibold shrink-0">
+                                {formatCurrency(item.price)}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      {activeServiceCatalog.filter(
+                        (it) =>
+                          serviceCatalogFilter === 'all' || it.category === serviceCatalogFilter
+                      ).length === 0 && (
+                        <div className="col-span-full text-[12px] text-[#8A847C] py-2">
+                          Chưa có mục đang bán trong nhóm này.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <form onSubmit={handleAddService} className="grid grid-cols-2 sm:grid-cols-12 gap-2">
                   <input
                     type="text"
                     required
                     value={serviceName}
                     onChange={(e) => setServiceName(e.target.value)}
-                    placeholder="Nước suối, thuê xe máy, giặt ủi..."
-                    className="sm:col-span-5 h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                    placeholder={
+                      serviceCustomMode
+                        ? 'Nhập tên dịch vụ phát sinh ngoài danh mục...'
+                        : 'Chọn nhanh ở trên hoặc gõ tên dịch vụ...'
+                    }
+                    data-testid="booking-service-name-input"
+                    className="col-span-2 sm:col-span-4 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
                   />
+                  <select
+                    aria-label="Loại dịch vụ"
+                    value={serviceCategory}
+                    onChange={(e) => setServiceCategory(e.target.value as ServiceItemGroup)}
+                    data-testid="booking-service-category-select"
+                    className="col-span-1 sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-2 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
+                  >
+                    <option value="food">Thức ăn</option>
+                    <option value="drink">Đồ uống</option>
+                    <option value="service">Dịch vụ</option>
+                  </select>
                   <input
                     type="number"
                     min={1}
+                    aria-label="Số lượng"
                     value={serviceQty}
                     onChange={(e) => setServiceQty(Math.max(1, Number(e.target.value) || 1))}
-                    className="sm:col-span-2 h-9 px-2.5 text-center rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
+                    data-testid="booking-service-qty-input"
+                    className="col-span-1 sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 text-center rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
                   />
                   <input
                     type="number"
                     min={0}
                     step={5000}
+                    aria-label="Đơn giá"
                     value={servicePrice}
                     onChange={(e) => setServicePrice(Math.max(0, Number(e.target.value) || 0))}
-                    className="sm:col-span-3 h-9 px-2.5 text-right rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
+                    data-testid="booking-service-price-input"
+                    className="col-span-1 sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 text-right rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
                   />
                   <button
                     type="submit"
-                    className="sm:col-span-2 h-9 rounded-lg bg-[#1C1B18] text-white text-[13px] font-medium inline-flex items-center justify-center gap-1"
+                    disabled={busy}
+                    data-testid="add-booking-service-btn"
+                    className="col-span-1 sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center justify-center gap-1 disabled:opacity-50"
                   >
-                    <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
+                    <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
                     Thêm
                   </button>
                 </form>
 
-                {(booking.services || []).length > 0 && (
+                {(booking.services || []).filter((s) => s.status !== 'voided').length > 0 && (
                   <div className="divide-y divide-[#E5E2DC] border border-[#E5E2DC] rounded-lg">
-                    {booking.services.map((s) => (
-                      <div key={s.id} className="px-3 py-2 flex items-center justify-between text-[12px]">
-                        <span>
-                          {s.name} × <span className="font-mono-num">{s.quantity}</span> (
-                          {formatCurrency(s.unitPrice)})
-                        </span>
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono-num font-semibold">
-                            {formatCurrency(s.total)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeBookingService(booking, s.id)}
-                            className="text-[#8A847C] hover:text-[#B91C1C]"
+                    {(booking.services || [])
+                      .filter((s) => s.status !== 'voided')
+                      .map((s) => {
+                        const grp = classifyServiceGroup(s.category, s.name);
+                        const grpLabel = getServiceGroupLabel(grp);
+                        return (
+                          <div
+                            key={s.id}
+                            className="px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[12px]"
                           >
-                            <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                            <div className="min-w-0 flex flex-wrap items-center gap-1.5">
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${
+                                  grp === 'food'
+                                    ? 'bg-[#FFFBEB] text-[#B45309]'
+                                    : grp === 'drink'
+                                    ? 'bg-[#E8F3EC] text-[#0F5132]'
+                                    : 'bg-[#F0F7F9] text-[#335C67]'
+                                }`}
+                              >
+                                {grpLabel}
+                              </span>
+                              <span className="font-medium text-[#1C1B18]">{s.name}</span>
+                              <span className="text-[#57534E]">
+                                × <span className="font-mono-num">{s.quantity}</span> (
+                                {formatCurrency(s.unitPrice)})
+                              </span>
+                              {s.businessDate && (
+                                <span className="text-[10px] font-mono-num text-[#8A847C]">
+                                  • {formatDateVN(s.businessDate)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2.5 shrink-0">
+                              <span className="font-mono-num font-semibold text-[#1C1B18]">
+                                {formatCurrency(s.total)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  removeBookingService(booking, s.id, hotelConfig.accountingLockDate)
+                                }
+                                aria-label={`Xóa ${s.name}`}
+                                className="p-1 text-[#8A847C] hover:text-[#B91C1C]"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
                   </div>
                 )}
               </div>

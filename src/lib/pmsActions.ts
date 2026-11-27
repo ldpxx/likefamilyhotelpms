@@ -276,7 +276,7 @@ export async function saveGuestDocumentImages(params: {
   await updateDoc(doc(db, 'guests', params.guestId), {
     latestDocumentId: id,
     updatedAt: new Date().toISOString(),
-  }).catch(() => {});
+  }).catch(() => { });
 
   return docPayload;
 }
@@ -327,29 +327,22 @@ export async function createBooking(
   actor: ActorInfo
 ): Promise<Booking> {
   const now = new Date().toISOString();
-  // Resolve guest ID in memory first so failed occupancy transactions NEVER leave orphan guest profiles
-  const normPhone = normalizePhone(payload.guestPhone);
-  let matchedGuest: Guest | undefined = payload.existingGuestId
-    ? existingGuests.find((g) => g.id === payload.existingGuestId)
-    : undefined;
-  if (!matchedGuest && existingGuests.length > 0) {
-    const matches = findMatchingGuests(existingGuests, {
-      idNumber: payload.guestIdNumber,
-      phone: payload.guestPhone,
+  const { guestId, isReturning, stayCount } = await upsertGuestProfile(
+    {
+      id: payload.existingGuestId,
       fullName: payload.guestName,
-    });
-    if (
-      matches[0] &&
-      ((payload.guestIdNumber &&
-        matches[0].idNumber?.toLowerCase() === payload.guestIdNumber.trim().toLowerCase()) ||
-        (normPhone.length >= 9 && matches[0].normalizedPhone === normPhone))
-    ) {
-      matchedGuest = matches[0];
-    }
-  }
-  const guestId = matchedGuest?.id || payload.existingGuestId || generateId('guest');
-  const isReturning = Boolean(matchedGuest);
-  const stayCount = matchedGuest ? (matchedGuest.totalStays || 0) + 1 : 1;
+      phone: payload.guestPhone,
+      guestCategory: payload.guestCategory,
+      idNumber: payload.guestIdNumber,
+      nationality: payload.guestNationality,
+      gender: payload.guestGender,
+      address: payload.guestAddress,
+      dob: payload.guestDob,
+      idIssueDate: payload.guestIdIssueDate,
+    },
+    existingGuests,
+    false
+  );
 
   const isHourly = payload.bookingMode === 'hourly';
   const nights = isHourly ? 0 : Math.max(1, diffDays(payload.checkIn, payload.checkOut));
@@ -493,25 +486,6 @@ export async function createBooking(
       tx.set(doc(db, 'transactions', txId), depTx);
     }
   });
-
-  // Persist guest CRM profile only AFTER atomic occupancy transaction succeeds (zero orphan guests!)
-  await upsertGuestProfile(
-    {
-      id: guestId,
-      fullName: payload.guestName,
-      phone: payload.guestPhone,
-      guestCategory: payload.guestCategory,
-      idNumber: payload.guestIdNumber,
-      nationality: payload.guestNationality,
-      gender: payload.guestGender,
-      address: payload.guestAddress,
-      dob: payload.guestDob,
-      idIssueDate: payload.guestIdIssueDate,
-    },
-    existingGuests,
-    false
-  );
-
   await writeAuditLog({
     actionType: payload.checkInImmediately ? 'create_and_check_in' : 'create_booking',
     targetId: bookingId,
@@ -1033,8 +1007,9 @@ export async function addBookingService(
     name: string;
     quantity: number;
     unitPrice: number;
+    catalogItemId?: string;
     businessDate?: string;
-    category?: string;
+    category?: BookingServiceItem['category'];
     accountingLockDate?: string | null;
   },
   actor: ActorInfo
@@ -1045,12 +1020,13 @@ export async function addBookingService(
   assertPeriodOpen(businessDate, item.accountingLockDate);
   const newItem: BookingServiceItem = {
     id: generateId('srv'),
+    ...(item.catalogItemId ? { catalogItemId: item.catalogItemId } : {}),
     name: item.name.trim(),
     quantity: Math.max(1, item.quantity),
     unitPrice: Math.max(0, Math.round(item.unitPrice)),
     total: Math.max(1, item.quantity) * Math.max(0, Math.round(item.unitPrice)),
     businessDate,
-    category: item.category || 'Dịch vụ phòng',
+    category: item.category || 'service',
     occurredAt: now,
     status: 'active',
     addedAt: now,
@@ -1554,12 +1530,12 @@ export async function consolidateRoomIntoTarget(
   const carriedBalance = Math.max(
     0,
     (sourceBooking.grossRoomTotal || 0) +
-      (sourceBooking.serviceTotal || 0) +
-      (sourceBooking.hourlySurcharge || 0) +
-      (sourceBooking.transferredBalance || 0) -
-      (sourceBooking.depositPaid || 0) -
-      (sourceBooking.guestPaid || 0) -
-      (sourceBooking.balanceTransferredOut || 0)
+    (sourceBooking.serviceTotal || 0) +
+    (sourceBooking.hourlySurcharge || 0) +
+    (sourceBooking.transferredBalance || 0) -
+    (sourceBooking.depositPaid || 0) -
+    (sourceBooking.guestPaid || 0) -
+    (sourceBooking.balanceTransferredOut || 0)
   );
 
   const mergedOccupants: Occupant[] = [
@@ -1940,9 +1916,8 @@ export async function createOtaPayoutBatch(params: {
     createdAt: now,
     createdByUid: params.actor.uid,
     createdByName: params.actor.name,
-    note: `Lô ${batchCode} (${params.bookings.length} đơn${
-      adjustments.length > 0 ? `, cấn trừ ${adjustments.length} điều chỉnh ${adjTotal.toLocaleString('vi-VN')}đ` : ''
-    })${bankFeeDiff !== 0 ? ` — Chênh lệch: ${bankFeeDiff.toLocaleString('vi-VN')}đ` : ''}`,
+    note: `Lô ${batchCode} (${params.bookings.length} đơn${adjustments.length > 0 ? `, cấn trừ ${adjustments.length} điều chỉnh ${adjTotal.toLocaleString('vi-VN')}đ` : ''
+      })${bankFeeDiff !== 0 ? ` — Chênh lệch: ${bankFeeDiff.toLocaleString('vi-VN')}đ` : ''}`,
   };
   batch.set(doc(db, 'transactions', txId), tx);
 
@@ -2280,9 +2255,8 @@ export async function updateStaffMember(staff: StaffUser, actor: ActorInfo): Pro
   await writeAuditLog({
     actionType: 'manage_staff',
     targetId: staff.uid,
-    targetLabel: `${staff.fullName} (@${staff.username}, ${staff.role}, ${
-      staff.isActive ? 'Đang hoạt động' : 'Đã khóa'
-    })`,
+    targetLabel: `${staff.fullName} (@${staff.username}, ${staff.role}, ${staff.isActive ? 'Đang hoạt động' : 'Đã khóa'
+      })`,
     newState: { role: staff.role, isActive: staff.isActive, permissions: staff.permissions },
     reason: 'Cập nhật hồ sơ & phân quyền nhân viên',
     actor,
@@ -2465,16 +2439,16 @@ export async function ensureBookingSourcesConfig(actor?: ActorInfo): Promise<{
     const existingOtas =
       Array.isArray(data.otaChannels) && data.otaChannels.length > 0
         ? data.otaChannels.map((c, idx) => ({
-            id: c.id,
-            name: c.name,
-            kind: 'ota' as const,
-            color: c.color,
-            isActive: c.isActive !== false,
-            order: directs.length + idx + 1,
-          }))
+          id: c.id,
+          name: c.name,
+          kind: 'ota' as const,
+          color: c.color,
+          isActive: c.isActive !== false,
+          order: directs.length + idx + 1,
+        }))
         : DEFAULT_HOTEL_CONFIG.bookingSources
-            .filter((s) => s.kind === 'ota')
-            .map((s, idx) => ({ ...s, order: directs.length + idx + 1 }));
+          .filter((s) => s.kind === 'ota')
+          .map((s, idx) => ({ ...s, order: directs.length + idx + 1 }));
 
     const mergedSources = [...directs, ...existingOtas];
     tx.update(cfgRef, {
@@ -2545,6 +2519,45 @@ export async function restoreMissingDefaultBookingSources(actor: ActorInfo): Pro
       reason: 'Khôi phục danh mục nguồn mặc định (không xóa nguồn tùy chỉnh)',
       actor,
     });
+  }
+  return res;
+}
+
+/**
+ * Idempotently initializes `hotel_config/main.serviceCatalog` with standard hotel items
+ * ONLY when the field is missing (never overwrites existing configured service prices).
+ */
+export async function ensureServiceCatalogConfig(actor?: ActorInfo): Promise<{
+  migrated: boolean;
+  itemCount: number;
+}> {
+  const cfgRef = doc(db, 'hotel_config', 'main');
+  const now = new Date().toISOString();
+  const res = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(cfgRef);
+    if (!snap.exists()) {
+      return { migrated: false, itemCount: 0 };
+    }
+    const data = snap.data() as { serviceCatalog?: unknown };
+    if (Array.isArray(data.serviceCatalog)) {
+      return { migrated: false, itemCount: data.serviceCatalog.length };
+    }
+    const defaults = DEFAULT_HOTEL_CONFIG.serviceCatalog || [];
+    tx.update(cfgRef, {
+      serviceCatalog: defaults,
+      updatedAt: now,
+    });
+    return { migrated: true, itemCount: defaults.length };
+  });
+
+  if (res.migrated && actor) {
+    await writeAuditLog({
+      actionType: 'init_default_service_catalog',
+      targetId: 'hotel_config/main',
+      targetLabel: `Khởi tạo danh mục dịch vụ & bảng giá mặc định (${res.itemCount} mục)`,
+      reason: 'Tự động khởi tạo serviceCatalog mặc định (idempotent)',
+      actor,
+    }).catch(() => {});
   }
   return res;
 }
