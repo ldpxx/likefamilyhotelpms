@@ -7,6 +7,30 @@ Tất cả các thay đổi quan trọng của dự án **Like Family PMS** đ�
 
 ---
 
+## [2.2.2] - 27/11/2026
+
+Bản vá kỹ thuật & kiểm thử nghiệm thu toàn diện theo tài liệu [`Phuong_An_Sua_Loi_Like_Family_PMS_v2_2_2_FINAL.md`](./Phuong_An_Sua_Loi_Like_Family_PMS_v2_2_2_FINAL.md) (nhánh GitHub `fix/v2.2.2` — **chưa deploy Production**, chờ Chủ dự án phê duyệt Go-Live theo Cổng Dừng). Giữ nguyên 100% ràng buộc 0đ Firebase Spark (không Cloud Functions, không Storage, không Google Sign-In) và bảo toàn nguyên trạng dữ liệu Staging 2 tháng `QA2M_*`.
+
+### Fixed
+- **`BUG-01` [High] — Cố định `businessDate` dịch vụ & tách bạch phụ thu trong P&L:**
+  - Chuẩn hóa `BookingServiceItem` (`businessDate`, `occurredAt`, `category`, `status`) trong [src/types/pms.ts](./src/types/pms.ts), [src/lib/pmsActions.ts](./src/lib/pmsActions.ts) và [src/lib/postStayActions.ts](./src/lib/postStayActions.ts).
+  - Cập nhật `getRoomRevenueInRange()` trong [src/lib/revenueMetrics.ts](./src/lib/revenueMetrics.ts) phân bổ từng dòng dịch vụ và phụ thu theo ngày hạch toán bất biến `YYYY-MM-DD` (múi giờ `Asia/Ho_Chi_Minh`) và bổ sung hàm đối soát chỉ đọc `auditLegacyServiceDates()` (`LEGACY_DATE_REVIEW_REQUIRED`).
+  - Xác minh trên 500 đơn Staging: `serviceRev(T10) 30.320.000đ + serviceRev(T11) 28.205.000đ === 58.525.000đ === Kỳ gộp 2 tháng === Tổng 61 ngày lẻ` (**`0đ` lệch**), giữ nguyên `roomRev = 362.750.000đ / 730 đêm`.
+- **`BUG-02` [Medium] — Khóa phòng nguyên tử `room_occupancy/{roomId}_{YYYY-MM-DD}` chống đặt trùng đồng thời:**
+  - Xây dựng [src/lib/occupancyService.ts](./src/lib/occupancyService.ts) (Phương án A — 0đ Spark) với `runTransaction()` của Client SDK, kiểm tra giao cắt dấu thời gian kèm **đệm dọn phòng 5 phút** `[startAt, endAt + bufferMs)`, và hàm kiểm toán/dựng chỉ mục `auditAndRebuildOccupancy(dryRun)`.
+  - Đồng bộ hóa nguyên tử toàn bộ **15 luồng thay đổi lịch phòng** trong [src/lib/pmsActions.ts](./src/lib/pmsActions.ts), [src/lib/cancellationActions.ts](./src/lib/cancellationActions.ts) và [src/lib/postStayActions.ts](./src/lib/postStayActions.ts) (tạo đơn lẻ, đặt đoàn all-or-nothing, đổi phòng, split-stay, sửa ngày/giờ, check-out, trả phòng sớm, hủy đơn, no-show, khôi phục đơn hủy, đảo check-in, mở lại đơn, gộp phòng, bảo trì).
+  - Cập nhật [firestore.rules](./firestore.rules) bảo vệ `room_occupancy` (chặn `unauth`, kiểm tra schema bắt buộc, chỉ `superadmin` được xóa).
+  - Kiểm chứng bão 12 yêu cầu đồng thời trên Local Emulator: **duy nhất `1` thành công / `11` bị từ chối nguyên tử** (`OCCUPANCY_CONFLICT`); `auditAndRebuildOccupancy` dựng đủ `78/78` docs và phát hiện chính xác 1 xung đột dữ liệu mẫu cũ (`room_502_2026-11-28: QA2M_BKG_0433 / QA2M_MNT_0014`).
+- **`BUG-03` [Low] — Migration idempotent `bookingSources` & khôi phục nguồn mặc định không phá hủy:**
+  - Triển khai `ensureBookingSourcesConfig()` (`configMigrationVersion: 1`, chạy trong `runTransaction` tối đa 1 lần/phiên cho `owner`/`superadmin` tại [src/context/PmsContext.tsx](./src/context/PmsContext.tsx)) và nút **"Khôi phục danh mục nguồn mặc định"** (chỉ bổ sung phần thiếu, không ghi đè nguồn tùy chỉnh hay `otaChannels`) tại [src/components/SettingsAndAdminView.tsx](./src/components/SettingsAndAdminView.tsx), bổ sung fallback `staffProfile?.role === 'owner'` cho `canManageRoomsAndSources`.
+  - Cập nhật [firestore.rules](./firestore.rules) cho phép `owner` cập nhật `configMigrationVersion` trên `hotel_config/main`.
+
+### QA & Tooling
+- **Gỡ chặn kiểm thử UI (`UI-01` → `UI-04`) trên Node `v20.18.0`:** Tích hợp `playwright-core` điều khiển Chrome cục bộ kết hợp cấu hình Firebase Local Emulator Suite trong [firebase.json](./firebase.json) và opt-in `VITE_USE_FIREBASE_EMULATOR` trong [src/lib/firebase.ts](./src/lib/firebase.ts).
+- **Nghiệm thu & Tài liệu:** Đạt **19/19 PASS** (`14` Local Emulator gồm Restore Drill `1,519` docs trong `3.14s` + `5` Playwright UI trên Desktop/Tablet/Mobile/Form E2E với `0` console error), xuất đủ **13 báo cáo nghiệm thu chuẩn** vào [`QA_REPORTS/BUG_FIX_REGRESSION_v2.2.2/`](./QA_REPORTS/BUG_FIX_REGRESSION_v2.2.2/).
+
+---
+
 ## [2.2.1] - 27/11/2026
 
 Bản vá **Bảo mật, Kế toán lõi & Đồng bộ Vận hành** toàn diện 4 đợt (`Đợt 0 → Đợt 1 P0 → Đợt 2 P1 → Đợt 3 P2`) theo tài liệu kỹ thuật [`Phuong_An_Khac_Phuc_Loi_Like_Family_PMS_v2_2_1_rev3.md`](./Phuong_An_Khac_Phuc_Loi_Like_Family_PMS_v2_2_1_rev3.md) (duy trì 0đ Firebase: không Cloud Functions, không Storage, không Google Sign-In), kèm báo cáo rà soát dữ liệu cũ [`legacy_data_audit_v2.2.1.md`](./legacy_data_audit_v2.2.1.md), deploy lên **https://likefamilypms.web.app**.
