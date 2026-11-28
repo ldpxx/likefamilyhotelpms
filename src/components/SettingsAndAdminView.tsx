@@ -197,7 +197,7 @@ export const SettingsAndAdminView: React.FC = () => {
   useEffect(() => {
     if (tab !== 'services' || !canManageServiceCatalog || svcInitAttemptedRef.current) return;
     svcInitAttemptedRef.current = true;
-    void ensureServiceCatalogConfig(actor).catch(() => {});
+    void ensureServiceCatalogConfig(actor).catch(() => { });
   }, [tab, canManageServiceCatalog, actor]);
 
   const currentServiceCatalog: ServiceCatalogItem[] = Array.isArray(hotelConfig.serviceCatalog)
@@ -236,7 +236,7 @@ export const SettingsAndAdminView: React.FC = () => {
         newState: { count: nextList.length },
         reason: 'Cập nhật danh mục dịch vụ & bảng giá bán',
         actor,
-      }).catch(() => {});
+      }).catch(() => { });
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi lưu bảng giá dịch vụ', 'error');
       throw err;
@@ -345,7 +345,7 @@ export const SettingsAndAdminView: React.FC = () => {
         newState: { sizeChars: b64.length },
         reason: 'Tải lên logo khách sạn tại Cài đặt & Sao lưu',
         actor,
-      }).catch(() => {});
+      }).catch(() => { });
       notify(
         `Đã lưu logo khách sạn thành công (${formatFileSizeKB(estimateBase64Bytes(b64))}) — đồng bộ tự động cho tất cả biểu mẫu`
       );
@@ -377,7 +377,7 @@ export const SettingsAndAdminView: React.FC = () => {
         newState: { sizeChars: 0 },
         reason: 'Gỡ logo khách sạn tại Cài đặt & Sao lưu',
         actor,
-      }).catch(() => {});
+      }).catch(() => { });
       notify('Đã gỡ logo khách sạn khỏi hệ thống', 'info');
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Không thể gỡ logo khách sạn', 'error');
@@ -732,103 +732,103 @@ export const SettingsAndAdminView: React.FC = () => {
             onSubmit={handleSaveHotelConfig}
             className="bg-white border border-[#E5E2DC] rounded-2xl p-6 space-y-5"
           >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-[15px] font-semibold text-[#1C1B18]">
-                Thông tin khách sạn & Tài khoản nhận VietQR
-              </h3>
-              {!isSuperAdmin && (
-                <p className="text-[12px] text-[#B45309] mt-0.5">
-                  Thông tin cơ bản & tài khoản VietQR chỉ SuperAdmin gốc được sửa. Chủ khách sạn có thể tải lên hoặc gỡ Logo khách sạn bên dưới.
-                </p>
-              )}
-            </div>
-            {isSuperAdmin && (
-              <button
-                type="submit"
-                disabled={savingCfg}
-                className="h-9 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[13px] font-medium inline-flex items-center gap-1.5"
-              >
-                <Save className="w-4 h-4" strokeWidth={1.5} />
-                {savingCfg ? 'Đang lưu...' : 'Lưu cài đặt'}
-              </button>
-            )}
-          </div>
-
-          {/* Centralized Hotel Logo Management */}
-          <div className="p-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] flex flex-col sm:flex-row sm:items-center gap-4">
-            <div className="shrink-0">
-              {currentHotelLogo ? (
-                <img
-                  src={currentHotelLogo}
-                  alt="Logo khách sạn"
-                  data-testid="settings-hotel-logo-preview"
-                  className="w-20 h-20 object-contain rounded-xl border border-[#E5E2DC] bg-white p-1.5 shadow-2xs"
-                />
-              ) : (
-                <div
-                  data-testid="settings-hotel-logo-placeholder"
-                  className="w-20 h-20 rounded-xl border border-dashed border-[#D6D1C7] bg-white flex flex-col items-center justify-center gap-1 text-[#8A847C]"
-                >
-                  <ImageIcon className="w-5 h-5" strokeWidth={1.5} />
-                  <span className="text-[10px]">Chưa có logo</span>
-                </div>
-              )}
-            </div>
-            <div className="flex-1 min-w-0 space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[13px] font-semibold text-[#1C1B18]">Logo khách sạn</span>
-                {currentHotelLogo && (
-                  <span className="px-2 py-0.5 rounded-full bg-[#E8F3EC] text-[#0F5132] text-[11px] font-mono-num font-medium">
-                    Đã lưu · {formatFileSizeKB(estimateBase64Bytes(currentHotelLogo))}
-                  </span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-[15px] font-semibold text-[#1C1B18]">
+                  Thông tin khách sạn & Tài khoản nhận VietQR
+                </h3>
+                {!isSuperAdmin && (
+                  <p className="text-[12px] text-[#B45309] mt-0.5">
+                    Thông tin cơ bản & tài khoản VietQR chỉ SuperAdmin gốc được sửa. Chủ khách sạn có thể tải lên hoặc gỡ Logo khách sạn bên dưới.
+                  </p>
                 )}
               </div>
-              <p className="text-[12px] text-[#57534E] leading-relaxed">
-                Quản lý tập trung cho cả 3 mẫu biểu mẫu in. Ảnh tự động nén tối đa 320px (giữ nền trong suốt PNG/WebP, dưới 60 KB Base64).
-              </p>
-              {canManageHotelLogo ? (
-                <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                  <label
-                    className={`min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
-                      savingLogo ? 'opacity-60 pointer-events-none' : ''
-                    }`}
-                  >
-                    <Upload className="w-4 h-4 shrink-0" strokeWidth={1.75} />
-                    <span>{savingLogo ? 'Đang lưu logo...' : 'Tải logo lên'}</span>
-                    <input
-                      type="file"
-                      accept="image/png,image/webp,image/jpeg,image/svg+xml"
-                      data-testid="hotel-logo-upload-input"
-                      disabled={savingLogo}
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = '';
-                        void handleUploadHotelLogo(file);
-                      }}
-                    />
-                  </label>
-                  {currentHotelLogo && (
-                    <button
-                      type="button"
-                      disabled={savingLogo}
-                      onClick={() => void handleRemoveHotelLogo()}
-                      data-testid="hotel-logo-remove-btn"
-                      className="min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg border border-[#FECACA] bg-white hover:bg-[#FEF2F2] text-[#B91C1C] text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
-                    >
-                      <Trash2 className="w-4 h-4 shrink-0" strokeWidth={1.5} />
-                      <span>Gỡ logo</span>
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <p className="text-[11px] text-[#8A847C]">
-                  Chỉ Chủ khách sạn hoặc SuperAdmin mới có quyền tải lên hoặc gỡ Logo.
-                </p>
+              {isSuperAdmin && (
+                <button
+                  type="submit"
+                  disabled={savingCfg}
+                  className="h-9 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[13px] font-medium inline-flex items-center gap-1.5"
+                >
+                  <Save className="w-4 h-4" strokeWidth={1.5} />
+                  {savingCfg ? 'Đang lưu...' : 'Lưu cài đặt'}
+                </button>
               )}
             </div>
-          </div>
+
+            {/* Centralized Hotel Logo Management */}
+            <div className="p-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] flex flex-col sm:flex-row sm:items-center gap-4">
+              <div className="shrink-0">
+                {currentHotelLogo ? (
+                  <img
+                    src={currentHotelLogo}
+                    alt="Logo khách sạn"
+                    data-testid="settings-hotel-logo-preview"
+                    className="w-20 h-20 object-contain rounded-xl border border-[#E5E2DC] bg-white p-1.5 shadow-2xs"
+                  />
+                ) : (
+                  <div
+                    data-testid="settings-hotel-logo-placeholder"
+                    className="w-20 h-20 rounded-xl border border-dashed border-[#D6D1C7] bg-white flex flex-col items-center justify-center gap-1 text-[#8A847C]"
+                  >
+                    <ImageIcon className="w-5 h-5" strokeWidth={1.5} />
+                    <span className="text-[10px]">Chưa có logo</span>
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-w-0 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[13px] font-semibold text-[#1C1B18]">Logo khách sạn</span>
+                  {currentHotelLogo && (
+                    <span className="px-2 py-0.5 rounded-full bg-[#E8F3EC] text-[#0F5132] text-[11px] font-mono-num font-medium">
+                      Đã lưu · {formatFileSizeKB(estimateBase64Bytes(currentHotelLogo))}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[12px] text-[#57534E] leading-relaxed">
+                  Quản lý tập trung cho cả 3 mẫu biểu mẫu in. Ảnh tự động nén tối đa 320px (giữ nền trong suốt PNG/WebP, dưới 60 KB Base64).
+                </p>
+                {canManageHotelLogo ? (
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <label
+                      className={`min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                        savingLogo ? 'opacity-60 pointer-events-none' : ''
+                      }`}
+                    >
+                      <Upload className="w-4 h-4 shrink-0" strokeWidth={1.75} />
+                      <span>{savingLogo ? 'Đang lưu logo...' : 'Chọn ảnh logo từ máy'}</span>
+                      <input
+                        type="file"
+                        accept="image/*,.png,.jpg,.jpeg,.webp,.svg"
+                        data-testid="hotel-logo-upload-input"
+                        disabled={savingLogo}
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          void handleUploadHotelLogo(file);
+                        }}
+                      />
+                    </label>
+                    {currentHotelLogo && (
+                      <button
+                        type="button"
+                        disabled={savingLogo}
+                        onClick={() => void handleRemoveHotelLogo()}
+                        data-testid="hotel-logo-remove-btn"
+                        className="min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg border border-[#FECACA] bg-white hover:bg-[#FEF2F2] text-[#B91C1C] text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                      >
+                        <Trash2 className="w-4 h-4 shrink-0" strokeWidth={1.5} />
+                        <span>Gỡ logo</span>
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-[#8A847C]">
+                    Chỉ Chủ khách sạn hoặc SuperAdmin mới có quyền tải lên hoặc gỡ Logo.
+                  </p>
+                )}
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
@@ -1634,11 +1634,10 @@ export const SettingsAndAdminView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setSvcGroupFilter('all')}
-                  className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium transition-colors ${
-                    svcGroupFilter === 'all'
-                      ? 'bg-[#0F5132] text-white'
-                      : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
-                  }`}
+                  className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium transition-colors ${svcGroupFilter === 'all'
+                    ? 'bg-[#0F5132] text-white'
+                    : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
+                    }`}
                 >
                   Tất cả ({currentServiceCatalog.length})
                 </button>
@@ -1649,11 +1648,10 @@ export const SettingsAndAdminView: React.FC = () => {
                       key={g.id}
                       type="button"
                       onClick={() => setSvcGroupFilter(g.id)}
-                      className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium transition-colors ${
-                        svcGroupFilter === g.id
-                          ? 'bg-[#0F5132] text-white'
-                          : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
-                      }`}
+                      className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium transition-colors ${svcGroupFilter === g.id
+                        ? 'bg-[#0F5132] text-white'
+                        : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
+                        }`}
                     >
                       {g.label} ({cnt})
                     </button>
@@ -1808,9 +1806,8 @@ export const SettingsAndAdminView: React.FC = () => {
                           return (
                             <div
                               key={it.id}
-                              className={`px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
-                                inactive ? 'bg-[#F7F6F3] opacity-70' : 'bg-white'
-                              }`}
+                              className={`px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${inactive ? 'bg-[#F7F6F3] opacity-70' : 'bg-white'
+                                }`}
                             >
                               <div className="flex flex-wrap items-center gap-2 min-w-0">
                                 <span className="text-[13px] font-medium text-[#1C1B18]">
@@ -1843,11 +1840,10 @@ export const SettingsAndAdminView: React.FC = () => {
                                       type="button"
                                       disabled={savingSvc}
                                       onClick={() => void handleToggleServiceCatalogActive(it)}
-                                      className={`min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1 ${
-                                        inactive
-                                          ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#065F46]'
-                                          : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
-                                      }`}
+                                      className={`min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1 ${inactive
+                                        ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#065F46]'
+                                        : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
+                                        }`}
                                     >
                                       <Power className="w-3.5 h-3.5" strokeWidth={1.5} />
                                       {inactive ? 'Mở bán' : 'Ngừng bán'}

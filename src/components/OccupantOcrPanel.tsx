@@ -4,8 +4,9 @@ import {
   Camera,
   CheckCircle2,
   Globe,
+  ImagePlus,
+  Images,
   Loader2,
-  Plus,
   RefreshCw,
   ScanLine,
   Trash2,
@@ -57,6 +58,7 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
   const [loadingDoc, setLoadingDoc] = useState(false);
 
   const [scanning, setScanning] = useState(false);
+  const [compressing, setCompressing] = useState(false);
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrSuccessNote, setOcrSuccessNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -171,6 +173,7 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
     file: File | undefined
   ) => {
     if (!file) return;
+    setCompressing(true);
     try {
       const compressed = await compressDocumentImage(file);
       const nextState: PhotoSlotState = {
@@ -184,6 +187,56 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
       setOcrError(null);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi nén ảnh trên trình duyệt', 'error');
+    } finally {
+      setCompressing(false);
+    }
+  };
+
+  const handleMultiFileUpload = async (fileList: FileList | null) => {
+    if (!activeOcc || !fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
+    const availableSlots: Array<'front' | 'back' | 'stamp'> =
+      activeOcc.guestCategory === 'vietnamese' ? ['front', 'back'] : ['front', 'back', 'stamp'];
+
+    const slotOccupied: Record<'front' | 'back' | 'stamp', boolean> = {
+      front: Boolean(frontSlot.storageBase64),
+      back: Boolean(backSlot.storageBase64),
+      stamp: Boolean(stampSlot.storageBase64),
+    };
+
+    // Fill empty slots first; if not enough empty slots, map sequentially from slot 1
+    const emptySlots = availableSlots.filter((s) => !slotOccupied[s]);
+    const targetSlots = emptySlots.length >= files.length ? emptySlots : availableSlots;
+
+    setCompressing(true);
+    let loadedCount = 0;
+    try {
+      const limit = Math.min(files.length, targetSlots.length);
+      for (let i = 0; i < limit; i++) {
+        const compressed = await compressDocumentImage(files[i]);
+        const nextState: PhotoSlotState = {
+          storageBase64: compressed.storageBase64,
+          ocrBase64: compressed.ocrBase64,
+          sizeBytes: compressed.storageSizeBytes,
+        };
+        const slot = targetSlots[i];
+        if (slot === 'front') setFrontSlot(nextState);
+        if (slot === 'back') setBackSlot(nextState);
+        if (slot === 'stamp') setStampSlot(nextState);
+        loadedCount += 1;
+      }
+      setOcrError(null);
+      if (loadedCount > 0) {
+        const extraNote =
+          files.length > targetSlots.length
+            ? ` (tối đa ${targetSlots.length} ảnh cho nhóm khách này)`
+            : '';
+        notify(`Đã nạp & nén ${loadedCount} ảnh giấy tờ thành công${extraNote}. Bấm "Quét AI OCR tự điền" để trích xuất.`);
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi nén ảnh trên trình duyệt', 'error');
+    } finally {
+      setCompressing(false);
     }
   };
 
@@ -473,14 +526,49 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
           <div className="space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-[12px] font-medium text-[#1C1B18]">
-                Ảnh giấy tờ (Tự động nén Canvas ≤ 800px, JPEG 0.65 lưu Base64 trên Firestore — 0đ Storage)
+                Ảnh giấy tờ (Tự động nén Canvas ≤ 1280px, JPEG 0.78, &lt; 150 KB/ảnh — 0đ Storage)
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <label
+                  className={`min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border border-[#0F5132]/30 bg-white hover:bg-[#E8F2EE] text-[#0F5132] text-[12px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                    compressing ? 'opacity-50 pointer-events-none' : ''
+                  }`}
+                  title={
+                    activeOcc.guestCategory === 'vietnamese'
+                      ? 'Chọn cùng lúc mặt trước & mặt sau CCCD từ thư viện máy'
+                      : 'Chọn cùng lúc Hộ chiếu, Visa và Dấu nhập cảnh từ thư viện máy'
+                  }
+                >
+                  {compressing ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Images className="w-3.5 h-3.5" strokeWidth={1.6} />
+                  )}
+                  <span>
+                    {compressing
+                      ? 'Đang nén ảnh...'
+                      : `Chọn nhiều ảnh (${activeOcc.guestCategory === 'vietnamese' ? '2 ảnh' : 'tối đa 3 ảnh'})`}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    disabled={compressing}
+                    data-testid="guest-doc-multi-upload-input"
+                    className="hidden"
+                    onChange={(e) => {
+                      const files = e.target.files;
+                      void handleMultiFileUpload(files);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+
                 <button
                   type="button"
                   onClick={() => handleRunOcr(false)}
-                  disabled={scanning}
-                  className="h-8 px-3.5 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] disabled:opacity-50 text-white text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors"
+                  disabled={scanning || compressing}
+                  className="min-h-[40px] sm:min-h-0 sm:h-8 px-3.5 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] disabled:opacity-50 text-white text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors"
                 >
                   {scanning ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -506,24 +594,28 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
               >
                 {/* Slot 1: CCCD Front OR Passport Bio Page */}
                 <PhotoUploadCard
+                  slotKey="front"
                   label={
                     activeOcc.guestCategory === 'vietnamese'
                       ? '1. Mặt trước CCCD'
                       : '1. Trang nhân thân Hộ chiếu'
                   }
                   slot={frontSlot}
+                  disabled={compressing}
                   onSelectFile={(f) => handleFileUpload('front', f)}
                   onClear={() => setFrontSlot(EMPTY_SLOT)}
                 />
 
                 {/* Slot 2: CCCD Back OR Visa / e-Visa */}
                 <PhotoUploadCard
+                  slotKey="back"
                   label={
                     activeOcc.guestCategory === 'vietnamese'
                       ? '2. Mặt sau CCCD (Ngày cấp)'
                       : '2. Thị thực / e-Visa'
                   }
                   slot={backSlot}
+                  disabled={compressing}
                   onSelectFile={(f) => handleFileUpload('back', f)}
                   onClear={() => setBackSlot(EMPTY_SLOT)}
                 />
@@ -531,8 +623,10 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
                 {/* Slot 3 (Foreigner only): Vietnam Entry Stamp */}
                 {activeOcc.guestCategory === 'foreigner' && (
                   <PhotoUploadCard
+                    slotKey="stamp"
                     label="3. Trang có Dấu mộc nhập cảnh (Ưu tiên lấy hạn)"
                     slot={stampSlot}
+                    disabled={compressing}
                     onSelectFile={(f) => handleFileUpload('stamp', f)}
                     onClear={() => setStampSlot(EMPTY_SLOT)}
                   />
@@ -724,17 +818,25 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
 };
 
 const PhotoUploadCard: React.FC<{
+  slotKey: 'front' | 'back' | 'stamp';
   label: string;
   slot: PhotoSlotState;
+  disabled?: boolean;
   onSelectFile: (file: File | undefined) => void;
   onClear: () => void;
-}> = ({ label, slot, onSelectFile, onClear }) => {
+}> = ({ slotKey, label, slot, disabled = false, onSelectFile, onClear }) => {
   return (
-    <div className="rounded-xl border border-[#E5E2DC] bg-white p-2.5 flex flex-col justify-between gap-2">
+    <div
+      data-testid={`photo-card-${slotKey}`}
+      className="rounded-xl border border-[#E5E2DC] bg-white p-2.5 flex flex-col justify-between gap-2"
+    >
       <div className="flex items-center justify-between gap-1">
         <span className="text-[11px] font-medium text-[#57534E] leading-tight">{label}</span>
         {slot.storageBase64 && (
-          <span className="text-[10px] font-mono-num text-[#15803D] shrink-0">
+          <span
+            data-testid={`photo-size-${slotKey}`}
+            className="text-[10px] font-mono-num text-[#15803D] shrink-0"
+          >
             {formatFileSizeKB(slot.sizeBytes)}
           </span>
         )}
@@ -745,48 +847,113 @@ const PhotoUploadCard: React.FC<{
           <img
             src={slot.storageBase64}
             alt={label}
+            data-testid={`photo-preview-${slotKey}`}
             className="w-full h-full object-contain"
           />
           <button
             type="button"
             onClick={onClear}
-            className="absolute top-1.5 right-1.5 w-6 h-6 rounded-md bg-black/65 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute top-1.5 right-1.5 w-7 h-7 rounded-md bg-black/65 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
             title="Xóa ảnh"
           >
             <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
           </button>
         </div>
       ) : (
-        <label className="h-32 rounded-lg border border-dashed border-[#D0CBC2] hover:border-[#1B5E4B] bg-[#FAF9F6] flex flex-col items-center justify-center gap-1.5 cursor-pointer text-[#8A847C] hover:text-[#1B5E4B] transition-colors">
-          <Camera className="w-5 h-5" strokeWidth={1.5} />
-          <span className="text-[11px] font-medium">Chụp / Tải ảnh lên</span>
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={(e) => {
-              onSelectFile(e.target.files?.[0]);
-              e.target.value = '';
-            }}
-          />
-        </label>
+        <div className="h-32 rounded-lg border border-dashed border-[#D0CBC2] bg-[#FAF9F6] p-2 flex flex-col items-center justify-center gap-2 text-center">
+          <span className="text-[11px] text-[#8A847C]">Chọn ảnh có sẵn hoặc chụp trực tiếp</span>
+          <div className="grid grid-cols-2 gap-1.5 w-full">
+            <label
+              className={`min-h-[40px] sm:min-h-[34px] px-2 rounded-lg bg-[#E8F2EE] hover:bg-[#D5E9E0] border border-[#1B5E4B]/25 text-[#0F5132] text-[11px] font-medium inline-flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                disabled ? 'opacity-50 pointer-events-none' : ''
+              }`}
+            >
+              <ImagePlus className="w-3.5 h-3.5 shrink-0" strokeWidth={1.6} />
+              <span className="truncate">Chọn ảnh</span>
+              <input
+                type="file"
+                accept="image/*"
+                disabled={disabled}
+                data-testid={`photo-gallery-input-${slotKey}`}
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  onSelectFile(file);
+                }}
+              />
+            </label>
+
+            <label
+              className={`min-h-[40px] sm:min-h-[34px] px-2 rounded-lg bg-white hover:bg-[#F5F4F0] border border-[#D6D1C7] text-[#3F3D37] text-[11px] font-medium inline-flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                disabled ? 'opacity-50 pointer-events-none' : ''
+              }`}
+            >
+              <Camera className="w-3.5 h-3.5 shrink-0" strokeWidth={1.6} />
+              <span className="truncate">Chụp ảnh</span>
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                disabled={disabled}
+                data-testid={`photo-camera-input-${slotKey}`}
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  onSelectFile(file);
+                }}
+              />
+            </label>
+          </div>
+        </div>
       )}
 
       {slot.storageBase64 && (
-        <label className="text-center text-[11px] text-[#1B5E4B] hover:underline cursor-pointer inline-flex items-center justify-center gap-1">
-          <Plus className="w-3 h-3" strokeWidth={1.5} /> Thay ảnh khác
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={(e) => {
-              onSelectFile(e.target.files?.[0]);
-              e.target.value = '';
-            }}
-          />
-        </label>
+        <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+          <label
+            className={`min-h-[36px] sm:min-h-[30px] px-2 rounded-lg border border-[#0F5132]/25 bg-[#FAF9F6] hover:bg-[#E8F2EE] text-[#0F5132] text-[11px] font-medium inline-flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+              disabled ? 'opacity-50 pointer-events-none' : ''
+            }`}
+          >
+            <ImagePlus className="w-3 h-3 shrink-0" strokeWidth={1.6} />
+            <span className="truncate">Chọn từ máy</span>
+            <input
+              type="file"
+              accept="image/*"
+              disabled={disabled}
+              data-testid={`photo-replace-gallery-input-${slotKey}`}
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                onSelectFile(file);
+              }}
+            />
+          </label>
+
+          <label
+            className={`min-h-[36px] sm:min-h-[30px] px-2 rounded-lg border border-[#E5E2DC] bg-white hover:bg-[#F5F4F0] text-[#57534E] text-[11px] font-medium inline-flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+              disabled ? 'opacity-50 pointer-events-none' : ''
+            }`}
+          >
+            <Camera className="w-3 h-3 shrink-0" strokeWidth={1.6} />
+            <span className="truncate">Chụp lại</span>
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              disabled={disabled}
+              data-testid={`photo-replace-camera-input-${slotKey}`}
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                onSelectFile(file);
+              }}
+            />
+          </label>
+        </div>
       )}
     </div>
   );

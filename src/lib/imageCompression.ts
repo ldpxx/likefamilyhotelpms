@@ -1,8 +1,10 @@
 /**
  * Browser-side HTML5 Canvas image compression utility.
- * Storage target (Firestore `guest_documents` Base64): maxWidth 800px, JPEG q=0.65 (~40KB-80KB).
+ * Storage target (Firestore `guest_documents` Base64): maxWidth 1280px, JPEG q=0.78, strictly < 150 KB/image.
  * OCR target (in-memory Gemini Vision input): maxWidth 1600px, JPEG q=0.90 (sharp for tiny passport/stamp dates).
  */
+
+export const MAX_DOCUMENT_STORAGE_BYTES = 150 * 1024; // 150 KB hard cap per stored image
 
 export interface CompressedImagePair {
   storageBase64: string;
@@ -18,9 +20,9 @@ function loadImageFromFile(file: File): Promise<HTMLImageElement> {
       URL.revokeObjectURL(url);
       resolve(img);
     };
-    img.onerror = (err) => {
+    img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(err);
+      reject(new Error(`Không thể đọc tệp ảnh "${file.name}". Vui lòng chọn ảnh định dạng JPG, PNG hoặc WebP.`));
     };
     img.src = url;
   });
@@ -53,11 +55,34 @@ export function estimateBase64Bytes(dataUrl: string | null | undefined): number 
 
 export async function compressDocumentImage(file: File): Promise<CompressedImagePair> {
   const img = await loadImageFromFile(file);
-  const storageBase64 = renderCanvasJpeg(img, 800, 0.65);
+
+  // Start at target maxWidth=1280px, JPEG quality=0.78 and step down only if size >= 150 KB
+  const presets: Array<[number, number]> = [
+    [1280, 0.78],
+    [1280, 0.7],
+    [1100, 0.72],
+    [960, 0.68],
+    [800, 0.65],
+    [720, 0.58],
+    [640, 0.52],
+  ];
+
+  let storageBase64 = renderCanvasJpeg(img, 1280, 0.78);
+  let storageSizeBytes = estimateBase64Bytes(storageBase64);
+
+  if (storageSizeBytes >= MAX_DOCUMENT_STORAGE_BYTES) {
+    for (let i = 1; i < presets.length; i++) {
+      const [w, q] = presets[i];
+      storageBase64 = renderCanvasJpeg(img, w, q);
+      storageSizeBytes = estimateBase64Bytes(storageBase64);
+      if (storageSizeBytes < MAX_DOCUMENT_STORAGE_BYTES) break;
+    }
+  }
+
   const ocrBase64 = renderCanvasJpeg(img, 1600, 0.9);
   return {
     storageBase64,
-    storageSizeBytes: estimateBase64Bytes(storageBase64),
+    storageSizeBytes,
     ocrBase64,
   };
 }
