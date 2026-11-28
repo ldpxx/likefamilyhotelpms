@@ -31,6 +31,7 @@ import {
   type OccupancyReservationRequest,
 } from './occupancyService';
 import { toVietnamISODate } from './revenueMetrics';
+import { normalizeCountryCode } from './countries';
 import { DEFAULT_HOTEL_CONFIG } from './seedData';
 import type {
   AuditLog,
@@ -205,7 +206,8 @@ export async function upsertGuestProfile(
     gender: input.gender || matched?.gender || '',
     dob: input.dob || matched?.dob || '',
     nationality:
-      input.nationality || matched?.nationality || (category === 'vietnamese' ? 'Việt Nam' : ''),
+      normalizeCountryCode(input.nationality || matched?.nationality) ||
+      (category === 'vietnamese' ? 'VN' : ''),
     idType: input.idType || (category === 'vietnamese' ? 'cccd' : 'visa_passport'),
     idNumber: input.idNumber?.trim() || matched?.idNumber || '',
     visaNumber: input.visaNumber?.trim() || matched?.visaNumber || '',
@@ -364,7 +366,8 @@ export async function createBooking(
     gender: payload.guestGender || '',
     dob: payload.guestDob || '',
     nationality:
-      payload.guestNationality || (payload.guestCategory === 'vietnamese' ? 'Việt Nam' : ''),
+      normalizeCountryCode(payload.guestNationality) ||
+      (payload.guestCategory === 'vietnamese' ? 'VN' : ''),
     idType: payload.guestCategory === 'vietnamese' ? 'cccd' : 'visa_passport',
     idNumber: payload.guestIdNumber?.trim() || '',
     idIssueDate: payload.guestIdIssueDate || '',
@@ -583,7 +586,7 @@ export async function createGroupBooking(
       phone: payload.leaderPhone.trim(),
       gender: '',
       dob: '',
-      nationality: payload.guestCategory === 'vietnamese' ? 'Việt Nam' : '',
+      nationality: payload.guestCategory === 'vietnamese' ? 'VN' : '',
       idType: payload.guestCategory === 'vietnamese' ? 'cccd' : 'visa_passport',
       idNumber: '',
       idIssueDate: '',
@@ -2557,7 +2560,7 @@ export async function ensureServiceCatalogConfig(actor?: ActorInfo): Promise<{
       targetLabel: `Khởi tạo danh mục dịch vụ & bảng giá mặc định (${res.itemCount} mục)`,
       reason: 'Tự động khởi tạo serviceCatalog mặc định (idempotent)',
       actor,
-    }).catch(() => {});
+    }).catch(() => { });
   }
   return res;
 }

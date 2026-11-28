@@ -31,6 +31,8 @@ import {
   todayISO,
 } from '../lib/utils';
 import { DateInputVN } from './DateInputVN';
+import { CountrySelect } from './CountrySelect';
+import { normalizeCountryCode } from '../lib/countries';
 
 interface OccupantOcrPanelProps {
   booking: Booking;
@@ -138,7 +140,7 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
       phone: '',
       gender: '',
       dob: '',
-      nationality: 'Việt Nam',
+      nationality: 'VN',
       idType: 'cccd',
       idNumber: '',
       visaNumber: '',
@@ -280,7 +282,7 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
         visaNumber: extracted.visaNumber || activeOcc.visaNumber,
         gender: extracted.gender || activeOcc.gender,
         dob: extracted.dob || activeOcc.dob,
-        nationality: extracted.nationality || activeOcc.nationality,
+        nationality: extracted.nationality ? normalizeCountryCode(extracted.nationality) : activeOcc.nationality,
         address: extracted.address || activeOcc.address,
         idIssueDate: extracted.idIssueDate || activeOcc.idIssueDate,
         entryDate: extracted.entryDate || activeOcc.entryDate,
@@ -452,7 +454,12 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
                     updateActiveOcc({
                       guestCategory: cat,
                       idType: cat === 'vietnamese' ? 'cccd' : 'visa_passport',
-                      nationality: cat === 'vietnamese' ? 'Việt Nam' : activeOcc.nationality === 'Việt Nam' ? '' : activeOcc.nationality,
+                      nationality:
+                        cat === 'vietnamese'
+                          ? 'VN'
+                          : normalizeCountryCode(activeOcc.nationality) === 'VN'
+                            ? ''
+                            : normalizeCountryCode(activeOcc.nationality),
                       asmStatus: cat === 'foreigner' ? 'pending_asm' : 'not_applicable',
                     })
                   }
@@ -739,6 +746,18 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
               />
             </div>
 
+            <div>
+              <label className="block text-[11px] font-medium text-[#57534E] mb-1">
+                Quốc tịch
+              </label>
+              <CountrySelect
+                value={activeOcc.nationality}
+                onChange={(code) => updateActiveOcc({ nationality: code })}
+                placeholder="Chọn quốc tịch (VD: CN, RU, KR...)"
+                testId="occupant-nationality-select"
+              />
+            </div>
+
             {activeOcc.guestCategory === 'vietnamese' ? (
               <div className="sm:col-span-2 lg:col-span-3">
                 <label className="block text-[11px] font-medium text-[#57534E] mb-1">
@@ -760,18 +779,6 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
                   <DateInputVN
                     value={activeOcc.dob || ''}
                     onChange={(v) => updateActiveOcc({ dob: v })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-[#57534E] mb-1">
-                    Quốc tịch
-                  </label>
-                  <input
-                    type="text"
-                    value={activeOcc.nationality}
-                    onChange={(e) => updateActiveOcc({ nationality: e.target.value })}
-                    placeholder="Korea, USA, Australia..."
-                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
                   />
                 </div>
                 <div>

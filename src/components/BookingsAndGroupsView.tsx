@@ -7,12 +7,14 @@ import {
   Download,
   Globe,
   LogIn,
+  Pencil,
   Plus,
   Search,
   Users,
+  X,
 } from 'lucide-react';
 import { usePms } from '../context/PmsContext';
-import type { Booking } from '../types/pms';
+import type { Booking, Guest } from '../types/pms';
 import {
   formatCurrency,
   formatDateVN,
@@ -24,11 +26,21 @@ import {
   normalizePhone,
   normalizeVietnamese,
 } from '../lib/utils';
-import { bulkCheckInGroup, markOccupantAsmDeclared } from '../lib/pmsActions';
+import {
+  bulkCheckInGroup,
+  markOccupantAsmDeclared,
+  upsertGuestProfile,
+} from '../lib/pmsActions';
 import { exportAsmForeignerCsv } from '../lib/backupExport';
+import {
+  formatCountryBadge,
+  formatCountryDisplay,
+  normalizeCountryCode,
+} from '../lib/countries';
 import { CancelBookingModal } from './CancelBookingModal';
 import { DepositResolutionModal } from './DepositResolutionModal';
 import { PaginationBar, usePagination } from './PaginationBar';
+import { CountrySelect } from './CountrySelect';
 
 interface BookingsAndGroupsViewProps {
   onSelectBooking: (booking: Booking) => void;
@@ -52,7 +64,12 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
 
   // Guest / ASM filters
   const [guestSearch, setGuestSearch] = useState('');
+  const [guestCountryFilter, setGuestCountryFilter] = useState('');
   const [asmOnlyPending, setAsmOnlyPending] = useState(false);
+
+  // Quick Guest CRM edit modal
+  const [editingGuest, setEditingGuest] = useState<Guest | null>(null);
+  const [savingGuest, setSavingGuest] = useState(false);
 
   // Partial Group Cancel & Pending Deposit modals
   const [partialCancelScope, setPartialCancelScope] = useState<Booking[] | null>(null);
@@ -120,15 +137,22 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   const filteredGuests = useMemo(() => {
     const qNorm = normalizeVietnamese(guestSearch);
     const qDigits = normalizePhone(guestSearch);
-    if (!qNorm) return guests;
+    const filterCode = normalizeCountryCode(guestCountryFilter).toLowerCase();
     return guests.filter((g) => {
+      if (filterCode) {
+        const gCode = normalizeCountryCode(g.nationality).toLowerCase();
+        if (gCode !== filterCode) return false;
+      }
+      if (!qNorm) return true;
+      const countryHaystack = normalizeVietnamese(formatCountryDisplay(g.nationality));
       return (
         g.normalizedName.includes(qNorm) ||
         (qDigits.length >= 4 && g.normalizedPhone.includes(qDigits)) ||
-        (g.idNumber || '').toLowerCase().includes(qNorm)
+        (g.idNumber || '').toLowerCase().includes(qNorm) ||
+        countryHaystack.includes(qNorm)
       );
     });
-  }, [guests, guestSearch]);
+  }, [guests, guestSearch, guestCountryFilter]);
 
   const bookingsPag = usePagination(
     filteredBookings,
@@ -137,7 +161,41 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   );
   const groupsPag = usePagination(groups, 'groups', 20);
   const asmPag = usePagination(foreignerStays, String(asmOnlyPending), 20);
-  const guestsPag = usePagination(filteredGuests, guestSearch, 20);
+  const guestsPag = usePagination(filteredGuests, `${guestSearch}|${guestCountryFilter}`, 20);
+
+  const handleSaveGuestEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingGuest || !editingGuest.fullName.trim()) {
+      notify('Vui lòng nhập Họ và tên khách hàng', 'warning');
+      return;
+    }
+    setSavingGuest(true);
+    try {
+      await upsertGuestProfile(
+        {
+          id: editingGuest.id,
+          guestCategory: editingGuest.guestCategory,
+          fullName: editingGuest.fullName.trim(),
+          phone: editingGuest.phone,
+          gender: editingGuest.gender,
+          dob: editingGuest.dob,
+          nationality: normalizeCountryCode(editingGuest.nationality),
+          idType: editingGuest.guestCategory === 'vietnamese' ? 'cccd' : 'visa_passport',
+          idNumber: editingGuest.idNumber,
+          visaNumber: editingGuest.visaNumber,
+          address: editingGuest.address,
+        },
+        guests,
+        false
+      );
+      notify(`Đã cập nhật hồ sơ khách ${editingGuest.fullName}`);
+      setEditingGuest(null);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi cập nhật hồ sơ khách', 'error');
+    } finally {
+      setSavingGuest(false);
+    }
+  };
 
   const handleBulkCheckIn = async (groupId: string, groupName: string) => {
     const groupBookings = bookings.filter((b) => b.groupId === groupId && b.status === 'reserved');
@@ -628,7 +686,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                           <td className="px-3 py-2.5">
                             <div className="font-medium text-[#1C1B18]">{occ.fullName}</div>
                             <div className="text-[11px] text-[#57534E]">
-                              {occ.nationality || 'Chưa rõ'} • {occ.dob || '—'}
+                              {formatCountryBadge(occ.nationality) || 'Chưa rõ'} • {occ.dob ? formatDateVN(occ.dob) : '—'}
                             </div>
                           </td>
                           <td className="px-3 py-2.5 font-mono-num">
@@ -691,15 +749,28 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
           <div className="bg-white border border-[#E5E2DC] rounded-2xl p-5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-[15px] font-semibold text-[#1C1B18]">
-                Kho Hồ sơ Khách hàng & Khách quay lại ({guests.length})
+                Kho Hồ sơ Khách hàng & Khách quay lại ({filteredGuests.length}
+                {filteredGuests.length !== guests.length ? ` / ${guests.length}` : ''})
               </h3>
-              <input
-                type="text"
-                value={guestSearch}
-                onChange={(e) => setGuestSearch(e.target.value)}
-                placeholder="Tìm tên, SĐT, CCCD..."
-                className="h-8 px-3 rounded-lg border border-[#E5E2DC] text-[12px] w-64"
-              />
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                <div className="w-full sm:w-56">
+                  <CountrySelect
+                    value={guestCountryFilter}
+                    onChange={setGuestCountryFilter}
+                    allowEmpty
+                    emptyLabel="Tất cả quốc tịch"
+                    compact
+                    testId="guests-country-filter"
+                  />
+                </div>
+                <input
+                  type="text"
+                  value={guestSearch}
+                  onChange={(e) => setGuestSearch(e.target.value)}
+                  placeholder="Tìm tên, SĐT, CCCD, quốc tịch..."
+                  className="min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border border-[#E5E2DC] text-[12px] w-full sm:w-60"
+                />
+              </div>
             </div>
 
             <div className="overflow-x-auto border border-[#E5E2DC] rounded-xl">
@@ -712,6 +783,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                     <th className="text-left px-3 py-2 font-medium">Quốc tịch</th>
                     <th className="text-right px-3 py-2 font-medium">Số lần lưu trú</th>
                     <th className="text-right px-3 py-2 font-medium">Lần cuối</th>
+                    <th className="text-right px-3 py-2 font-medium">Sửa</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F1EFEA]">
@@ -730,12 +802,25 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                       </td>
                       <td className="px-3 py-2 font-mono-num">{g.phone || '—'}</td>
                       <td className="px-3 py-2 font-mono-num">{g.idNumber || '—'}</td>
-                      <td className="px-3 py-2">{g.nationality || '—'}</td>
+                      <td className="px-3 py-2 font-medium text-[#3F3D37]">
+                        {formatCountryBadge(g.nationality) || '—'}
+                      </td>
                       <td className="px-3 py-2 text-right font-mono-num font-semibold text-[#1B5E4B]">
                         {g.totalStays}
                       </td>
                       <td className="px-3 py-2 text-right font-mono-num text-[#57534E]">
                         {formatDateVN(g.lastVisitDate)}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => setEditingGuest({ ...g })}
+                          data-testid={`edit-guest-btn-${g.id}`}
+                          className="min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border border-[#E5E2DC] hover:border-[#0F5132] hover:text-[#0F5132] text-[11px] font-medium inline-flex items-center gap-1"
+                        >
+                          <Pencil className="w-3 h-3" strokeWidth={1.5} />
+                          <span>Sửa</span>
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -752,6 +837,118 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
               onPageSizeChange={guestsPag.setPageSize}
             />
           </div>
+        </div>
+      )}
+
+      {editingGuest && (
+        <div
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-3"
+          onClick={() => !savingGuest && setEditingGuest(null)}
+        >
+          <form
+            onSubmit={handleSaveGuestEdit}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl bg-white border border-[#E5E2DC] shadow-xl overflow-visible"
+          >
+            <div className="px-4 py-3 border-b border-[#E5E2DC] flex items-center justify-between">
+              <h3 className="text-[15px] font-semibold text-[#1C1B18]">Chỉnh sửa hồ sơ khách hàng</h3>
+              <button
+                type="button"
+                onClick={() => setEditingGuest(null)}
+                className="min-w-[36px] min-h-[36px] rounded-lg hover:bg-[#F5F4F0] flex items-center justify-center text-[#57534E]"
+              >
+                <X className="w-4 h-4" strokeWidth={1.75} />
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="inline-flex p-0.5 rounded-lg bg-[#F1EFEA] text-[12px]">
+                {(['vietnamese', 'foreigner'] as const).map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() =>
+                      setEditingGuest((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              guestCategory: cat,
+                              nationality:
+                                cat === 'vietnamese'
+                                  ? 'VN'
+                                  : normalizeCountryCode(prev.nationality) === 'VN'
+                                    ? ''
+                                    : normalizeCountryCode(prev.nationality),
+                            }
+                          : null
+                      )
+                    }
+                    className={`px-3 py-1 rounded-md font-medium ${
+                      editingGuest.guestCategory === cat ? 'bg-white text-[#1C1B18]' : 'text-[#57534E]'
+                    }`}
+                  >
+                    {cat === 'vietnamese' ? 'Khách Việt Nam' : 'Khách nước ngoài'}
+                  </button>
+                ))}
+              </div>
+              <div>
+                <label className="block text-[12px] text-[#57534E] mb-1">Họ và tên *</label>
+                <input
+                  type="text"
+                  required
+                  value={editingGuest.fullName}
+                  onChange={(e) => setEditingGuest({ ...editingGuest, fullName: e.target.value })}
+                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[12px] text-[#57534E] mb-1">Số điện thoại</label>
+                  <input
+                    type="tel"
+                    value={editingGuest.phone || ''}
+                    onChange={(e) => setEditingGuest({ ...editingGuest, phone: e.target.value })}
+                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px] font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[12px] text-[#57534E] mb-1">
+                    {editingGuest.guestCategory === 'vietnamese' ? 'Số CCCD' : 'Số Hộ chiếu'}
+                  </label>
+                  <input
+                    type="text"
+                    value={editingGuest.idNumber || ''}
+                    onChange={(e) => setEditingGuest({ ...editingGuest, idNumber: e.target.value })}
+                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px] font-mono-num"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-[12px] text-[#57534E] mb-1">Quốc tịch</label>
+                <CountrySelect
+                  value={editingGuest.nationality || ''}
+                  onChange={(code) => setEditingGuest({ ...editingGuest, nationality: code })}
+                  placeholder="Chọn quốc tịch..."
+                  testId="guest-edit-nationality-select"
+                />
+              </div>
+            </div>
+            <div className="px-4 py-3 border-t border-[#E5E2DC] bg-[#FAF9F6] rounded-b-2xl flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditingGuest(null)}
+                className="min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg border border-[#E5E2DC] bg-white text-[13px] text-[#57534E]"
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                disabled={savingGuest}
+                className="min-h-[40px] sm:min-h-0 sm:h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] disabled:opacity-50 text-white text-[13px] font-medium"
+              >
+                {savingGuest ? 'Đang lưu...' : 'Lưu hồ sơ'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

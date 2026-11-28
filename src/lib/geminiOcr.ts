@@ -1,5 +1,6 @@
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from './firebase';
+import { normalizeCountryCode } from './countries';
 import type { GeminiApiKeyEntry, GuestCategory, SystemAiConfig } from '../types/pms';
 
 /**
@@ -319,7 +320,7 @@ Trả về JSON duy nhất đúng schema sau:
   "dob": "YYYY-MM-DD",
   "address": "Nơi thường trú đầy đủ",
   "idIssueDate": "YYYY-MM-DD (lấy từ mặt sau CCCD nếu có)",
-  "nationality": "Việt Nam",
+  "nationality": "VN",
   "confidenceNote": "Ghi chú ngắn nếu có vùng bị mờ hoặc thiếu mặt sau"
 }`;
   }
@@ -338,7 +339,7 @@ Return strictly one JSON object matching this schema:
   "fullName": "FULL NAME from passport MRZ/bio page",
   "dob": "YYYY-MM-DD",
   "gender": "Nam (if M/Male) or Nữ (if F/Female)",
-  "nationality": "Country name or 3-letter nationality",
+  "nationality": "ISO 2-letter or 3-letter passport MRZ nationality code (e.g. CHN, RUS, KOR, KAZ, USA, AUS, JPN, TWN, HKG)",
   "entryDate": "YYYY-MM-DD from Vietnam entry stamp",
   "stayPermitExpiryDate": "YYYY-MM-DD (PRIORITIZE Vietnam Entry Stamp permitted-until date over Visa expiry)",
   "stayPermitSource": "entry_stamp | visa | unknown",
@@ -495,8 +496,8 @@ export async function runGuestDocumentOcr(params: {
             gender: String(parsed.gender || '').trim(),
             dob: String(parsed.dob || '').trim(),
             nationality:
-              String(parsed.nationality || '').trim() ||
-              (params.category === 'vietnamese' ? 'Việt Nam' : ''),
+              normalizeCountryCode(String(parsed.nationality || '').trim()) ||
+              (params.category === 'vietnamese' ? 'VN' : ''),
             address: String(parsed.address || '').trim(),
             idIssueDate: String(parsed.idIssueDate || '').trim(),
             entryDate: String(parsed.entryDate || '').trim(),

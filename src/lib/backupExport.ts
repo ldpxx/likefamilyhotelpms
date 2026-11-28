@@ -14,6 +14,7 @@ import type {
   Transaction,
 } from '../types/pms';
 import { writeAuditLog, type ActorInfo } from './pmsActions';
+import { formatCountryBadge, resolveCountryForAsm } from './countries';
 import { formatDateTimeVN, formatDateVN, getPaymentMethodLabel, todayISO } from './utils';
 
 export interface FullBackupBundle {
@@ -93,7 +94,7 @@ export async function exportFullBackupExcel(
       SDT: g.phone,
       GioiTinh: g.gender,
       NgaySinh: formatDateVN(g.dob),
-      QuocTich: g.nationality,
+      QuocTich: formatCountryBadge(g.nationality) || g.nationality || '',
       SoGiayTo: g.idNumber,
       SoVisa: g.visaNumber || '',
       NgayCap: formatDateVN(g.idIssueDate),
@@ -222,12 +223,15 @@ export function exportAsmForeignerCsv(bookings: Booking[]): void {
     if (b.status !== 'in_house' && b.status !== 'reserved') continue;
     for (const occ of b.occupants || []) {
       if (occ.guestCategory !== 'foreigner') continue;
+      const country = resolveCountryForAsm(occ.nationality);
       rows.push({
         Phong: b.roomNumber,
         HoTen: occ.fullName,
         GioiTinh: occ.gender || '',
         NgaySinh: formatDateVN(occ.dob),
-        QuocTich: occ.nationality || '',
+        MaQuocTich: country.code,
+        MaQuocTichISO3: country.iso3,
+        QuocTich: formatCountryBadge(occ.nationality) || country.nameVi || '',
         SoHoChieu: occ.idNumber || '',
         SoVisa: occ.visaNumber || '',
         NgayNhapCanh: formatDateVN(occ.entryDate),

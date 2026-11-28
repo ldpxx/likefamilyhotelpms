@@ -18,6 +18,8 @@ import { doBookingIntervalsOverlap, isRoomBlockedByMaintenance } from '../lib/re
 import { createBooking, findMatchingGuests } from '../lib/pmsActions';
 import { PricingEditor } from './PricingEditor';
 import { DateInputVN } from './DateInputVN';
+import { CountrySelect } from './CountrySelect';
+import { normalizeCountryCode } from '../lib/countries';
 
 interface BookingCreateModalProps {
   initialRoom?: Room;
@@ -88,7 +90,7 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
   const [guestName, setGuestName] = useState('');
   const [guestPhone, setGuestPhone] = useState('');
   const [guestIdNumber, setGuestIdNumber] = useState('');
-  const [guestNationality, setGuestNationality] = useState('Việt Nam');
+  const [guestNationality, setGuestNationality] = useState('VN');
   const [guestGender, setGuestGender] = useState('');
   const [guestAddress, setGuestAddress] = useState('');
   const [guestDob, setGuestDob] = useState('');
@@ -164,7 +166,9 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
     setGuestPhone(g.phone || '');
     setGuestIdNumber(g.idNumber || '');
     setGuestCategory(g.guestCategory || 'vietnamese');
-    setGuestNationality(g.nationality || (g.guestCategory === 'vietnamese' ? 'Việt Nam' : ''));
+    setGuestNationality(
+      normalizeCountryCode(g.nationality) || (g.guestCategory === 'vietnamese' ? 'VN' : '')
+    );
     setGuestGender(g.gender || '');
     setGuestAddress(g.address || '');
     setGuestDob(g.dob || '');
@@ -517,7 +521,7 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
                   type="button"
                   onClick={() => {
                     setGuestCategory('vietnamese');
-                    setGuestNationality('Việt Nam');
+                    setGuestNationality('VN');
                   }}
                   className={`px-3 py-1 rounded-md font-medium ${
                     guestCategory === 'vietnamese' ? 'bg-white text-[#1C1B18]' : 'text-[#57534E]'
@@ -529,7 +533,7 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
                   type="button"
                   onClick={() => {
                     setGuestCategory('foreigner');
-                    if (guestNationality === 'Việt Nam') setGuestNationality('');
+                    if (normalizeCountryCode(guestNationality) === 'VN') setGuestNationality('');
                   }}
                   className={`px-3 py-1 rounded-md font-medium ${
                     guestCategory === 'foreigner' ? 'bg-white text-[#1C1B18]' : 'text-[#57534E]'
@@ -585,12 +589,11 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
               </div>
               <div>
                 <label className="block text-[12px] text-[#57534E] mb-1">Quốc tịch</label>
-                <input
-                  type="text"
+                <CountrySelect
                   value={guestNationality}
-                  onChange={(e) => setGuestNationality(e.target.value)}
-                  placeholder="Việt Nam / Korea / USA..."
-                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px] focus:outline-none focus:border-[#1B5E4B]"
+                  onChange={setGuestNationality}
+                  placeholder="Chọn quốc tịch (VD: VN, CN, RU, KR...)"
+                  testId="booking-create-nationality-select"
                 />
               </div>
             </div>
