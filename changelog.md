@@ -7,9 +7,14 @@ Tất cả các thay đổi quan trọng của dự án **Like Family PMS** đ�
 
 ---
 
-## [2.2.2] - 27/11/2026
+## [2.2.2] - 28/11/2026 (GO-LIVE CHÍNH THỨC)
 
-Bản vá kỹ thuật, kiểm toán bảo mật/kế toán, kiểm toán UI/UX hình học DOM & triển khai Live UAT lên **https://likefamilypms.web.app** (nhánh GitHub `fix/v2.2.2`; **giữ nguyên bộ dữ liệu mẫu 2 tháng `QA2M_*` và tài khoản `qa_runner` theo quyết định của Chủ dự án để trải nghiệm thực tế trên máy tính & điện thoại**). Duy trì 100% ràng buộc 0đ Firebase Spark (không Cloud Functions, không Storage, không Google Sign-In).
+**Chính thức Go-Live Production** trên **https://likefamilypms.web.app** (`likefamilypms`, 0đ Firebase Spark): dọn sạch 100% dữ liệu mẫu `QA2M_*`, thu hồi tài khoản test `qa_runner`, chuyển đổi hoàn chỉnh dữ liệu vận hành thực tế năm 2026 từ **GoHost PMS** (`962` bookings, `91` groups, `663` guests, `841` transactions, `4` lô OTA, `432` chỉ mục `room_occupancy` với **`0` xung đột trên `15/15` phòng**), bật khóa sổ kế toán lịch sử **`accountingLockDate: '2026-10-31'`** và xuất biên bản bàn giao [`QA_REPORTS/GOHOST_MIGRATION_2026/01_GOLIVE_HANDOVER_REPORT.md`](./QA_REPORTS/GOHOST_MIGRATION_2026/01_GOLIVE_HANDOVER_REPORT.md).
+
+### Go-Live Data Migration (`scripts/migrate_gohost_2026.mjs`)
+- **Sao lưu & Làm sạch QA:** Sao lưu nóng `backups/firestore_backup_pre_golive_2026-11-28.json` (`2,442.6 KB`), xóa sạch toàn bộ dữ liệu mẫu `QA2M_*` trên 10 collection nghiệp vụ và thu hồi vĩnh viễn tài khoản `qa_runner@likefamilyhotel.com` (`POtrN1IKzHVHBoULChYpINezSQ32`) trên cả `staff_users` lẫn Firebase Authentication.
+- **Chuẩn hóa 15 phòng & Dữ liệu GoHost 2026 (`0` xung đột):** Hiệu chỉnh chuẩn 4 Phòng đơn (`203, 303, 403, 502`) + 11 Phòng đôi/Gia đình; tách lịch nhận phòng đoàn `LIK00848` (`Trương Thúy Vy`, cọc `1.000.000đ`) & chuỗi 3 chặng chuyển phòng `LIK00783` (`SOLGALOVA VERONIKA`); chuyển `19` đơn quá hạn + `LIK00231` sang `checked_out`; ghi nhận `3` cọc hủy `1.150.000đ` (`forfeited_fee`); loại `LIK00001` (T08/2025) & giữ `LIK00422` (`1.147.500đ`); dựng `432` chỉ mục `room_occupancy` đạt `0` xung đột `15/15` phòng và khóa sổ đến hết `31/10/2026`.
+- **Tổng kết P&L Production năm 2026:** Doanh thu phòng dồn tích `857.908.189đ` (`2.930` đêm + `84` nghỉ giờ) + Dịch vụ `19.203.200đ` (`207` dòng, `0đ` lệch) + Phí hủy giữ cọc `1.150.000đ` = **`878.261.389đ`**; Chi phí vận hành `66.442.512đ` (`14` phiếu chi) → Lợi nhuận ròng **`811.818.877đ`**; Công nợ chờ thu 2026 **`60.351.610đ`** (`66` khoản).
 
 ### UI/UX & Print Hardening (`QA_REPORTS/UI_UX_AUDIT_v2.2.2/`)
 - **Quét hình học DOM 4 độ phân giải (`1440×900`, `768×1024`, `390×844`, `360×800`) qua [`scripts/qa_ui_ux_audit.mjs`](./scripts/qa_ui_ux_audit.mjs):** Đạt **19/19 tổ hợp sạch lỗi** (`0` overflow, `0` occluded, `0` nút `< 40×40px`, `0` cặp nút `< 8px`, `0` chữ `< 12px`, `0` console error).

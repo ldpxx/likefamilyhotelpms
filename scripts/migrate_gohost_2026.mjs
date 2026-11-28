@@ -20,8 +20,26 @@ const dataDir = path.resolve(rootDir, 'data_gohost');
 const reportDir = path.resolve(rootDir, 'QA_REPORTS/GOHOST_MIGRATION_2026');
 fs.mkdirSync(reportDir, { recursive: true });
 
-const modeArg = process.argv.find((a) => a.startsWith('--mode='))?.split('=')[1] || 'emulator';
+const modeArg =
+  process.argv.find((a) => a.startsWith('--target='))?.split('=')[1] ||
+  process.argv.find((a) => a.startsWith('--mode='))?.split('=')[1] ||
+  'emulator';
 const ACTIVE_CUTOFF_DATE = '2026-11-28'; // Bookings with Trạng thái='Đang lưu trú' & checkOut >= 2026-11-28 stay in_house
+const LOCK_DATE_GOLIVE = '2026-10-31';
+
+// Approved Go-Live per-room overrides for the 2 historical conflict orders:
+const LIK00848_ROOM_SCHEDULE = {
+  '202': { checkIn: '2026-11-29', checkOut: '2026-12-12' }, // 13 nights
+  '302': { checkIn: '2026-11-29', checkOut: '2026-12-12' }, // 13 nights
+  '502': { checkIn: '2026-11-30', checkOut: '2026-12-12' }, // 12 nights (follows LIK00842 checkout 30/11)
+  '304': { checkIn: '2026-11-30', checkOut: '2026-12-12' }, // 12 nights
+};
+
+const LIK00783_SPLIT_LEGS = [
+  { roomNumber: '502', checkIn: '2026-10-17', checkOut: '2026-10-27', gross: 1612900, status: 'checked_out' },
+  { roomNumber: '404', checkIn: '2026-10-27', checkOut: '2026-11-02', gross: 967740, status: 'checked_out' },
+  { roomNumber: '403', checkIn: '2026-11-02', checkOut: '2026-12-17', gross: 7419360, status: 'in_house' },
+];
 
 // Official 15-room GoHost -> Like Family PMS room-type mapping (4 Single: 203, 303, 403, 502; 11 Double/Family)
 const OFFICIAL_ROOM_LAYOUT = [
@@ -190,7 +208,14 @@ const rawPaymentsAll = readExcel('ds-payments.xlsx');
 const rawPayments = rawPaymentsAll.filter(
   (p) => String(p['Mã đặt phòng'] || '').trim() && !String(p['Mã đặt phòng']).toUpperCase().includes('TỔNG')
 );
-const rawReceivables = readExcel('export-11-receivables.xlsx');
+const rawReceivablesAll = readExcel('export-11-receivables.xlsx');
+// Approved Rule 3: Exclude legacy 2025 receivable LIK00001 (HAK JIN KIM, Expedia 650,000đ, 08/2025) to keep clean 2026 boundary
+const skippedLegacyReceivables = rawReceivablesAll.filter(
+  (r) => String(r['Mã đặt phòng'] || '').trim() === 'LIK00001'
+);
+const rawReceivables = rawReceivablesAll.filter(
+  (r) => String(r['Mã đặt phòng'] || '').trim() !== 'LIK00001'
+);
 const rawReceipts = readExcel('export-12-receipts.xlsx');
 const rawExpenses = readExcel('export-13-transactions.xlsx');
 
@@ -430,20 +455,33 @@ for (const row of rawBookings) {
   const createdBy = String(row['Người tạo'] || 'LE DUC PHUONG').trim() || 'LE DUC PHUONG';
 
   const isMulti = uniqueRooms.length > 1;
+  const isLik00783Split = code === 'LIK00783';
+  const isLik00848Group = code === 'LIK00848';
+
   let groupId = null;
   let groupName = null;
-  if (isMulti) {
+  if (isMulti && !isLik00783Split) {
     multiRoomBookingCount++;
     groupId = `gh_grp_${code}`;
     groupName = `${guest.fullName} (${code})`;
   }
 
-  const roomGrossSplits = splitEvenly(parentGrossRoom, uniqueRooms.length);
+  const roomGrossSplits = isLik00783Split
+    ? LIK00783_SPLIT_LEGS.map((l) => l.gross)
+    : splitEvenly(parentGrossRoom, uniqueRooms.length);
   const commSplits = splitEvenly(parentCommission, uniqueRooms.length);
-  const paidSplits = splitEvenly(parentPaid, uniqueRooms.length);
+  const paidSplits = isLik00783Split
+    ? LIK00783_SPLIT_LEGS.map((l) => l.gross)
+    : splitEvenly(parentPaid, uniqueRooms.length);
+
+  const effectiveRooms = isLik00783Split
+    ? LIK00783_SPLIT_LEGS.map((l) => l.roomNumber)
+    : isLik00848Group
+    ? ['202', '302', '502', '304']
+    : uniqueRooms;
 
   const childBookings = [];
-  uniqueRooms.forEach((roomNum, idx) => {
+  effectiveRooms.forEach((roomNum, idx) => {
     const meta = ROOM_META_MAP.get(roomNum);
     const childId = isMulti ? `gh_${code}_R${roomNum}` : `gh_${code}`;
     const childCode = isMulti ? `${code}-${roomNum}` : code;
@@ -452,13 +490,33 @@ for (const row of rawBookings) {
     const childNet = Math.max(0, childGross - childComm);
     const childPaid = paidSplits[idx];
 
+    // Apply approved Go-Live split-stay / staggered check-in schedules for LIK00783 & LIK00848
+    let childCi = ci;
+    let childCo = co;
+    let childStatus = status;
+    let childChainId = null;
+    let childChainSeq = undefined;
+    if (isLik00783Split) {
+      const leg = LIK00783_SPLIT_LEGS[idx];
+      childCi = leg.checkIn;
+      childCo = leg.checkOut;
+      childStatus = leg.status;
+      childChainId = 'chain_gh_LIK00783';
+      childChainSeq = idx + 1;
+    } else if (isLik00848Group && LIK00848_ROOM_SCHEDULE[roomNum]) {
+      childCi = LIK00848_ROOM_SCHEDULE[roomNum].checkIn;
+      childCo = LIK00848_ROOM_SCHEDULE[roomNum].checkOut;
+      childStatus = 'reserved';
+    }
+
+    const childNights = isHourly ? 0 : Math.max(1, diffDaysISO(childCi, childCo));
     let dailyRates;
     if (isHourly) {
-      dailyRates = [{ date: ci, rate: childGross }];
+      dailyRates = [{ date: childCi, rate: childGross }];
     } else {
-      const nightSplits = splitEvenly(childGross, nights);
+      const nightSplits = splitEvenly(childGross, childNights);
       dailyRates = nightSplits.map((rate, nIdx) => ({
-        date: addDaysISO(ci, nIdx),
+        date: addDaysISO(childCi, nIdx),
         rate,
       }));
     }
@@ -475,9 +533,12 @@ for (const row of rawBookings) {
       nationality: guest.nationality || 'VN',
       idType: isForeign ? 'passport' : 'cccd',
       idNumber: guest.idNumber,
-      asmStatus: isForeign && (status === 'in_house' || status === 'reserved') ? 'pending_asm' : 'not_applicable',
+      asmStatus: isForeign && (childStatus === 'in_house' || childStatus === 'reserved') ? 'pending_asm' : 'not_applicable',
       isPrimary: true,
     };
+
+    const isCancelledWithForfeitedDeposit = childStatus === 'cancelled' && childPaid > 0;
+    const isReservedDeposit = childStatus === 'reserved' && childPaid > 0;
 
     const bookingDoc = stripUndefined({
       id: childId,
@@ -485,14 +546,16 @@ for (const row of rawBookings) {
       gohostBookingCode: code,
       bookingMode: isHourly ? 'hourly' : 'daily',
       hourlyHours: isHourly ? 2 : undefined,
-      checkInTime: isHourly ? '14:00' : '14:00',
+      checkInTime: '14:00',
       checkOutTime: isHourly ? '16:00' : '12:00',
+      bookingChainId: childChainId,
+      chainSequence: childChainSeq,
       groupId,
       groupName,
-      checkIn: ci,
-      checkOut: co,
-      actualCheckInAt: status === 'in_house' || status === 'checked_out' ? `${ci}T14:00:00+07:00` : null,
-      actualCheckOutAt: status === 'checked_out' ? `${co}T12:00:00+07:00` : null,
+      checkIn: childCi,
+      checkOut: childCo,
+      actualCheckInAt: childStatus === 'in_house' || childStatus === 'checked_out' ? `${childCi}T14:00:00+07:00` : null,
+      actualCheckOutAt: childStatus === 'checked_out' ? `${childCo}T12:00:00+07:00` : null,
       primaryGuestId: guest.id,
       primaryGuestName: guest.fullName,
       primaryGuestNormalizedName: guest.normalizedName,
@@ -515,23 +578,30 @@ for (const row of rawBookings) {
       roomTypeId: meta.roomTypeId,
       roomTypeName: meta.roomTypeName,
       dailyRates,
-      nights,
+      nights: childNights,
       grossRoomTotal: childGross,
       otaCommissionAmount: childComm,
       netRoomTotal: childNet,
       serviceTotal: 0,
       services: [],
       hourlySurcharge: 0,
-      depositPaid: 0,
-      guestPaid: status === 'cancelled' ? 0 : (hasPendingReceivable ? 0 : childPaid),
+      depositPaid: isReservedDeposit ? childPaid : 0,
+      guestPaid:
+        childStatus === 'cancelled' || isReservedDeposit
+          ? 0
+          : hasPendingReceivable
+          ? 0
+          : childPaid,
       paymentMethod,
       otaSettlementStatus,
-      status,
-      cancellationType: status === 'cancelled' ? 'customer_cancelled' : undefined,
-      cancelledAt: status === 'cancelled' ? updatedAt : undefined,
-      depositResolutionStatus:
-        status === 'cancelled' && childPaid > 0 ? 'pending_deposit_resolution' : 'none',
-      pendingDepositAmount: status === 'cancelled' && childPaid > 0 ? childPaid : undefined,
+      status: childStatus,
+      cancellationType: childStatus === 'cancelled' ? 'customer_cancelled' : undefined,
+      cancelledAt: childStatus === 'cancelled' ? updatedAt : undefined,
+      depositResolutionStatus: isCancelledWithForfeitedDeposit ? 'forfeited_fee' : 'none',
+      depositDisposition: isCancelledWithForfeitedDeposit ? 'forfeited' : undefined,
+      forfeitedFeeAmount: isCancelledWithForfeitedDeposit ? childPaid : undefined,
+      depositResolvedAt: isCancelledWithForfeitedDeposit ? updatedAt : undefined,
+      pendingDepositAmount: 0,
       note: String(row['Ghi chú khách đoàn'] || row['Nhãn'] || '').trim() || undefined,
       createdAt,
       updatedAt,
@@ -545,7 +615,7 @@ for (const row of rawBookings) {
 
   bookingsByGoHostCode.set(code, childBookings);
 
-  if (isMulti) {
+  if (isMulti && !isLik00783Split) {
     pmsGroups.push({
       id: groupId,
       groupCode: code,
@@ -799,11 +869,30 @@ function computePnLRange(fromISO, toISO) {
       }
     }
   }
+  const forfeitedCancelFees = pmsBookings
+    .filter((b) => b.status === 'cancelled' && b.depositResolutionStatus === 'forfeited_fee')
+    .filter((b) => {
+      const d = (b.depositResolvedAt || b.cancelledAt || '').slice(0, 10);
+      return d >= fromISO && d <= toISO;
+    })
+    .reduce((s, b) => s + (b.forfeitedFeeAmount || 0), 0);
+
   const expense = pmsTransactions
     .filter((t) => t.status === 'active' && t.direction === 'out' && t.type === 'expense' && t.date >= fromISO && t.date <= toISO)
     .reduce((s, t) => s + t.amount, 0);
 
-  return { roomRev, soldNights, hourlyCount, serviceRev, svcGroups, expense, netProfit: roomRev + serviceRev - expense };
+  const totalRevenue = roomRev + serviceRev + forfeitedCancelFees;
+  return {
+    roomRev,
+    soldNights,
+    hourlyCount,
+    serviceRev,
+    forfeitedCancelFees,
+    totalRevenue,
+    svcGroups,
+    expense,
+    netProfit: totalRevenue - expense,
+  };
 }
 
 const pnl2026 = computePnLRange('2026-01-01', '2026-12-31');
@@ -826,45 +915,82 @@ const reservedRoomRev = pmsBookings
   .reduce((s, b) => s + (b.grossRoomTotal || 0), 0);
 const jan2027CarryRoomRev = pnlAllSpan.roomRev - pnl2026.roomRev;
 
-// --- STEP 10: OPTIONAL EMULATOR IMPORT + OCCUPANCY AUDIT ---
+// --- STEP 10: FIRESTORE IMPORT (EMULATOR OR PRODUCTION) + OCCUPANCY AUDIT ---
 let emulatorSummary = null;
-if (modeArg === 'emulator') {
+if (modeArg === 'emulator' || modeArg === 'production') {
+  if (modeArg === 'production' && activeConflicts.length > 0) {
+    console.error('ABORT_PRODUCTION_CONFLICTS:', JSON.stringify(activeConflicts, null, 2));
+    process.exit(1);
+  }
+
   const appMod = await import(pathToFileURL(path.resolve(rootDir, 'node_modules/firebase/app/dist/index.mjs')).href);
   const authMod = await import(pathToFileURL(path.resolve(rootDir, 'node_modules/firebase/auth/dist/index.mjs')).href);
   const fsMod = await import(pathToFileURL(path.resolve(rootDir, 'node_modules/firebase/firestore/dist/index.mjs')).href);
 
-  const emuConfig = { apiKey: 'demo-api-key', authDomain: 'likefamilypms.firebaseapp.com', projectId: 'likefamilypms' };
-  const appSa = appMod.initializeApp(emuConfig, 'GoHostMigSa');
-  const authSa = authMod.getAuth(appSa);
-  authMod.connectAuthEmulator(authSa, 'http://127.0.0.1:9099', { disableWarnings: true });
-  const db = fsMod.getFirestore(appSa);
-  fsMod.connectFirestoreEmulator(db, '127.0.0.1', 8080);
+  let db;
+  if (modeArg === 'emulator') {
+    const emuConfig = { apiKey: 'demo-api-key', authDomain: 'likefamilypms.firebaseapp.com', projectId: 'likefamilypms' };
+    const appSa = appMod.initializeApp(emuConfig, 'GoHostMigSa');
+    const authSa = authMod.getAuth(appSa);
+    authMod.connectAuthEmulator(authSa, 'http://127.0.0.1:9099', { disableWarnings: true });
+    db = fsMod.getFirestore(appSa);
+    fsMod.connectFirestoreEmulator(db, '127.0.0.1', 8080);
 
-  const saCred = await authMod.createUserWithEmailAndPassword(authSa, 'ducphuong84@gmail.com', 'DemoSa#2026');
-  await fsMod.setDoc(fsMod.doc(db, 'system_meta', 'bootstrap'), {
-    adminInitialized: true,
-    superAdminUid: saCred.user.uid,
-    ownerUid: saCred.user.uid,
-    superAdminEmail: 'ducphuong84@gmail.com',
-    initializedAt: new Date().toISOString(),
-  });
+    const saCred = await authMod.createUserWithEmailAndPassword(authSa, 'ducphuong84@gmail.com', 'DemoSa#2026');
+    await fsMod.setDoc(fsMod.doc(db, 'system_meta', 'bootstrap'), {
+      adminInitialized: true,
+      superAdminUid: saCred.user.uid,
+      ownerUid: saCred.user.uid,
+      superAdminEmail: 'ducphuong84@gmail.com',
+      initializedAt: new Date().toISOString(),
+    });
+  } else {
+    // Production mode: load .env Firebase config & sign in as authorized Owner before final qa_runner revocation
+    const envText = fs.readFileSync(path.resolve(rootDir, '.env'), 'utf8');
+    const env = {};
+    for (const line of envText.split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+    const appProd = appMod.initializeApp(
+      {
+        apiKey: env.VITE_FIREBASE_API_KEY,
+        authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,
+        projectId: env.VITE_FIREBASE_PROJECT_ID,
+        messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+        appId: env.VITE_FIREBASE_APP_ID,
+      },
+      'GoHostMigProd'
+    );
+    const authProd = authMod.getAuth(appProd);
+    db = fsMod.getFirestore(appProd);
+    const email = process.env.GOLIVE_AUTH_EMAIL || 'qa_runner@likefamilyhotel.com';
+    const pwd = process.env.GOLIVE_AUTH_PWD || 'QaRunner@2026';
+    await authMod.signInWithEmailAndPassword(authProd, email, pwd);
+    // Ensure accountingLockDate is temporarily open during historical 2026 transaction import
+    await fsMod.setDoc(
+      fsMod.doc(db, 'hotel_config', 'main'),
+      { accountingLockDate: null, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
+  }
 
-  // Load base config & room_types from pre-UAT backup
-  const backupPath = path.resolve(rootDir, 'backups/firestore_backup_pre_uat_ui_v2.2.2_2026-11-27.json');
-  const backup = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
   const writeQueue = [];
+  if (modeArg === 'emulator') {
+    const backupPath = path.resolve(rootDir, 'backups/firestore_backup_pre_uat_ui_v2.2.2_2026-11-27.json');
+    const backup = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+    for (const [docId, data] of Object.entries(backup.collections.hotel_config || {})) {
+      writeQueue.push({ col: 'hotel_config', id: docId, data });
+    }
+    for (const [docId, data] of Object.entries(backup.collections.form_templates || {})) {
+      writeQueue.push({ col: 'form_templates', id: docId, data });
+    }
+    for (const [docId, data] of Object.entries(backup.collections.room_types || {})) {
+      writeQueue.push({ col: 'room_types', id: docId, data });
+    }
+  }
 
-  for (const [docId, data] of Object.entries(backup.collections.hotel_config || {})) {
-    writeQueue.push({ col: 'hotel_config', id: docId, data });
-  }
-  for (const [docId, data] of Object.entries(backup.collections.form_templates || {})) {
-    writeQueue.push({ col: 'form_templates', id: docId, data });
-  }
-  for (const [docId, data] of Object.entries(backup.collections.room_types || {})) {
-    writeQueue.push({ col: 'room_types', id: docId, data });
-  }
-
-  // Write the 15 official rooms with corrected GoHost roomTypeId/roomTypeName
+  // Write the 15 official rooms with approved GoHost roomTypeId/roomTypeName & currentBookingId
   const activeInHouseByRoom = new Map();
   for (const b of pmsBookings) {
     if (b.status === 'in_house') activeInHouseByRoom.set(`room_${b.roomNumber}`, b.id);
@@ -897,9 +1023,10 @@ if (modeArg === 'emulator') {
   for (const ob of pmsOtaBatches) writeQueue.push({ col: 'ota_payout_batches', id: ob.id, data: stripUndefined(ob) });
 
   const t0 = Date.now();
-  for (let i = 0; i < writeQueue.length; i += 350) {
+  const BATCH_SIZE = modeArg === 'production' ? 200 : 350;
+  for (let i = 0; i < writeQueue.length; i += BATCH_SIZE) {
     const batch = fsMod.writeBatch(db);
-    for (const item of writeQueue.slice(i, i + 350)) {
+    for (const item of writeQueue.slice(i, i + BATCH_SIZE)) {
       batch.set(fsMod.doc(db, item.col, item.id), item.data);
     }
     await batch.commit();
@@ -952,11 +1079,16 @@ if (modeArg === 'emulator') {
     }
   }
 
-  // Persist room_occupancy docs to Emulator
+  if (occConflicts.length > 0 && modeArg === 'production') {
+    console.error('ABORT_OCCUPANCY_CONFLICTS:', JSON.stringify(occConflicts.slice(0, 10), null, 2));
+    process.exit(1);
+  }
+
+  // Persist room_occupancy docs
   const occEntries = Array.from(occBuckets.entries());
-  for (let i = 0; i < occEntries.length; i += 350) {
+  for (let i = 0; i < occEntries.length; i += BATCH_SIZE) {
     const batch = fsMod.writeBatch(db);
-    for (const [docKey, intervals] of occEntries.slice(i, i + 350)) {
+    for (const [docKey, intervals] of occEntries.slice(i, i + BATCH_SIZE)) {
       const [rPrefix, rNum, date] = docKey.split('_');
       batch.set(fsMod.doc(db, 'room_occupancy', docKey), {
         roomId: `${rPrefix}_${rNum}`,
@@ -968,8 +1100,46 @@ if (modeArg === 'emulator') {
     await batch.commit();
   }
 
-  // Read back counts from Emulator to confirm 100% write integrity
-  const [bkSnap, grpSnap, gstSnap, txSnap, obSnap, occSnap, rmSnap] = await Promise.all([
+  // Lock historical accounting period through 2026-10-31 & write Go-Live audit log
+  const lockNow = new Date().toISOString();
+  await fsMod.setDoc(
+    fsMod.doc(db, 'hotel_config', 'main'),
+    { accountingLockDate: LOCK_DATE_GOLIVE, updatedAt: lockNow },
+    { merge: true }
+  );
+
+  if (modeArg === 'production') {
+    const auditId = `aud_golive_2026_11_28`;
+    await fsMod.setDoc(fsMod.doc(db, 'audit_logs', auditId), {
+      id: auditId,
+      actionType: 'golive_gohost_2026_migration',
+      targetId: 'likefamilypms',
+      targetLabel: `Go-Live chính thức v2.2.2 — Nhập dữ liệu GoHost 2026 (${pmsBookings.length} đơn, ${occEntries.length} room_occupancy, 0 xung đột)`,
+      newState: {
+        rooms: 15,
+        bookings: pmsBookings.length,
+        bookingGroups: pmsGroups.length,
+        guests: guestsById.size,
+        transactions: pmsTransactions.length,
+        otaBatches: pmsOtaBatches.length,
+        roomOccupancyDocs: occEntries.length,
+        conflictsDetected: occConflicts.length,
+        accountingLockDate: LOCK_DATE_GOLIVE,
+        pnl2026RoomRev: pnl2026.roomRev,
+        pnl2026ServiceRev: pnl2026.serviceRev,
+        pnl2026ForfeitedCancelFees: pnl2026.forfeitedCancelFees,
+        pnl2026Expense: pnl2026.expense,
+      },
+      reason: 'Chủ dự án phê duyệt Go-Live chính thức Like Family PMS v2.2.2, dọn sạch QA2M_*, nhập dữ liệu GoHost 2026 và khóa sổ lịch sử đến 31/10/2026',
+      performedByUid: 'golive_migration_2026',
+      performedByName: 'Chủ dự án (Go-Live v2.2.2)',
+      userName: 'Chủ dự án (Go-Live v2.2.2)',
+      timestamp: lockNow,
+    });
+  }
+
+  // Read back counts from Firestore to confirm 100% write integrity
+  const [bkSnap, grpSnap, gstSnap, txSnap, obSnap, occSnap, rmSnap, cfgReadSnap] = await Promise.all([
     fsMod.getDocs(fsMod.collection(db, 'bookings')),
     fsMod.getDocs(fsMod.collection(db, 'booking_groups')),
     fsMod.getDocs(fsMod.collection(db, 'guests')),
@@ -977,11 +1147,14 @@ if (modeArg === 'emulator') {
     fsMod.getDocs(fsMod.collection(db, 'ota_payout_batches')),
     fsMod.getDocs(fsMod.collection(db, 'room_occupancy')),
     fsMod.getDocs(fsMod.collection(db, 'rooms')),
+    fsMod.getDoc(fsMod.doc(db, 'hotel_config', 'main')),
   ]);
 
   emulatorSummary = {
+    target: modeArg,
     importElapsedMs,
     totalWrittenDocs: writeQueue.length + occEntries.length,
+    accountingLockDate: cfgReadSnap.data()?.accountingLockDate || null,
     verifiedCounts: {
       rooms: rmSnap.size,
       bookings: bkSnap.size,
