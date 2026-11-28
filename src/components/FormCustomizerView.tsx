@@ -6,14 +6,14 @@ import { usePms } from '../context/PmsContext';
 import type { Booking, FormTemplate, FormTemplateType } from '../types/pms';
 import { writeAuditLog } from '../lib/pmsActions';
 import { buildVietQrUrl } from '../lib/vietqr';
-import { FormPaperPreview } from './PrintableFormModal';
+import { FormPaperPreview, resolveWifiText } from './PrintableFormModal';
 import { addDays, todayISO } from '../lib/utils';
 
 const FIELD_LABELS: Array<{ key: string; label: string }> = [
   { key: 'bookingCode', label: 'Mã đơn đặt phòng' },
   { key: 'guestPhone', label: 'Số điện thoại khách' },
   { key: 'guestIdNumber', label: 'Số CCCD / Hộ chiếu' },
-  { key: 'roomNumber', label: 'Số phòng' },
+  { key: 'showRoomNumber', label: 'Hiển thị số phòng (VD: P.202)' },
   { key: 'roomType', label: 'Tên loại phòng' },
   { key: 'dailyRates', label: 'Bảng kê đơn giá từng đêm' },
   { key: 'serviceBreakdown', label: 'Chi tiết dịch vụ / Minibar' },
@@ -21,7 +21,7 @@ const FIELD_LABELS: Array<{ key: string; label: string }> = [
   { key: 'occupantList', label: 'Danh sách toàn bộ khách ở cùng' },
   { key: 'depositPaid', label: 'Số tiền đã cọc / đã thanh toán' },
   { key: 'balanceDue', label: 'Số tiền còn lại phải thanh toán' },
-  { key: 'wifiInfo', label: 'Mật khẩu Wi-Fi theo tầng' },
+  { key: 'wifiInfo', label: 'Mật khẩu Wi-Fi' },
   { key: 'staffName', label: 'Tên nhân viên lập phiếu' },
   { key: 'signatureBox', label: 'Khung chữ ký Khách & Lễ tân' },
 ];
@@ -31,12 +31,33 @@ export const FormCustomizerView: React.FC = () => {
   const [activeId, setActiveId] = useState<FormTemplateType>('booking_confirmation');
   const [draft, setDraft] = useState<FormTemplate>(formTemplates[activeId]);
   const [saving, setSaving] = useState(false);
+  const [wifiDraft, setWifiDraft] = useState({
+    ssid: hotelConfig.wifiSsid || '',
+    password: hotelConfig.wifiPassword || '',
+    display: resolveWifiText(hotelConfig),
+  });
 
   const canEdit = isAdmin || Boolean(staffProfile?.permissions.canEditFormTemplates);
 
   useEffect(() => {
     setDraft(formTemplates[activeId]);
   }, [activeId, formTemplates]);
+
+  useEffect(() => {
+    setWifiDraft({
+      ssid: hotelConfig.wifiSsid || '',
+      password: hotelConfig.wifiPassword || '',
+      display: resolveWifiText(hotelConfig),
+    });
+  }, [hotelConfig.wifiSsid, hotelConfig.wifiPassword, hotelConfig.wifiDisplayText]);
+
+  const updateWifiParts = (patch: { ssid?: string; password?: string }) => {
+    setWifiDraft((prev) => {
+      const ssid = patch.ssid ?? prev.ssid;
+      const password = patch.password ?? prev.password;
+      return { ssid, password, display: [ssid.trim(), password.trim()].filter(Boolean).join(' / ') };
+    });
+  };
 
   // Sample booking for Live Preview (uses real latest booking if available)
   const previewBooking: Booking = bookings[0] || {
@@ -152,6 +173,18 @@ export const FormCustomizerView: React.FC = () => {
         updatedBy: actor.name,
       };
       await setDoc(doc(db, 'form_templates', activeId), payload, { merge: true });
+      if (isAdmin) {
+        await setDoc(
+          doc(db, 'hotel_config', 'main'),
+          {
+            wifiSsid: wifiDraft.ssid.trim(),
+            wifiPassword: wifiDraft.password.trim(),
+            wifiDisplayText: wifiDraft.display.trim(),
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      }
       await writeAuditLog({
         actionType: 'edit_form_template',
         targetId: activeId,
@@ -306,6 +339,7 @@ export const FormCustomizerView: React.FC = () => {
                     <span>{f.label}</span>
                     <input
                       type="checkbox"
+                      data-testid={`field-toggle-${f.key}`}
                       disabled={!canEdit}
                       checked={Boolean(draft.visibleFields?.[f.key])}
                       onChange={() => handleToggleField(f.key)}
@@ -313,6 +347,54 @@ export const FormCustomizerView: React.FC = () => {
                     />
                   </label>
                 ))}
+              </div>
+            </div>
+
+            {/* Shared Wi-Fi (synced with hotel_config/main) */}
+            <div className="pt-3 border-t border-[#E5E2DC] space-y-2" data-testid="wifi-editor">
+              <div className="text-[12px] font-semibold text-[#57534E]">Wi-Fi dùng chung (in trên phiếu)</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[11px] text-[#57534E] mb-1">Tên Wi-Fi (SSID)</label>
+                  <input
+                    type="text"
+                    data-testid="wifi-ssid-input"
+                    disabled={!isAdmin}
+                    value={wifiDraft.ssid}
+                    onChange={(e) => updateWifiParts({ ssid: e.target.value })}
+                    placeholder="Like Family Hotel"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-[#57534E] mb-1">Mật khẩu Wi-Fi</label>
+                  <input
+                    type="text"
+                    data-testid="wifi-password-input"
+                    disabled={!isAdmin}
+                    value={wifiDraft.password}
+                    onChange={(e) => updateWifiParts({ password: e.target.value })}
+                    placeholder="88888888"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] text-[#57534E] mb-1">
+                  Chuỗi hiển thị đầy đủ trên phiếu
+                </label>
+                <input
+                  type="text"
+                  data-testid="wifi-display-input"
+                  disabled={!isAdmin}
+                  value={wifiDraft.display}
+                  onChange={(e) => setWifiDraft((p) => ({ ...p, display: e.target.value }))}
+                  placeholder="Like Family Hotel / 88888888"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px] font-mono-num"
+                />
+                {!isAdmin && (
+                  <p className="mt-1 text-[11px] text-[#8A847C]">Chỉ Chủ khách sạn được sửa thông tin Wi-Fi.</p>
+                )}
               </div>
             </div>
 
@@ -410,7 +492,7 @@ export const FormCustomizerView: React.FC = () => {
                 hotelAddress={hotelConfig.address}
                 hotelPhone={hotelConfig.phone}
                 hotelLogoBase64={centralizedHotelLogo}
-                wifiPassword={hotelConfig.wifiByFloor?.[previewBooking.floor]}
+                wifiText={wifiDraft.display.trim()}
                 vietQrUrl={vietQrUrl}
                 staffName={actor.name}
               />

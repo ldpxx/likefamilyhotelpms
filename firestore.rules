@@ -111,6 +111,9 @@ service cloud.firestore {
             'configMigrationVersion',
             'hotelLogoBase64',
             'serviceCatalog',
+            'wifiSsid',
+            'wifiPassword',
+            'wifiDisplayText',
             'updatedAt'
           ])
         )

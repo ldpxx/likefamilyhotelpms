@@ -64,7 +64,13 @@ export interface HotelConfig {
   phone: string;
   email?: string;
   floors: string[];
+  /** @deprecated Legacy per-floor Wi-Fi (no longer used on printed forms) */
   wifiByFloor: Record<string, string>;
+  /** Shared hotel Wi-Fi shown on forms (synced with Form Customizer) */
+  wifiSsid?: string;
+  wifiPassword?: string;
+  /** Full display string printed on forms, e.g. "Like Family Hotel / 88888888" */
+  wifiDisplayText?: string;
   bankAccount: BankAccountConfig;
   /** Unified OTA & Direct booking sources (No delete — toggle isActive instead) */
   bookingSources: BookingSourceConfig[];

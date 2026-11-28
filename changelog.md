@@ -7,6 +7,23 @@ Tất cả các thay đổi quan trọng của dự án **Like Family PMS** đ�
 
 ---
 
+## [2.2.2] - 28/11/2026 (Biểu mẫu: Wi-Fi dùng chung & Hiển thị số phòng)
+
+### Added
+- Khối **Wi-Fi dùng chung** trong Tùy chỉnh biểu mẫu (SSID, mật khẩu, chuỗi hiển thị sửa trực tiếp, Live Preview cập nhật tức thì), lưu vào `hotel_config/main` (`wifiSsid`, `wifiPassword`, `wifiDisplayText`).
+- Công tắc **Hiển thị số phòng (VD: P.202)** (`showRoomNumber`, mặc định tắt, độc lập từng loại phiếu).
+- `scripts/qa_form_wifi_room_v222.mjs`: kiểm thử E2E Desktop/Mobile.
+
+### Changed
+- Nhãn "Mật khẩu Wi-Fi theo tầng" → **"Mật khẩu Wi-Fi"** (giữ khóa `wifiInfo`).
+- `firestore.rules`: Owner được cập nhật thêm `wifiSsid`, `wifiPassword`, `wifiDisplayText` trên `hotel_config`.
+
+### Removed
+- Logic tự sinh Wi-Fi theo tầng trên phiếu (`wifiByFloor` không còn được dùng khi in).
+
+### Fixed
+- Số phòng bị in cứng trên phiếu: nay ẩn hoàn toàn (thông tin phòng, dòng hạng mục, tiền tố trong tên dịch vụ, nội dung VietQR) khi công tắc tắt.
+
 ## [2.2.2] - 28/11/2026 (Luồng xem đơn 2 bước từ Lịch Calendar)
 
 ### Added

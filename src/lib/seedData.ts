@@ -55,6 +55,9 @@ export const DEFAULT_HOTEL_CONFIG: HotelConfig = {
     'Tầng 4': 'LikeFamily_T4 / 88888888',
     'Tầng 5': 'LikeFamily_T5 / 88888888',
   },
+  wifiSsid: 'Like Family Hotel',
+  wifiPassword: '88888888',
+  wifiDisplayText: 'Like Family Hotel / 88888888',
   bankAccount: {
     bankId: (import.meta.env.VITE_VIETQR_BANK_ID as string) || 'MB',
     accountNo: (import.meta.env.VITE_VIETQR_ACCOUNT_NO as string) || '',
@@ -101,7 +104,7 @@ export const DEFAULT_FORM_TEMPLATES: Record<FormTemplate['id'], FormTemplate> = 
     visibleFields: {
       bookingCode: true,
       guestPhone: true,
-      roomNumber: true,
+      showRoomNumber: false,
       roomType: true,
       dailyRates: true,
       occupantList: false,
@@ -135,7 +138,7 @@ export const DEFAULT_FORM_TEMPLATES: Record<FormTemplate['id'], FormTemplate> = 
     visibleFields: {
       bookingCode: true,
       guestPhone: true,
-      roomNumber: true,
+      showRoomNumber: false,
       roomType: true,
       dailyRates: true,
       serviceBreakdown: true,
@@ -162,7 +165,7 @@ export const DEFAULT_FORM_TEMPLATES: Record<FormTemplate['id'], FormTemplate> = 
       bookingCode: true,
       guestPhone: true,
       guestIdNumber: true,
-      roomNumber: true,
+      showRoomNumber: false,
       roomType: true,
       dailyRates: false,
       occupantList: true,

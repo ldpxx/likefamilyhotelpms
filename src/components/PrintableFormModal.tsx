@@ -11,6 +11,19 @@ import {
 } from '../lib/utils';
 import { buildVietQrUrl } from '../lib/vietqr';
 
+/** Shared hotel Wi-Fi display string (no per-floor auto generation). */
+export function resolveWifiText(cfg: {
+  wifiDisplayText?: string;
+  wifiSsid?: string;
+  wifiPassword?: string;
+}): string {
+  const direct = (cfg.wifiDisplayText || '').trim();
+  if (direct) return direct;
+  const ssid = (cfg.wifiSsid || '').trim();
+  const pass = (cfg.wifiPassword || '').trim();
+  return [ssid, pass].filter(Boolean).join(' / ');
+}
+
 interface PrintableFormModalProps {
   booking: Booking;
   initialType: FormTemplateType;
@@ -24,7 +37,7 @@ export const FormPaperPreview: React.FC<{
   hotelAddress: string;
   hotelPhone: string;
   hotelLogoBase64?: string | null;
-  wifiPassword?: string;
+  wifiText?: string;
   vietQrUrl: string | null;
   staffName: string;
 }> = ({
@@ -34,48 +47,53 @@ export const FormPaperPreview: React.FC<{
   hotelAddress,
   hotelPhone,
   hotelLogoBase64,
-  wifiPassword,
+  wifiText,
   vietQrUrl,
   staffName,
 }) => {
     const vf = template.visibleFields || {};
+    // Room number is opt-in per form type (default hidden)
+    const showRoom = vf.showRoomNumber === true;
+    const roomTag = showRoom ? ` P.${booking.roomNumber}` : '';
+    const stripRoomPrefix = (text: string) =>
+      showRoom ? text : text.replace(/\s*\bP\.?\s?\d{3}\b/gi, '').replace(/\s{2,}/g, ' ').trim();
     const showVi = template.language === 'vi' || template.language === 'bilingual';
     const showEn = template.language === 'en' || template.language === 'bilingual';
-  const shouldShowLogo = template.showLogo ?? true;
-  const resolvedLogo = shouldShowLogo
-    ? hotelLogoBase64 || template.logoBase64 || null
-    : null;
+    const shouldShowLogo = template.showLogo ?? true;
+    const resolvedLogo = shouldShowLogo
+      ? hotelLogoBase64 || template.logoBase64 || null
+      : null;
 
     const balance = getBookingGuestBalance(booking);
     const grandTotal =
       booking.grossRoomTotal + (booking.serviceTotal || 0) + (booking.hourlySurcharge || 0);
 
-  return (
-    <div className="bg-white text-[#1C1B18] p-4 sm:p-8 border border-[#E5E2DC] rounded-xl max-w-[740px] mx-auto space-y-4 sm:space-y-5">
-      {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-4 pb-4 border-b border-[#E5E2DC]">
-        <div className="flex items-center gap-3 min-w-0">
-          {resolvedLogo && (
-            <img
-              src={resolvedLogo}
-              alt="Logo khách sạn"
-              data-testid="form-paper-logo"
-              className="w-12 h-12 sm:w-14 sm:h-14 object-contain rounded-lg border border-[#E5E2DC] p-1 bg-white shrink-0"
-            />
-          )}
-          <div>
-            <div className="text-[16px] font-semibold text-[#1B5E4B]">
-              {template.hotelNameOverride || hotelName}
-            </div>
-            <div className="text-[12px] text-[#57534E]">
-              {template.hotelAddressOverride || hotelAddress}
-            </div>
-            <div className="text-[12px] text-[#57534E] font-mono-num">
-              Tel: {template.hotelPhoneOverride || hotelPhone}
+    return (
+      <div className="bg-white text-[#1C1B18] p-4 sm:p-8 border border-[#E5E2DC] rounded-xl max-w-[740px] mx-auto space-y-4 sm:space-y-5">
+        {/* Header */}
+        <div className="flex flex-wrap items-start justify-between gap-4 pb-4 border-b border-[#E5E2DC]">
+          <div className="flex items-center gap-3 min-w-0">
+            {resolvedLogo && (
+              <img
+                src={resolvedLogo}
+                alt="Logo khách sạn"
+                data-testid="form-paper-logo"
+                className="w-12 h-12 sm:w-14 sm:h-14 object-contain rounded-lg border border-[#E5E2DC] p-1 bg-white shrink-0"
+              />
+            )}
+            <div>
+              <div className="text-[16px] font-semibold text-[#1B5E4B]">
+                {template.hotelNameOverride || hotelName}
+              </div>
+              <div className="text-[12px] text-[#57534E]">
+                {template.hotelAddressOverride || hotelAddress}
+              </div>
+              <div className="text-[12px] text-[#57534E] font-mono-num">
+                Tel: {template.hotelPhoneOverride || hotelPhone}
+              </div>
             </div>
           </div>
-        </div>
-        <div className="text-right">
+          <div className="text-right">
             {showVi && (
               <div className="text-[15px] font-semibold text-[#1C1B18]">{template.headerTitleVi}</div>
             )}
@@ -121,11 +139,15 @@ export const FormPaperPreview: React.FC<{
           </div>
 
           <div className="space-y-1 text-right">
-            {vf.roomNumber !== false && (
-              <div>
-                <span className="text-[#57534E]">Phòng / Room:</span>{' '}
-                <strong className="font-mono-num">P.{booking.roomNumber}</strong>
-                {vf.roomType !== false && ` (${booking.roomTypeName})`}
+            {(showRoom || vf.roomType !== false) && (
+              <div data-testid="form-paper-room-line">
+                <span className="text-[#57534E]">
+                  {showRoom ? 'Phòng / Room:' : 'Hạng phòng / Room type:'}
+                </span>{' '}
+                {showRoom && (
+                  <strong className="font-mono-num">P.{booking.roomNumber}</strong>
+                )}
+                {vf.roomType !== false && (showRoom ? ` (${booking.roomTypeName})` : booking.roomTypeName)}
               </div>
             )}
             <div>
@@ -138,10 +160,10 @@ export const FormPaperPreview: React.FC<{
                 {formatDateVN(booking.checkOut)} ({booking.nights} đêm)
               </span>
             </div>
-            {vf.wifiInfo && wifiPassword && (
-              <div>
+            {vf.wifiInfo && wifiText && (
+              <div data-testid="form-paper-wifi">
                 <span className="text-[#57534E]">Wi-Fi:</span>{' '}
-                <span className="font-mono-num">{wifiPassword}</span>
+                <span className="font-mono-num">{wifiText}</span>
               </div>
             )}
           </div>
@@ -187,8 +209,8 @@ export const FormPaperPreview: React.FC<{
               <tbody className="divide-y divide-[#F1EFEA]">
                 {booking.bookingMode === 'hourly' ? (
                   <tr>
-                    <td className="px-3 py-1.5">
-                      Tiền phòng theo giờ P.{booking.roomNumber} ({formatDateVN(booking.checkIn)} •{' '}
+                    <td className="px-3 py-1.5" data-testid="form-paper-room-charge-line">
+                      Tiền phòng theo giờ{roomTag} ({formatDateVN(booking.checkIn)} •{' '}
                       {booking.hourlyHours || 1} giờ)
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono-num">
@@ -199,7 +221,7 @@ export const FormPaperPreview: React.FC<{
                   booking.dailyRates.map((d) => (
                     <tr key={d.date}>
                       <td className="px-3 py-1.5">
-                        Tiền phòng P.{booking.roomNumber} — Đêm {formatDateVN(d.date)}
+                        Tiền phòng{roomTag} — Đêm {formatDateVN(d.date)}
                       </td>
                       <td className="px-3 py-1.5 text-right font-mono-num">
                         {formatCurrency(d.rate)}
@@ -208,8 +230,9 @@ export const FormPaperPreview: React.FC<{
                   ))
                 ) : (
                   <tr>
-                    <td className="px-3 py-1.5">
-                      Tiền phòng P.{booking.roomNumber} ({booking.nights} đêm)
+                    <td className="px-3 py-1.5" data-testid="form-paper-room-charge-line">
+                      Tiền phòng{roomTag} (
+                      {formatDateVN(booking.checkIn)} – {formatDateVN(booking.checkOut)} • {booking.nights} đêm)
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono-num">
                       {formatCurrency(booking.grossRoomTotal)}
@@ -221,7 +244,7 @@ export const FormPaperPreview: React.FC<{
                   (booking.services || []).map((s) => (
                     <tr key={s.id}>
                       <td className="px-3 py-1.5">
-                        {s.name} (×{s.quantity})
+                        {stripRoomPrefix(s.name)} (×{s.quantity})
                       </td>
                       <td className="px-3 py-1.5 text-right font-mono-num">
                         {formatCurrency(s.total)}
@@ -305,7 +328,8 @@ export const FormPaperPreview: React.FC<{
                 Quét mã VietQR • {formatCurrency(balance)}
               </div>
               <div className="text-[12px] font-mono-num text-[#57534E]">
-                ND: THANH TOAN {booking.bookingCode} P{booking.roomNumber}
+                ND: THANH TOAN {booking.bookingCode}
+                {showRoom ? ` P${booking.roomNumber}` : ''}
               </div>
             </div>
           )}
@@ -342,7 +366,9 @@ export const PrintableFormModal: React.FC<PrintableFormModalProps> = ({
   const vietQrUrl = buildVietQrUrl({
     bankAccount: hotelConfig.bankAccount,
     amount: Math.max(0, balance),
-    addInfo: `THANH TOAN ${booking.bookingCode} P${booking.roomNumber}`,
+    addInfo: `THANH TOAN ${booking.bookingCode}${
+      template.visibleFields?.showRoomNumber === true ? ` P${booking.roomNumber}` : ''
+    }`,
   });
 
   const handleDownloadPng = async () => {
@@ -429,7 +455,7 @@ export const PrintableFormModal: React.FC<PrintableFormModalProps> = ({
               hotelAddress={hotelConfig.address}
               hotelPhone={hotelConfig.phone}
               hotelLogoBase64={hotelConfig.hotelLogoBase64 || hotelConfig.logoBase64 || null}
-              wifiPassword={hotelConfig.wifiByFloor?.[booking.floor]}
+              wifiText={resolveWifiText(hotelConfig)}
               vietQrUrl={vietQrUrl}
               staffName={actor.name}
             />
