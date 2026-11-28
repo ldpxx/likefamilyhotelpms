@@ -10,6 +10,7 @@ import { updateOtaCancelWorkflow } from '../lib/cancellationActions';
 import { createOtaPostReconciledAdjustment } from '../lib/postStayActions';
 import { DateInputVN } from './DateInputVN';
 import { PaginationBar, usePagination } from './PaginationBar';
+import { APP_INPUT_CLASS, AppModal, CurrencyInput } from './AppDialogs';
 
 interface OtaReconciliationViewProps {
   onSelectBooking: (booking: Booking) => void;
@@ -82,30 +83,94 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
     }
   };
 
-  const handleMarkAdjustmentApplied = async (adj: OtaAdjustment) => {
-    const batchRef = window.prompt(
-      `Nhập mã lô đối soát kỳ sau đã khấu trừ/cộng bù bút toán ${adj.bookingCode} (${formatCurrency(
-        adj.adjustmentAmount
-      )}):`,
-      otaBatches[0]?.batchCode || ''
-    );
-    if (batchRef === null) return;
-    await updateDoc(doc(db, 'ota_adjustments', adj.id), {
-      status: 'applied',
-      appliedBatchId: batchRef.trim() || 'manual_applied',
-    });
-    await writeAuditLog({
-      actionType: 'ota_adjustment_applied',
-      targetId: adj.id,
-      targetLabel: `Khấu trừ xong Điều chỉnh OTA ${adj.bookingCode} (${adj.otaChannel})`,
-      previousState: { status: adj.status },
-      newState: { status: 'applied', appliedBatchId: batchRef.trim() || 'manual_applied' },
-      reason: `Đã đối trừ bút toán ${formatCurrency(adj.adjustmentAmount)} vào lô ${
-        batchRef.trim() || 'kỳ sau'
-      }`,
-      actor,
-    });
-    notify(`Đã đánh dấu hoàn tất đối trừ bút toán OTA ${adj.bookingCode}`);
+  const [applyAdjTarget, setApplyAdjTarget] = useState<OtaAdjustment | null>(null);
+  const [applyAdjBatchRef, setApplyAdjBatchRef] = useState('');
+  const [savingApplyAdj, setSavingApplyAdj] = useState(false);
+
+  const [otaCancelConfirmTarget, setOtaCancelConfirmTarget] = useState<Booking | null>(null);
+  const [otaCancelConfirmNote, setOtaCancelConfirmNote] = useState('OTA đã gửi email xác nhận hủy');
+  const [savingOtaCancelConfirm, setSavingOtaCancelConfirm] = useState(false);
+
+  const [otaCancelReconcileTarget, setOtaCancelReconcileTarget] = useState<Booking | null>(null);
+  const [otaCancelPenaltyFee, setOtaCancelPenaltyFee] = useState(0);
+  const [otaCancelReconcileReason, setOtaCancelReconcileReason] = useState(
+    'OTA xác nhận hủy miễn phí, điều chỉnh công nợ về 0đ'
+  );
+  const [savingOtaCancelReconcile, setSavingOtaCancelReconcile] = useState(false);
+
+  const handleMarkAdjustmentApplied = (adj: OtaAdjustment) => {
+    setApplyAdjTarget(adj);
+    setApplyAdjBatchRef(otaBatches[0]?.batchCode || '');
+  };
+
+  const handleConfirmMarkAdjustmentApplied = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!applyAdjTarget) return;
+    setSavingApplyAdj(true);
+    try {
+      const batchRef = applyAdjBatchRef.trim() || 'manual_applied';
+      await updateDoc(doc(db, 'ota_adjustments', applyAdjTarget.id), {
+        status: 'applied',
+        appliedBatchId: batchRef,
+      });
+      await writeAuditLog({
+        actionType: 'ota_adjustment_applied',
+        targetId: applyAdjTarget.id,
+        targetLabel: `Khấu trừ xong Điều chỉnh OTA ${applyAdjTarget.bookingCode} (${applyAdjTarget.otaChannel})`,
+        previousState: { status: applyAdjTarget.status },
+        newState: { status: 'applied', appliedBatchId: batchRef },
+        reason: `Đã đối trừ bút toán ${formatCurrency(applyAdjTarget.adjustmentAmount)} vào lô ${
+          applyAdjBatchRef.trim() || 'kỳ sau'
+        }`,
+        actor,
+      });
+      notify(`Đã đánh dấu hoàn tất đối trừ bút toán OTA ${applyAdjTarget.bookingCode}`);
+      setApplyAdjTarget(null);
+    } finally {
+      setSavingApplyAdj(false);
+    }
+  };
+
+  const handleConfirmOtaCancelConfirmed = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otaCancelConfirmTarget || !otaCancelConfirmNote.trim()) return;
+    setSavingOtaCancelConfirm(true);
+    try {
+      await updateOtaCancelWorkflow({
+        booking: otaCancelConfirmTarget,
+        nextOtaStatus: 'ota_cancel_confirmed',
+        reason: otaCancelConfirmNote.trim(),
+        actor,
+      });
+      notify(`Đã cập nhật ${otaCancelConfirmTarget.bookingCode} sang: OTA đã xác nhận hủy`);
+      setOtaCancelConfirmTarget(null);
+    } finally {
+      setSavingOtaCancelConfirm(false);
+    }
+  };
+
+  const handleConfirmOtaCancelReconciled = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otaCancelReconcileTarget || !otaCancelReconcileReason.trim()) return;
+    setSavingOtaCancelReconcile(true);
+    try {
+      const fee = Math.max(0, Math.round(otaCancelPenaltyFee));
+      await updateOtaCancelWorkflow({
+        booking: otaCancelReconcileTarget,
+        nextOtaStatus: 'ota_cancel_reconciled',
+        adjustedDebtAmount: fee,
+        reason: otaCancelReconcileReason.trim(),
+        actor,
+      });
+      notify(
+        fee === 0
+          ? `Đã đối soát hủy miễn phí ${otaCancelReconcileTarget.bookingCode} (Công nợ OTA về 0đ)`
+          : `Đã đối soát ${otaCancelReconcileTarget.bookingCode} — Giữ phí phạt OTA ${formatCurrency(fee)} chờ gạch nợ`
+      );
+      setOtaCancelReconcileTarget(null);
+    } finally {
+      setSavingOtaCancelReconcile(false);
+    }
   };
 
   const otaSources = useMemo(
@@ -311,16 +376,9 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
                   {b.otaCancelStatus === 'ota_cancel_requested' && (
                     <button
                       type="button"
-                      onClick={async () => {
-                        const r = window.prompt('Ghi chú xác nhận hủy từ kênh OTA:', 'OTA đã gửi email xác nhận hủy');
-                        if (!r) return;
-                        await updateOtaCancelWorkflow({
-                          booking: b,
-                          nextOtaStatus: 'ota_cancel_confirmed',
-                          reason: r,
-                          actor,
-                        });
-                        notify(`Đã cập nhật ${b.bookingCode} sang: OTA đã xác nhận hủy`);
+                      onClick={() => {
+                        setOtaCancelConfirmTarget(b);
+                        setOtaCancelConfirmNote('OTA đã gửi email xác nhận hủy');
                       }}
                       className="h-8 px-3 rounded-lg border border-[#FDBA74] bg-[#FFF7ED] text-[#9A3412] font-medium"
                     >
@@ -329,30 +387,10 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
                   )}
                   <button
                     type="button"
-                    onClick={async () => {
-                      const feeStr = window.prompt(
-                        `Nhập số tiền công nợ OTA thực nhận sau đối soát cho ${b.bookingCode} (nhập 0 nếu hủy miễn phí, hoặc nhập số tiền phí phạt thực nhận):`,
-                        '0'
-                      );
-                      if (feeStr === null) return;
-                      const fee = Math.max(0, Number(feeStr) || 0);
-                      const r = window.prompt(
-                        'Lý do / căn cứ đối soát OTA (Bắt buộc):',
-                        fee === 0 ? 'OTA xác nhận hủy miễn phí, điều chỉnh công nợ về 0đ' : `OTA xác nhận giữ phí phạt hủy ${formatCurrency(fee)}`
-                      );
-                      if (!r || !r.trim()) return;
-                      await updateOtaCancelWorkflow({
-                        booking: b,
-                        nextOtaStatus: 'ota_cancel_reconciled',
-                        adjustedDebtAmount: fee,
-                        reason: r,
-                        actor,
-                      });
-                      notify(
-                        fee === 0
-                          ? `Đã đối soát hủy miễn phí ${b.bookingCode} (Công nợ OTA về 0đ)`
-                          : `Đã đối soát ${b.bookingCode} — Giữ phí phạt OTA ${formatCurrency(fee)} chờ gạch nợ`
-                      );
+                    onClick={() => {
+                      setOtaCancelReconcileTarget(b);
+                      setOtaCancelPenaltyFee(0);
+                      setOtaCancelReconcileReason('OTA xác nhận hủy miễn phí, điều chỉnh công nợ về 0đ');
                     }}
                     className="h-8 px-3 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white font-medium"
                   >
@@ -820,6 +858,122 @@ export const OtaReconciliationView: React.FC<OtaReconciliationViewProps> = ({
           </>
         )}
       </div>
+
+      {/* Modal 1: Mark OTA Adjustment Applied */}
+      <AppModal
+        open={Boolean(applyAdjTarget)}
+        title="Đánh dấu đã đối trừ Điều chỉnh OTA"
+        description={
+          applyAdjTarget
+            ? `Bút toán ${applyAdjTarget.bookingCode} (${applyAdjTarget.otaChannel} · ${formatCurrency(
+                applyAdjTarget.adjustmentAmount
+              )})`
+            : undefined
+        }
+        onClose={() => setApplyAdjTarget(null)}
+        onSubmit={handleConfirmMarkAdjustmentApplied}
+        submitLabel="Xác nhận đối trừ"
+        saving={savingApplyAdj}
+        testId="ota-apply-adjustment-modal"
+      >
+        <div>
+          <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+            Mã lô đối soát kỳ sau đã khấu trừ / cộng bù
+          </label>
+          <input
+            type="text"
+            value={applyAdjBatchRef}
+            onChange={(e) => setApplyAdjBatchRef(e.target.value)}
+            placeholder="VD: OTA-20261128-01"
+            className={APP_INPUT_CLASS}
+          />
+        </div>
+      </AppModal>
+
+      {/* Modal 2: Confirm OTA Cancellation Email/Notice */}
+      <AppModal
+        open={Boolean(otaCancelConfirmTarget)}
+        title="Đánh dấu kênh OTA đã xác nhận hủy"
+        description={
+          otaCancelConfirmTarget
+            ? `Đơn ${otaCancelConfirmTarget.bookingCode} (P.${otaCancelConfirmTarget.roomNumber} · ${
+                otaCancelConfirmTarget.otaChannel || 'OTA'
+              })`
+            : undefined
+        }
+        onClose={() => setOtaCancelConfirmTarget(null)}
+        onSubmit={handleConfirmOtaCancelConfirmed}
+        submitLabel="Lưu xác nhận"
+        saving={savingOtaCancelConfirm}
+        submitDisabled={!otaCancelConfirmNote.trim()}
+        testId="ota-cancel-confirm-modal"
+      >
+        <div>
+          <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+            Ghi chú xác nhận hủy từ kênh OTA *
+          </label>
+          <input
+            type="text"
+            required
+            value={otaCancelConfirmNote}
+            onChange={(e) => setOtaCancelConfirmNote(e.target.value)}
+            placeholder="OTA đã gửi email xác nhận hủy..."
+            className={APP_INPUT_CLASS}
+          />
+        </div>
+      </AppModal>
+
+      {/* Modal 3: Reconcile Cancelled OTA Debt & Penalty Fee */}
+      <AppModal
+        open={Boolean(otaCancelReconcileTarget)}
+        title="Đối soát điều chỉnh công nợ đơn OTA hủy"
+        description={
+          otaCancelReconcileTarget
+            ? `Đơn ${otaCancelReconcileTarget.bookingCode} (${otaCancelReconcileTarget.primaryGuestName}) · Công nợ gốc: ${formatCurrency(
+                otaCancelReconcileTarget.grossRoomTotal
+              )}`
+            : undefined
+        }
+        onClose={() => setOtaCancelReconcileTarget(null)}
+        onSubmit={handleConfirmOtaCancelReconciled}
+        submitLabel="Xác nhận đối soát"
+        saving={savingOtaCancelReconcile}
+        submitDisabled={!otaCancelReconcileReason.trim()}
+        testId="ota-cancel-reconcile-modal"
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+              Số tiền công nợ OTA thực nhận / phí phạt sau đối soát (0đ nếu hủy miễn phí)
+            </label>
+            <CurrencyInput
+              value={otaCancelPenaltyFee}
+              onChange={(val) => {
+                setOtaCancelPenaltyFee(val);
+                setOtaCancelReconcileReason(
+                  val === 0
+                    ? 'OTA xác nhận hủy miễn phí, điều chỉnh công nợ về 0đ'
+                    : `OTA xác nhận giữ phí phạt hủy ${formatCurrency(val)}`
+                );
+              }}
+              testId="ota-cancel-penalty-input"
+            />
+          </div>
+          <div>
+            <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+              Lý do / căn cứ đối soát OTA (Bắt buộc) *
+            </label>
+            <input
+              type="text"
+              required
+              value={otaCancelReconcileReason}
+              onChange={(e) => setOtaCancelReconcileReason(e.target.value)}
+              placeholder="Nhập căn cứ đối soát..."
+              className={APP_INPUT_CLASS}
+            />
+          </div>
+        </div>
+      </AppModal>
     </div>
   );
 };

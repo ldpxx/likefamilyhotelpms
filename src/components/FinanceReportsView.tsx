@@ -29,6 +29,7 @@ import { recordTransaction, voidTransactionWithUndo } from '../lib/pmsActions';
 import { DateInputVN } from './DateInputVN';
 import { ReclassifyPaymentModal } from './ReclassifyPaymentModal';
 import { PaginationBar, usePagination } from './PaginationBar';
+import { APP_INPUT_CLASS, AppModal } from './AppDialogs';
 
 export const FinanceReportsView: React.FC = () => {
   const {
@@ -291,14 +292,37 @@ export const FinanceReportsView: React.FC = () => {
     }
   };
 
-  const handleVoidTx = async (tx: Transaction) => {
-    const reason = window.prompt(
-      'Giao dịch gốc bị khóa sửa/xóa. Nhập lý do để lập BÚT TOÁN ĐỐI ỨNG hoàn tác:'
-    );
-    if (!reason || !reason.trim()) return;
-    const relatedBooking = tx.bookingId ? bookings.find((b) => b.id === tx.bookingId) : null;
-    await voidTransactionWithUndo({ tx, booking: relatedBooking, reason, actor });
-    notify('Đã lập bút toán đối ứng (giữ nguyên giao dịch gốc & ghi audit_logs)');
+  const [voidingTxTarget, setVoidingTxTarget] = useState<Transaction | null>(null);
+  const [voidTxReason, setVoidTxReason] = useState('');
+  const [savingVoidTx, setSavingVoidTx] = useState(false);
+
+  const handleVoidTx = (tx: Transaction) => {
+    setVoidingTxTarget(tx);
+    setVoidTxReason('Lập bút toán đối ứng hoàn tác do nhập sai');
+  };
+
+  const handleConfirmVoidTx = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!voidingTxTarget || !voidTxReason.trim()) return;
+    setSavingVoidTx(true);
+    try {
+      const relatedBooking = voidingTxTarget.bookingId
+        ? bookings.find((b) => b.id === voidingTxTarget.bookingId)
+        : null;
+      await voidTransactionWithUndo({
+        tx: voidingTxTarget,
+        booking: relatedBooking,
+        reason: voidTxReason.trim(),
+        actor,
+      });
+      setVoidingTxTarget(null);
+      setVoidTxReason('');
+      notify('Đã lập bút toán đối ứng (giữ nguyên giao dịch gốc & ghi audit_logs)');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi lập bút toán đối ứng', 'error');
+    } finally {
+      setSavingVoidTx(false);
+    }
   };
 
   const handleSaveHandover = async (e: React.FormEvent) => {
@@ -775,10 +799,10 @@ export const FinanceReportsView: React.FC = () => {
                   g.group === 'food'
                     ? 'text-[#B45309] bg-[#FFFBEB] border-[#FDE68A]'
                     : g.group === 'drink'
-                    ? 'text-[#0F5132] bg-[#E8F3EC] border-[#BBF7D0]'
-                    : g.group === 'surcharge'
-                    ? 'text-[#C2410C] bg-[#FFF7ED] border-[#FED7AA]'
-                    : 'text-[#335C67] bg-[#F0F7F9] border-[#BFD5DA]';
+                      ? 'text-[#0F5132] bg-[#E8F3EC] border-[#BBF7D0]'
+                      : g.group === 'surcharge'
+                        ? 'text-[#C2410C] bg-[#FFF7ED] border-[#FED7AA]'
+                        : 'text-[#335C67] bg-[#F0F7F9] border-[#BFD5DA]';
                 return (
                   <button
                     key={g.group}
@@ -787,11 +811,10 @@ export const FinanceReportsView: React.FC = () => {
                     onClick={() =>
                       setSvcGroupFilter((prev) => (prev === g.group ? 'all' : g.group))
                     }
-                    className={`p-3.5 rounded-xl border text-left transition-all ${
-                      isSelected
-                        ? 'border-[#0F5132] ring-2 ring-[#0F5132]/20 bg-[#FAF9F6]'
-                        : 'border-[#E7E3DA] bg-white hover:border-[#0F5132]/40'
-                    }`}
+                    className={`p-3.5 rounded-xl border text-left transition-all ${isSelected
+                      ? 'border-[#0F5132] ring-2 ring-[#0F5132]/20 bg-[#FAF9F6]'
+                      : 'border-[#E7E3DA] bg-white hover:border-[#0F5132]/40'
+                      }`}
                   >
                     <div className="flex items-center justify-between gap-1.5">
                       <span
@@ -831,11 +854,10 @@ export const FinanceReportsView: React.FC = () => {
                     type="button"
                     data-testid={`service-filter-pill-${opt.id}`}
                     onClick={() => setSvcGroupFilter(opt.id)}
-                    className={`min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg text-[12px] font-medium transition-colors ${
-                      svcGroupFilter === opt.id
-                        ? 'bg-[#0F5132] text-white'
-                        : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
-                    }`}
+                    className={`min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg text-[12px] font-medium transition-colors ${svcGroupFilter === opt.id
+                      ? 'bg-[#0F5132] text-white'
+                      : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
+                      }`}
                   >
                     {opt.label}
                   </button>
@@ -911,15 +933,14 @@ export const FinanceReportsView: React.FC = () => {
                         <td className="px-3 py-2 font-medium text-[#1C1B18]">{r.serviceName}</td>
                         <td className="px-3 py-2">
                           <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                              r.group === 'food'
-                                ? 'bg-[#FFFBEB] text-[#B45309]'
-                                : r.group === 'drink'
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${r.group === 'food'
+                              ? 'bg-[#FFFBEB] text-[#B45309]'
+                              : r.group === 'drink'
                                 ? 'bg-[#E8F3EC] text-[#0F5132]'
                                 : r.group === 'surcharge'
-                                ? 'bg-[#FFF7ED] text-[#C2410C]'
-                                : 'bg-[#F0F7F9] text-[#335C67]'
-                            }`}
+                                  ? 'bg-[#FFF7ED] text-[#C2410C]'
+                                  : 'bg-[#F0F7F9] text-[#335C67]'
+                              }`}
                           >
                             {r.groupLabel}
                           </span>
@@ -1204,92 +1225,92 @@ export const FinanceReportsView: React.FC = () => {
                   </tr>
                 ) : (
                   cashbookPag.pageItems.map((tx) => (
-                  <tr
-                    key={tx.id}
-                    className={tx.status === 'voided_by_undo' ? 'opacity-45 bg-[#FAF9F6]' : ''}
-                  >
-                    <td className="px-4 py-2.5 font-mono-num">{formatDateVN(tx.date)}</td>
-                    <td className="px-4 py-2.5">
-                      <div className="font-medium text-[#1C1B18]">
-                        {tx.category}
-                        {tx.roomNumber ? ` (P.${tx.roomNumber})` : ''}
-                      </div>
-                      <div className="text-[11px] text-[#8A847C]">
-                        {tx.note || tx.bookingCode || '—'}
-                        {tx.status === 'voided_by_undo' && ` • ĐÃ HỦY: ${tx.voidReason}`}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5">{getPaymentMethodLabel(tx.method)}</td>
-                    <td className="px-4 py-2.5 text-[#57534E]">{tx.createdByName}</td>
-                    <td
-                      className={`px-4 py-2.5 text-right font-mono-num font-semibold ${tx.status === 'voided_by_undo'
-                        ? 'line-through text-[#8A847C]'
-                        : tx.method === 'ota_debt'
-                          ? 'text-[#C2410C]'
-                          : tx.direction === 'in'
-                            ? 'text-[#15803D]'
-                            : 'text-[#B91C1C]'
-                        }`}
+                    <tr
+                      key={tx.id}
+                      className={tx.status === 'voided_by_undo' ? 'opacity-45 bg-[#FAF9F6]' : ''}
                     >
-                      {tx.direction === 'in' ? '+' : '-'}
-                      {formatCurrency(tx.amount)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <div className="inline-flex items-center justify-end gap-1.5 flex-wrap">
-                        {tx.type === 'reclassification_in' || tx.type === 'reclassification_out' ? (
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-[#EFF6FF] text-[#1D4ED8]">
-                            Chuyển PTTT
-                          </span>
-                        ) : tx.type === 'void_receipt_entry' ? (
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-[#FEF2F2] text-[#B91C1C]">
-                            Hủy phiếu thu
-                          </span>
-                        ) : tx.type === 'post_checkout_adjustment' ? (
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-[#E8F2EE] text-[#1B5E4B]">
-                            Điều chỉnh sau CO
-                          </span>
-                        ) : reversedOriginalIds.has(tx.id) ? (
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-[#F1EFEA] text-[#57534E]">
-                            Đã đối ứng
-                          </span>
-                        ) : tx.type === 'reversal' ? (
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-[#FFFBEB] text-[#92400E]">
-                            Bút toán đối ứng
-                          </span>
-                        ) : (
-                          <>
-                            {tx.status === 'active' &&
-                              isAdmin &&
-                              tx.method !== 'ota_debt' &&
-                              tx.type !== 'deposit_transfer_in' &&
-                              tx.type !== 'deposit_transfer_out' &&
-                              tx.type !== 'cancellation_fee' && (
+                      <td className="px-4 py-2.5 font-mono-num">{formatDateVN(tx.date)}</td>
+                      <td className="px-4 py-2.5">
+                        <div className="font-medium text-[#1C1B18]">
+                          {tx.category}
+                          {tx.roomNumber ? ` (P.${tx.roomNumber})` : ''}
+                        </div>
+                        <div className="text-[11px] text-[#8A847C]">
+                          {tx.note || tx.bookingCode || '—'}
+                          {tx.status === 'voided_by_undo' && ` • ĐÃ HỦY: ${tx.voidReason}`}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5">{getPaymentMethodLabel(tx.method)}</td>
+                      <td className="px-4 py-2.5 text-[#57534E]">{tx.createdByName}</td>
+                      <td
+                        className={`px-4 py-2.5 text-right font-mono-num font-semibold ${tx.status === 'voided_by_undo'
+                          ? 'line-through text-[#8A847C]'
+                          : tx.method === 'ota_debt'
+                            ? 'text-[#C2410C]'
+                            : tx.direction === 'in'
+                              ? 'text-[#15803D]'
+                              : 'text-[#B91C1C]'
+                          }`}
+                      >
+                        {tx.direction === 'in' ? '+' : '-'}
+                        {formatCurrency(tx.amount)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        <div className="inline-flex items-center justify-end gap-1.5 flex-wrap">
+                          {tx.type === 'reclassification_in' || tx.type === 'reclassification_out' ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-[#EFF6FF] text-[#1D4ED8]">
+                              Chuyển PTTT
+                            </span>
+                          ) : tx.type === 'void_receipt_entry' ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-[#FEF2F2] text-[#B91C1C]">
+                              Hủy phiếu thu
+                            </span>
+                          ) : tx.type === 'post_checkout_adjustment' ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-[#E8F2EE] text-[#1B5E4B]">
+                              Điều chỉnh sau CO
+                            </span>
+                          ) : reversedOriginalIds.has(tx.id) ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-[#F1EFEA] text-[#57534E]">
+                              Đã đối ứng
+                            </span>
+                          ) : tx.type === 'reversal' ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-[#FFFBEB] text-[#92400E]">
+                              Bút toán đối ứng
+                            </span>
+                          ) : (
+                            <>
+                              {tx.status === 'active' &&
+                                isAdmin &&
+                                tx.method !== 'ota_debt' &&
+                                tx.type !== 'deposit_transfer_in' &&
+                                tx.type !== 'deposit_transfer_out' &&
+                                tx.type !== 'cancellation_fee' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setReclassifyingTx(tx)}
+                                    className="h-7 px-2 rounded-md border border-[#E5E2DC] hover:border-[#1B5E4B] hover:text-[#1B5E4B] text-[11px] inline-flex items-center gap-1"
+                                    title="Chuyển đổi phương thức thanh toán bằng bút toán điều chỉnh (không tạo thu/chi giả)"
+                                  >
+                                    <ArrowRightLeft className="w-3 h-3" strokeWidth={1.5} />
+                                    Đổi PTTT
+                                  </button>
+                                )}
+                              {tx.status === 'active' && staffProfile?.permissions.canUndoAction && (
                                 <button
                                   type="button"
-                                  onClick={() => setReclassifyingTx(tx)}
-                                  className="h-7 px-2 rounded-md border border-[#E5E2DC] hover:border-[#1B5E4B] hover:text-[#1B5E4B] text-[11px] inline-flex items-center gap-1"
-                                  title="Chuyển đổi phương thức thanh toán bằng bút toán điều chỉnh (không tạo thu/chi giả)"
+                                  onClick={() => handleVoidTx(tx)}
+                                  className="h-7 px-2 rounded-md border border-[#E5E2DC] hover:border-[#B91C1C] hover:text-[#B91C1C] text-[11px] inline-flex items-center gap-1"
                                 >
-                                  <ArrowRightLeft className="w-3 h-3" strokeWidth={1.5} />
-                                  Đổi PTTT
+                                  <RotateCcw className="w-3 h-3" strokeWidth={1.5} />
+                                  Đối ứng
                                 </button>
                               )}
-                            {tx.status === 'active' && staffProfile?.permissions.canUndoAction && (
-                              <button
-                                type="button"
-                                onClick={() => handleVoidTx(tx)}
-                                className="h-7 px-2 rounded-md border border-[#E5E2DC] hover:border-[#B91C1C] hover:text-[#B91C1C] text-[11px] inline-flex items-center gap-1"
-                              >
-                                <RotateCcw className="w-3 h-3" strokeWidth={1.5} />
-                                Đối ứng
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
                 )}
               </tbody>
               {filteredTransactions.length > 0 && (
@@ -1449,6 +1470,39 @@ export const FinanceReportsView: React.FC = () => {
           onClose={() => setReclassifyingTx(null)}
         />
       )}
+
+      <AppModal
+        open={Boolean(voidingTxTarget)}
+        title="Lập bút toán đối ứng hoàn tác giao dịch"
+        description={
+          voidingTxTarget
+            ? `Giao dịch gốc (${voidingTxTarget.category} · ${formatCurrency(
+                voidingTxTarget.amount
+              )}) bị khóa sửa/xóa để bảo toàn sổ kế toán. Hệ thống sẽ tạo bút toán đối ứng ngược chiều.`
+            : undefined
+        }
+        onClose={() => setVoidingTxTarget(null)}
+        onSubmit={handleConfirmVoidTx}
+        submitLabel="Lập bút toán đối ứng"
+        saving={savingVoidTx}
+        submitDisabled={!voidTxReason.trim()}
+        testId="void-tx-modal"
+      >
+        <div>
+          <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+            Lý do lập bút toán đối ứng (Bắt buộc) *
+          </label>
+          <input
+            type="text"
+            required
+            autoFocus
+            value={voidTxReason}
+            onChange={(e) => setVoidTxReason(e.target.value)}
+            placeholder="Nhập lý do hoàn tác giao dịch..."
+            className={APP_INPUT_CLASS}
+          />
+        </div>
+      </AppModal>
     </div>
   );
 };

@@ -13,6 +13,7 @@ import { usePms } from '../context/PmsContext';
 import type { StaffPermissions, StaffRole, StaffUser } from '../types/pms';
 import { formatDateTimeVN, getRoleLabel } from '../lib/utils';
 import { PaginationBar, usePagination } from './PaginationBar';
+import { APP_INPUT_CLASS, AppModal, ConfirmDialog } from './AppDialogs';
 import {
   createStaffAccount,
   deleteStaffAccount,
@@ -166,49 +167,63 @@ export const StaffAndAuditView: React.FC = () => {
     setEditingStaff(null);
   };
 
-  const handleResetPassword = async (staff: StaffUser) => {
+  const [resetStaffTarget, setResetStaffTarget] = useState<StaffUser | null>(null);
+  const [resetNewUsername, setResetNewUsername] = useState('');
+  const [resetTempPassword, setResetTempPassword] = useState('');
+  const [savingResetStaff, setSavingResetStaff] = useState(false);
+
+  const [deleteStaffTarget, setDeleteStaffTarget] = useState<StaffUser | null>(null);
+  const [deletingStaffBusy, setDeletingStaffBusy] = useState(false);
+
+  const handleResetPassword = (staff: StaffUser) => {
     if (!canManageStaff || staff.role === 'superadmin') return;
-    const newUsernamePrompt = window.prompt(
-      `Do tài khoản dùng Firebase Auth bảo mật (không lưu mật khẩu trên Firestore), thao tác này sẽ KHÓA @${staff.username} cũ và cấp tài khoản mới với cùng phân quyền.\n\nNhập tên đăng nhập mới (ví dụ: ${staff.username}2):`,
-      `${staff.username}2`
-    );
-    if (!newUsernamePrompt || !newUsernamePrompt.trim()) return;
-    const tempPwd = window.prompt(
-      `Nhập mật khẩu tạm (tối thiểu 6 ký tự) cho @${newUsernamePrompt.trim()} (nhân viên sẽ bắt buộc đổi khi đăng nhập lần đầu):`
-    );
-    if (!tempPwd || tempPwd.trim().length < 6) {
+    setResetStaffTarget(staff);
+    setResetNewUsername(`${staff.username}2`);
+    setResetTempPassword('');
+  };
+
+  const handleConfirmResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetStaffTarget || !resetNewUsername.trim()) return;
+    if (resetTempPassword.trim().length < 6) {
       notify('Mật khẩu tạm cần ít nhất 6 ký tự.', 'error');
       return;
     }
+    setSavingResetStaff(true);
     try {
       const replacement = await replaceForgottenStaffAccount({
-        oldStaff: staff,
-        newUsername: newUsernamePrompt.trim(),
-        tempPassword: tempPwd,
+        oldStaff: resetStaffTarget,
+        newUsername: resetNewUsername.trim(),
+        tempPassword: resetTempPassword.trim(),
         actor,
       });
       notify(
-        `Đã khóa @${staff.username} và cấp tài khoản mới @${replacement.username} (bắt buộc đổi MK lần đầu)`
+        `Đã khóa @${resetStaffTarget.username} và cấp tài khoản mới @${replacement.username} (bắt buộc đổi MK lần đầu)`
       );
+      setResetStaffTarget(null);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi cấp lại tài khoản', 'error');
+    } finally {
+      setSavingResetStaff(false);
     }
   };
 
-  const handleDeleteStaff = async (staff: StaffUser) => {
+  const handleDeleteStaff = (staff: StaffUser) => {
     if (!canManageStaff || staff.role === 'superadmin' || staff.uid === actor.uid) return;
-    if (
-      !window.confirm(
-        `Xác nhận XÓA vĩnh viễn tài khoản nhân viên ${staff.fullName} (@${staff.username})?`
-      )
-    ) {
-      return;
-    }
+    setDeleteStaffTarget(staff);
+  };
+
+  const executeDeleteStaff = async () => {
+    if (!deleteStaffTarget) return;
+    setDeletingStaffBusy(true);
     try {
-      await deleteStaffAccount(staff, actor);
-      notify(`Đã xóa tài khoản @${staff.username}`, 'info');
+      await deleteStaffAccount(deleteStaffTarget, actor);
+      notify(`Đã xóa tài khoản @${deleteStaffTarget.username}`, 'info');
+      setDeleteStaffTarget(null);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi xóa tài khoản', 'error');
+    } finally {
+      setDeletingStaffBusy(false);
     }
   };
 
@@ -918,6 +933,70 @@ export const StaffAndAuditView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal: Reset / Replace Forgotten Staff Account */}
+      <AppModal
+        open={Boolean(resetStaffTarget)}
+        title={`Cấp lại tài khoản cho ${resetStaffTarget?.fullName || ''}`}
+        description={
+          resetStaffTarget
+            ? `Do hệ thống dùng Firebase Auth bảo mật (không lưu mật khẩu trên Firestore), thao tác này sẽ KHÓA @${resetStaffTarget.username} cũ và tạo tài khoản mới với cùng phân quyền.`
+            : undefined
+        }
+        onClose={() => setResetStaffTarget(null)}
+        onSubmit={handleConfirmResetPassword}
+        submitLabel="Khóa TK cũ & Cấp TK mới"
+        saving={savingResetStaff}
+        submitDisabled={!resetNewUsername.trim() || resetTempPassword.trim().length < 6}
+        testId="reset-staff-modal"
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+              Tên đăng nhập mới *
+            </label>
+            <input
+              type="text"
+              required
+              value={resetNewUsername}
+              onChange={(e) => setResetNewUsername(e.target.value)}
+              placeholder="VD: letan2"
+              className={APP_INPUT_CLASS}
+            />
+          </div>
+          <div>
+            <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+              Mật khẩu tạm (tối thiểu 6 ký tự — bắt buộc đổi khi đăng nhập lần đầu) *
+            </label>
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={resetTempPassword}
+              onChange={(e) => setResetTempPassword(e.target.value)}
+              placeholder="Nhập mật khẩu tạm..."
+              className={APP_INPUT_CLASS}
+            />
+          </div>
+        </div>
+      </AppModal>
+
+      {/* Confirm Dialog: Delete Staff Account */}
+      <ConfirmDialog
+        open={Boolean(deleteStaffTarget)}
+        title="Xóa tài khoản nhân viên"
+        variant="danger"
+        message={
+          deleteStaffTarget
+            ? `Xác nhận XÓA vĩnh viễn tài khoản nhân viên ${deleteStaffTarget.fullName} (@${deleteStaffTarget.username})?`
+            : ''
+        }
+        confirmLabel="Xóa tài khoản"
+        busy={deletingStaffBusy}
+        onConfirm={executeDeleteStaff}
+        onCancel={() => setDeleteStaffTarget(null)}
+        testId="confirm-delete-staff-dialog"
+      />
     </div>
   );
 };

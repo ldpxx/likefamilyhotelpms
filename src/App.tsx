@@ -38,6 +38,7 @@ import { BookingQuickPreviewSheet } from './components/BookingQuickPreviewSheet'
 import { PrintableFormModal } from './components/PrintableFormModal';
 import { RoomMaintenanceModal } from './components/RoomMaintenanceModal';
 import { DepositResolutionModal } from './components/DepositResolutionModal';
+import { APP_INPUT_CLASS, AppModal } from './components/AppDialogs';
 import { undoBookingAction } from './lib/pmsActions';
 import { formatCurrency, formatDateVN, getRoleLabel, todayISO } from './lib/utils';
 
@@ -122,6 +123,9 @@ export const App: React.FC = () => {
 
   const [maintenanceRoom, setMaintenanceRoom] = useState<Room | null>(null);
   const [quickResolveDeposit, setQuickResolveDeposit] = useState<Booking | null>(null);
+  const [showQuickUndoModal, setShowQuickUndoModal] = useState(false);
+  const [quickUndoReason, setQuickUndoReason] = useState('Thao tác nhầm tại quầy');
+  const [savingQuickUndo, setSavingQuickUndo] = useState(false);
 
   const pendingDepositBookings = bookings.filter(
     (b) => b.depositResolutionStatus === 'pending_deposit_resolution'
@@ -291,23 +295,32 @@ export const App: React.FC = () => {
 
   const activeTitle = navItems.find((i) => i.id === nav)?.label || 'Like Family PMS';
 
-  const handleQuickUndoFromBanner = async () => {
+  const handleQuickUndoFromBanner = () => {
     if (!undoBanner?.bookingId) return;
+    setQuickUndoReason('Thao tác nhầm tại quầy');
+    setShowQuickUndoModal(true);
+  };
+
+  const handleConfirmQuickUndo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!undoBanner?.bookingId || !quickUndoReason.trim()) return;
     const booking = bookings.find((b) => b.id === undoBanner.bookingId);
     if (!booking) return;
-    const reason = window.prompt('Nhập lý do hoàn tác thao tác vừa thực hiện:', 'Thao tác nhầm tại quầy');
-    if (!reason || !reason.trim()) return;
+    setSavingQuickUndo(true);
     try {
       await undoBookingAction({
         booking,
-        reason,
+        reason: quickUndoReason.trim(),
         actor,
         overridePrevState: undoBanner.previousState,
       });
+      setShowQuickUndoModal(false);
       clearUndoBanner();
       notify('Đã hoàn tác thao tác thành công');
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi hoàn tác', 'error');
+    } finally {
+      setSavingQuickUndo(false);
     }
   };
 
@@ -651,6 +664,33 @@ export const App: React.FC = () => {
           onClose={() => setQuickResolveDeposit(null)}
         />
       )}
+
+      <AppModal
+        open={showQuickUndoModal}
+        title="Hoàn tác thao tác vừa thực hiện"
+        description={undoBanner?.label}
+        onClose={() => setShowQuickUndoModal(false)}
+        onSubmit={handleConfirmQuickUndo}
+        submitLabel="Xác nhận hoàn tác"
+        saving={savingQuickUndo}
+        submitDisabled={!quickUndoReason.trim()}
+        testId="quick-undo-modal"
+      >
+        <div>
+          <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+            Lý do hoàn tác (ghi vào nhật ký kiểm toán) *
+          </label>
+          <input
+            type="text"
+            required
+            autoFocus
+            value={quickUndoReason}
+            onChange={(e) => setQuickUndoReason(e.target.value)}
+            placeholder="Nhập lý do hoàn tác..."
+            className={APP_INPUT_CLASS}
+          />
+        </div>
+      </AppModal>
 
       {/* 15-Second Instant Universal Undo Bar */}
       {undoBanner && (

@@ -59,6 +59,13 @@ import {
 } from '../lib/utils';
 import { DateInputVN } from './DateInputVN';
 import { PaginationBar, usePagination } from './PaginationBar';
+import {
+  APP_INPUT_CLASS,
+  APP_SELECT_CLASS,
+  AppModal,
+  ConfirmDialog,
+  CurrencyInput,
+} from './AppDialogs';
 
 export const SettingsAndAdminView: React.FC = () => {
   const {
@@ -120,15 +127,43 @@ export const SettingsAndAdminView: React.FC = () => {
   const [rtSecondHour, setRtSecondHour] = useState(50000);
   const [rtAddHour, setRtAddHour] = useState(30000);
   const [editingRt, setEditingRt] = useState<RoomType | null>(null);
+  const [editingRtDefaultDailyPrice, setEditingRtDefaultDailyPrice] = useState<number>(400000);
+  const [savingRt, setSavingRt] = useState(false);
+
+  // RatePlanFormModal state (Add / Edit PriceTier inside RoomType)
+  const [ratePlanModal, setRatePlanModal] = useState<{
+    roomType: RoomType;
+    tierId: string | null;
+    tierName: string;
+    price: number;
+    isDefault: boolean;
+  } | null>(null);
+  const [savingRatePlan, setSavingRatePlan] = useState(false);
+  const [confirmDeleteTier, setConfirmDeleteTier] = useState<{
+    roomType: RoomType;
+    tier: PriceTier;
+  } | null>(null);
+  const [deletingTierBusy, setDeletingTierBusy] = useState(false);
+  const [confirmDisableRt, setConfirmDisableRt] = useState<{
+    roomType: RoomType;
+    activeChildren: Room[];
+  } | null>(null);
+  const [disablingRtBusy, setDisablingRtBusy] = useState(false);
 
   const [newRoomNum, setNewRoomNum] = useState('');
   const [newRoomFloor, setNewRoomFloor] = useState(hotelConfig.floors[0] || 'Tầng 2');
   const [newRoomTypeId, setNewRoomTypeId] = useState(roomTypes[0]?.id || '');
   const [editingRoom, setEditingRoom] = useState<Room | null>(null);
+  const [savingRoom, setSavingRoom] = useState(false);
 
   // Booking Sources & OTA Channels (NO DELETE — only Add, Edit, Toggle isActive!)
   const [newSrcName, setNewSrcName] = useState('');
   const [newSrcKind, setNewSrcKind] = useState<'direct' | 'ota'>('ota');
+  const [editingSource, setEditingSource] = useState<BookingSourceConfig | null>(null);
+  const [savingSource, setSavingSource] = useState(false);
+  const [confirmRestoreSourcesOpen, setConfirmRestoreSourcesOpen] = useState(false);
+  const [restoringSourcesBusy, setRestoringSourcesBusy] = useState(false);
+  const [confirmCleanupPhotosOpen, setConfirmCleanupPhotosOpen] = useState(false);
 
   // Gemini AI Keys state (SuperAdmin only)
   const [apiKeys, setApiKeys] = useState<GeminiApiKeyEntry[]>([]);
@@ -415,12 +450,53 @@ export const SettingsAndAdminView: React.FC = () => {
     notify(`Đã thêm loại phòng ${rt.name}`);
   };
 
+  const openEditRoomTypeModal = (rt: RoomType) => {
+    const defTier = rt.priceTiers.find((t) => t.isDefault) || rt.priceTiers[0];
+    setEditingRtDefaultDailyPrice(defTier?.price ?? 400000);
+    setEditingRt({
+      ...rt,
+      maxAdults: rt.maxAdults ?? 2,
+      maxChildren: rt.maxChildren ?? 1,
+      hourlyPricing: rt.hourlyPricing || {
+        firstHourPrice: 150000,
+        secondHourPrice: 50000,
+        additionalHourPrice: 30000,
+      },
+    });
+  };
+
   const handleSaveEditedRoomType = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingRt || !canManageRoomsAndSources) return;
-    await setDoc(doc(db, 'room_types', editingRt.id), editingRt, { merge: true });
-    notify(`Đã cập nhật loại phòng ${editingRt.name} & cấu hình giá theo giờ`);
-    setEditingRt(null);
+    if (!editingRt || !canManageRoomsAndSources || !editingRt.name.trim()) return;
+    setSavingRt(true);
+    try {
+      const nextTiers =
+        editingRt.priceTiers.length > 0
+          ? editingRt.priceTiers.map((t, idx) => {
+              const isDef = t.isDefault || (!editingRt.priceTiers.some((x) => x.isDefault) && idx === 0);
+              return isDef ? { ...t, price: Math.max(0, Math.round(editingRtDefaultDailyPrice)) } : t;
+            })
+          : [
+              {
+                id: generateId('tier'),
+                tierName: 'Giá ngày thường',
+                price: Math.max(0, Math.round(editingRtDefaultDailyPrice)),
+                isDefault: true,
+              },
+            ];
+      const payload: RoomType = {
+        ...editingRt,
+        name: editingRt.name.trim(),
+        maxAdults: Math.max(1, Number(editingRt.maxAdults) || 2),
+        maxChildren: Math.max(0, Number(editingRt.maxChildren) || 0),
+        priceTiers: nextTiers,
+      };
+      await setDoc(doc(db, 'room_types', editingRt.id), payload, { merge: true });
+      notify(`Đã cập nhật loại phòng ${payload.name} & cấu hình giá ngày/giờ`);
+      setEditingRt(null);
+    } finally {
+      setSavingRt(false);
+    }
   };
 
   const handleToggleRoomTypeActive = async (rt: RoomType) => {
@@ -429,18 +505,8 @@ export const SettingsAndAdminView: React.FC = () => {
     if (!nextActive) {
       const activeChildren = rooms.filter((r) => r.roomTypeId === rt.id && r.isActive !== false);
       if (activeChildren.length > 0) {
-        const listStr = activeChildren.map((r) => `P.${r.roomNumber}`).join(', ');
-        const proceedDisableChildren = window.confirm(
-          `Loại phòng "${rt.name}" hiện còn ${activeChildren.length} phòng con đang hoạt động (${listStr}).\n\n` +
-          `• Bấm OK để chuyển loại phòng "${rt.name}" VÀ toàn bộ ${activeChildren.length} phòng con sang "Ngừng sử dụng".\n` +
-          `• Bấm Hủy để giữ nguyên (bạn có thể đổi loại phòng cho các phòng trên trước).`
-        );
-        if (!proceedDisableChildren) return;
-        await Promise.all(
-          activeChildren.map((r) =>
-            setDoc(doc(db, 'rooms', r.id), { ...r, isActive: false }, { merge: true })
-          )
-        );
+        setConfirmDisableRt({ roomType: rt, activeChildren });
+        return;
       }
     }
     await setDoc(doc(db, 'room_types', rt.id), { ...rt, isActive: nextActive }, { merge: true });
@@ -452,53 +518,121 @@ export const SettingsAndAdminView: React.FC = () => {
     );
   };
 
-  // --- PRICE TIERS INSIDE ROOM TYPE (Full Add / Edit / Delete / Set Default!) ---
+  const executeDisableRoomTypeAndChildren = async () => {
+    if (!confirmDisableRt) return;
+    const { roomType: rt, activeChildren } = confirmDisableRt;
+    setDisablingRtBusy(true);
+    try {
+      await Promise.all(
+        activeChildren.map((r) =>
+          setDoc(doc(db, 'rooms', r.id), { ...r, isActive: false }, { merge: true })
+        )
+      );
+      await setDoc(doc(db, 'room_types', rt.id), { ...rt, isActive: false }, { merge: true });
+      setConfirmDisableRt(null);
+      notify(
+        `Đã chuyển loại phòng ${rt.name} và ${activeChildren.length} phòng con sang Ngừng sử dụng`,
+        'info'
+      );
+    } finally {
+      setDisablingRtBusy(false);
+    }
+  };
+
+  // --- PRICE TIERS INSIDE ROOM TYPE (Full Add / Edit / Delete / Set Default via RatePlanFormModal!) ---
   const savePriceTiers = async (rt: RoomType, nextTiers: PriceTier[]) => {
     await setDoc(doc(db, 'room_types', rt.id), { ...rt, priceTiers: nextTiers }, { merge: true });
   };
 
-  const handleAddPriceTier = async (rt: RoomType) => {
+  const handleAddPriceTier = (rt: RoomType) => {
     if (!canManageRoomsAndSources) return;
-    const tierName = window.prompt('Tên gói giá mới (VD: Giá ngày thường, Giá cuối tuần, Giá Lễ):');
-    if (!tierName) return;
-    const priceStr = window.prompt('Đơn giá mỗi đêm (VNĐ):', '350000');
-    const price = Number(priceStr || 0);
-    if (!price) return;
-    const isFirst = rt.priceTiers.length === 0;
-    await savePriceTiers(rt, [
-      ...rt.priceTiers,
-      { id: generateId('tier'), tierName: tierName.trim(), price, isDefault: isFirst },
-    ]);
-    notify(`Đã thêm gói giá "${tierName}" cho ${rt.name}`);
+    setRatePlanModal({
+      roomType: rt,
+      tierId: null,
+      tierName: '',
+      price: 350000,
+      isDefault: rt.priceTiers.length === 0,
+    });
   };
 
-  const handleEditPriceTier = async (rt: RoomType, tier: PriceTier) => {
+  const handleEditPriceTier = (rt: RoomType, tier: PriceTier) => {
     if (!canManageRoomsAndSources) return;
-    const nextName = window.prompt('Sửa tên gói giá:', tier.tierName);
-    if (!nextName) return;
-    const nextPriceStr = window.prompt('Sửa đơn giá (VNĐ):', String(tier.price));
-    const nextPrice = Number(nextPriceStr || 0);
-    if (!nextPrice) return;
-    const nextTiers = rt.priceTiers.map((t) =>
-      t.id === tier.id ? { ...t, tierName: nextName.trim(), price: nextPrice } : t
-    );
-    await savePriceTiers(rt, nextTiers);
-    notify(`Đã cập nhật gói giá "${nextName}"`);
+    setRatePlanModal({
+      roomType: rt,
+      tierId: tier.id,
+      tierName: tier.tierName,
+      price: tier.price,
+      isDefault: Boolean(tier.isDefault),
+    });
   };
 
-  const handleDeletePriceTier = async (rt: RoomType, tier: PriceTier) => {
+  const handleSaveRatePlanModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ratePlanModal || !canManageRoomsAndSources) return;
+    const cleanName = ratePlanModal.tierName.trim();
+    const cleanPrice = Math.max(0, Math.round(ratePlanModal.price));
+    if (!cleanName || cleanPrice <= 0) {
+      notify('Vui lòng nhập tên gói giá và đơn giá lớn hơn 0đ', 'warning');
+      return;
+    }
+    setSavingRatePlan(true);
+    try {
+      const { roomType: rt, tierId, isDefault } = ratePlanModal;
+      let nextTiers: PriceTier[];
+      if (tierId === null) {
+        const newId = generateId('tier');
+        const shouldDefault = isDefault || rt.priceTiers.length === 0;
+        nextTiers = [
+          ...rt.priceTiers.map((t) => (shouldDefault ? { ...t, isDefault: false } : t)),
+          { id: newId, tierName: cleanName, price: cleanPrice, isDefault: shouldDefault },
+        ];
+      } else {
+        nextTiers = rt.priceTiers.map((t) => {
+          if (t.id === tierId) {
+            return { ...t, tierName: cleanName, price: cleanPrice, isDefault };
+          }
+          return isDefault ? { ...t, isDefault: false } : t;
+        });
+        if (!nextTiers.some((t) => t.isDefault) && nextTiers.length > 0) {
+          nextTiers[0] = { ...nextTiers[0], isDefault: true };
+        }
+      }
+      await savePriceTiers(rt, nextTiers);
+      notify(
+        tierId === null
+          ? `Đã thêm gói giá "${cleanName}" (${formatCurrency(cleanPrice)}) cho ${rt.name}`
+          : `Đã cập nhật gói giá "${cleanName}" (${formatCurrency(cleanPrice)})`
+      );
+      setRatePlanModal(null);
+    } finally {
+      setSavingRatePlan(false);
+    }
+  };
+
+  const handleDeletePriceTier = (rt: RoomType, tier: PriceTier) => {
     if (!canManageRoomsAndSources) return;
     if (rt.priceTiers.length <= 1) {
       notify('Mỗi loại phòng cần giữ lại ít nhất 1 mức giá', 'warning');
       return;
     }
-    if (!window.confirm(`Xóa gói giá "${tier.tierName}"?`)) return;
-    const remaining = rt.priceTiers.filter((t) => t.id !== tier.id);
-    if (tier.isDefault && remaining.length > 0) {
-      remaining[0] = { ...remaining[0], isDefault: true };
+    setConfirmDeleteTier({ roomType: rt, tier });
+  };
+
+  const executeDeletePriceTier = async () => {
+    if (!confirmDeleteTier) return;
+    const { roomType: rt, tier } = confirmDeleteTier;
+    setDeletingTierBusy(true);
+    try {
+      const remaining = rt.priceTiers.filter((t) => t.id !== tier.id);
+      if (tier.isDefault && remaining.length > 0) {
+        remaining[0] = { ...remaining[0], isDefault: true };
+      }
+      await savePriceTiers(rt, remaining);
+      setConfirmDeleteTier(null);
+      notify(`Đã xóa gói giá "${tier.tierName}"`, 'info');
+    } finally {
+      setDeletingTierBusy(false);
     }
-    await savePriceTiers(rt, remaining);
-    notify(`Đã xóa gói giá "${tier.tierName}"`, 'info');
   };
 
   const handleSetDefaultPriceTier = async (rt: RoomType, tierId: string) => {
@@ -533,15 +667,25 @@ export const SettingsAndAdminView: React.FC = () => {
 
   const handleSaveEditedRoom = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingRoom || !canManageRoomsAndSources) return;
-    const rt = roomTypes.find((t) => t.id === editingRoom.roomTypeId);
-    await setDoc(
-      doc(db, 'rooms', editingRoom.id),
-      { ...editingRoom, roomTypeName: rt?.name || editingRoom.roomTypeName },
-      { merge: true }
-    );
-    notify(`Đã cập nhật thông tin phòng P.${editingRoom.roomNumber}`);
-    setEditingRoom(null);
+    if (!editingRoom || !canManageRoomsAndSources || !editingRoom.roomNumber.trim()) return;
+    setSavingRoom(true);
+    try {
+      const rt = roomTypes.find((t) => t.id === editingRoom.roomTypeId);
+      await setDoc(
+        doc(db, 'rooms', editingRoom.id),
+        {
+          ...editingRoom,
+          roomNumber: editingRoom.roomNumber.trim(),
+          note: (editingRoom.note || '').trim(),
+          roomTypeName: rt?.name || editingRoom.roomTypeName,
+        },
+        { merge: true }
+      );
+      notify(`Đã cập nhật thông tin phòng P.${editingRoom.roomNumber.trim()}`);
+      setEditingRoom(null);
+    } finally {
+      setSavingRoom(false);
+    }
   };
 
   const handleToggleRoomActive = async (room: Room) => {
@@ -582,15 +726,32 @@ export const SettingsAndAdminView: React.FC = () => {
     notify(`Đã thêm ${newSrcKind === 'ota' ? 'kênh OTA' : 'nguồn khách'} "${newSrcName.trim()}"`);
   };
 
-  const handleEditSourceName = async (src: BookingSourceConfig) => {
+  const handleEditSourceName = (src: BookingSourceConfig) => {
     if (!canManageRoomsAndSources) return;
-    const updatedName = window.prompt('Chỉnh sửa tên kênh / nguồn đặt phòng:', src.name);
-    if (!updatedName || !updatedName.trim()) return;
-    const next = (hotelConfig.bookingSources || []).map((s) =>
-      s.id === src.id ? { ...s, name: updatedName.trim() } : s
-    );
-    await saveBookingSources(next);
-    notify(`Đã cập nhật tên thành "${updatedName.trim()}"`);
+    setEditingSource({ ...src });
+  };
+
+  const handleSaveEditedSource = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canManageRoomsAndSources || !editingSource || !editingSource.name.trim()) return;
+    setSavingSource(true);
+    try {
+      const next = (hotelConfig.bookingSources || []).map((s) =>
+        s.id === editingSource.id
+          ? {
+              ...s,
+              name: editingSource.name.trim(),
+              kind: editingSource.kind,
+              isActive: editingSource.isActive !== false,
+            }
+          : s
+      );
+      await saveBookingSources(next);
+      notify(`Đã cập nhật nguồn/kênh "${editingSource.name.trim()}"`);
+      setEditingSource(null);
+    } finally {
+      setSavingSource(false);
+    }
   };
 
   const handleToggleSourceActive = async (src: BookingSourceConfig) => {
@@ -607,17 +768,16 @@ export const SettingsAndAdminView: React.FC = () => {
     );
   };
 
-  const handleRestoreDefaultSources = async () => {
+  const handleRestoreDefaultSources = () => {
     if (!canManageRoomsAndSources) return;
-    if (
-      !window.confirm(
-        'Khôi phục các nguồn đặt phòng & kênh OTA mặc định còn thiếu vào cấu hình khách sạn?\n\n(Chỉ bổ sung nguồn còn thiếu — tuyệt đối không xóa hay ghi đè các nguồn tùy chỉnh hiện có.)'
-      )
-    ) {
-      return;
-    }
+    setConfirmRestoreSourcesOpen(true);
+  };
+
+  const executeRestoreDefaultSources = async () => {
+    setRestoringSourcesBusy(true);
     try {
       const res = await restoreMissingDefaultBookingSources(actor);
+      setConfirmRestoreSourcesOpen(false);
       notify(
         res.addedCount > 0
           ? `Đã bổ sung ${res.addedCount} nguồn mặc định còn thiếu (tổng ${res.totalCount} nguồn)`
@@ -626,6 +786,8 @@ export const SettingsAndAdminView: React.FC = () => {
       );
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi khôi phục nguồn mặc định', 'error');
+    } finally {
+      setRestoringSourcesBusy(false);
     }
   };
 
@@ -664,19 +826,17 @@ export const SettingsAndAdminView: React.FC = () => {
     }
   };
 
-  const handleExecuteCleanup = async () => {
+  const handleExecuteCleanup = () => {
     if (!isSuperAdmin || !scanResult || scanResult.docs.length === 0) return;
-    const ok = window.confirm(
-      `Xác nhận xóa trắng ${scanResult.imageCount} ảnh Base64 (${formatFileSizeKB(
-        scanResult.totalBytes
-      )}) trong ${scanResult.docs.length} hồ sơ đã check-out trước ${formatDateVN(
-        cutoffDate
-      )}? Toàn bộ thông tin văn bản của khách vẫn được giữ nguyên.`
-    );
-    if (!ok) return;
+    setConfirmCleanupPhotosOpen(true);
+  };
+
+  const executeCleanupPhotos = async () => {
+    if (!isSuperAdmin || !scanResult || scanResult.docs.length === 0) return;
     setCleaning(true);
     try {
       const res = await cleanupOldGuestDocumentPhotos(scanResult.docs, cutoffDate, actor);
+      setConfirmCleanupPhotosOpen(false);
       notify(
         `Đã dọn dẹp ${res.cleanedDocs} hồ sơ ảnh, giải phóng ${formatFileSizeKB(res.freedBytes)}`
       );
@@ -790,9 +950,8 @@ export const SettingsAndAdminView: React.FC = () => {
                 {canManageHotelLogo ? (
                   <div className="flex flex-wrap items-center gap-2 pt-0.5">
                     <label
-                      className={`min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
-                        savingLogo ? 'opacity-60 pointer-events-none' : ''
-                      }`}
+                      className={`min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors ${savingLogo ? 'opacity-60 pointer-events-none' : ''
+                        }`}
                     >
                       <Upload className="w-4 h-4 shrink-0" strokeWidth={1.75} />
                       <span>{savingLogo ? 'Đang lưu logo...' : 'Chọn ảnh logo từ máy'}</span>
@@ -1099,108 +1258,6 @@ export const SettingsAndAdminView: React.FC = () => {
               </form>
             )}
 
-            {/* Edit RoomType & 3-Tier Hourly Pricing Inline Card */}
-            {editingRt && (
-              <form
-                onSubmit={handleSaveEditedRoomType}
-                className="p-4 rounded-xl bg-[#E8F2EE]/60 border border-[#1B5E4B]/40 space-y-3"
-              >
-                <div className="text-[13px] font-semibold text-[#1B5E4B]">
-                  Chỉnh sửa loại phòng & Cài đặt giá theo giờ: {editingRt.name}
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
-                  <div>
-                    <label className="block text-[11px] text-[#57534E] mb-1">Tên loại phòng</label>
-                    <input
-                      type="text"
-                      required
-                      value={editingRt.name}
-                      onChange={(e) => setEditingRt({ ...editingRt, name: e.target.value })}
-                      className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#57534E] mb-1">
-                      Giá giờ đầu tiên (`firstHourPrice`)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      step={10000}
-                      value={editingRt.hourlyPricing?.firstHourPrice ?? 150000}
-                      onChange={(e) =>
-                        setEditingRt({
-                          ...editingRt,
-                          hourlyPricing: {
-                            ...editingRt.hourlyPricing,
-                            firstHourPrice: Math.max(0, Number(e.target.value) || 0),
-                          },
-                        })
-                      }
-                      className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[13px]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#57534E] mb-1">
-                      Giá giờ thứ 2 (`secondHourPrice`)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      step={10000}
-                      value={editingRt.hourlyPricing?.secondHourPrice ?? 50000}
-                      onChange={(e) =>
-                        setEditingRt({
-                          ...editingRt,
-                          hourlyPricing: {
-                            ...editingRt.hourlyPricing,
-                            secondHourPrice: Math.max(0, Number(e.target.value) || 0),
-                          },
-                        })
-                      }
-                      className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[13px]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#57534E] mb-1">
-                      Giá từ giờ 3 trở đi (`additionalHourPrice`)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      step={10000}
-                      value={editingRt.hourlyPricing?.additionalHourPrice ?? 30000}
-                      onChange={(e) =>
-                        setEditingRt({
-                          ...editingRt,
-                          hourlyPricing: {
-                            ...editingRt.hourlyPricing,
-                            additionalHourPrice: Math.max(0, Number(e.target.value) || 0),
-                          },
-                        })
-                      }
-                      className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[13px]"
-                    />
-                  </div>
-                </div>
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditingRt(null)}
-                    className="h-8 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
-                  >
-                    Hủy
-                  </button>
-                  <button
-                    type="submit"
-                    className="h-8 px-4 rounded-lg bg-[#1B5E4B] text-white text-[12px] font-medium"
-                  >
-                    Lưu thay đổi
-                  </button>
-                </div>
-              </form>
-            )}
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {roomTypes.map((rt) => {
                 const inactive = rt.isActive === false;
@@ -1230,7 +1287,8 @@ export const SettingsAndAdminView: React.FC = () => {
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => setEditingRt(rt)}
+                            data-testid={`edit-room-type-btn-${rt.id}`}
+                            onClick={() => openEditRoomTypeModal(rt)}
                             className="h-7 px-2 rounded-md border border-[#E5E2DC] bg-white text-[11px] inline-flex items-center gap-1"
                           >
                             <Pencil className="w-3 h-3" strokeWidth={1.5} /> Sửa & Giá giờ
@@ -1267,6 +1325,7 @@ export const SettingsAndAdminView: React.FC = () => {
                         {canManageRoomsAndSources && (
                           <button
                             type="button"
+                            data-testid={`add-rate-plan-btn-${rt.id}`}
                             onClick={() => handleAddPriceTier(rt)}
                             className="text-[#1B5E4B] font-medium hover:underline"
                           >
@@ -1305,6 +1364,7 @@ export const SettingsAndAdminView: React.FC = () => {
                                 )}
                                 <button
                                   type="button"
+                                  data-testid={`edit-rate-plan-btn-${t.id}`}
                                   onClick={() => handleEditPriceTier(rt, t)}
                                   title="Sửa gói giá"
                                   className="p-1 text-[#8A847C] hover:text-[#1C1B18]"
@@ -1313,6 +1373,7 @@ export const SettingsAndAdminView: React.FC = () => {
                                 </button>
                                 <button
                                   type="button"
+                                  data-testid={`delete-rate-plan-btn-${t.id}`}
                                   onClick={() => handleDeletePriceTier(rt, t)}
                                   title="Xóa gói giá"
                                   className="p-1 text-[#8A847C] hover:text-[#B91C1C]"
@@ -1384,59 +1445,6 @@ export const SettingsAndAdminView: React.FC = () => {
               </form>
             )}
 
-            {editingRoom && (
-              <form
-                onSubmit={handleSaveEditedRoom}
-                className="p-3.5 rounded-xl bg-[#E8F2EE]/60 border border-[#1B5E4B]/40 flex flex-wrap items-center gap-2"
-              >
-                <span className="text-[12px] font-semibold text-[#1B5E4B]">
-                  Sửa P.{editingRoom.roomNumber}:
-                </span>
-                <input
-                  type="text"
-                  required
-                  value={editingRoom.roomNumber}
-                  onChange={(e) => setEditingRoom({ ...editingRoom, roomNumber: e.target.value })}
-                  className="w-24 h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[12px]"
-                />
-                <select
-                  value={editingRoom.floor}
-                  onChange={(e) => setEditingRoom({ ...editingRoom, floor: e.target.value })}
-                  className="h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
-                >
-                  {['Tầng 1', 'Tầng 2', 'Tầng 3', 'Tầng 4', 'Tầng 5', 'Tầng 6'].map((f) => (
-                    <option key={f} value={f}>
-                      {f}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={editingRoom.roomTypeId}
-                  onChange={(e) => setEditingRoom({ ...editingRoom, roomTypeId: e.target.value })}
-                  className="flex-1 min-w-[180px] h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
-                >
-                  {roomTypes.map((rt) => (
-                    <option key={rt.id} value={rt.id}>
-                      {rt.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="submit"
-                  className="h-8 px-3 rounded-lg bg-[#1B5E4B] text-white text-[12px] font-medium"
-                >
-                  Lưu
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingRoom(null)}
-                  className="h-8 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
-                >
-                  Hủy
-                </button>
-              </form>
-            )}
-
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
               {rooms.map((r) => {
                 const inactive = r.isActive === false;
@@ -1462,12 +1470,18 @@ export const SettingsAndAdminView: React.FC = () => {
                       <div className="text-[11px] text-[#57534E] truncate">
                         {r.floor} • {r.roomTypeName}
                       </div>
+                      {r.note && (
+                        <div className="text-[10px] text-[#8A847C] truncate italic">
+                          {r.note}
+                        </div>
+                      )}
                     </div>
                     {canManageRoomsAndSources && (
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
-                          onClick={() => setEditingRoom(r)}
+                          data-testid={`edit-room-btn-${r.roomNumber}`}
+                          onClick={() => setEditingRoom({ ...r })}
                           title="Chỉnh sửa phòng"
                           className="p-1.5 rounded-md hover:bg-white text-[#57534E]"
                         >
@@ -1723,59 +1737,6 @@ export const SettingsAndAdminView: React.FC = () => {
               </form>
             )}
 
-            {/* Inline Edit Box */}
-            {editingSvc && canManageServiceCatalog && (
-              <form
-                onSubmit={handleSaveEditedServiceCatalogItem}
-                className="p-3.5 rounded-xl bg-[#E8F3EC]/70 border border-[#0F5132]/35 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center"
-              >
-                <input
-                  type="text"
-                  required
-                  value={editingSvc.name}
-                  onChange={(e) => setEditingSvc({ ...editingSvc, name: e.target.value })}
-                  className="sm:col-span-4 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-                />
-                <select
-                  value={editingSvc.category}
-                  onChange={(e) =>
-                    setEditingSvc({ ...editingSvc, category: e.target.value as ServiceItemGroup })
-                  }
-                  className="sm:col-span-3 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-                >
-                  <option value="food">Thức ăn</option>
-                  <option value="drink">Đồ uống</option>
-                  <option value="service">Dịch vụ</option>
-                </select>
-                <input
-                  type="number"
-                  min={0}
-                  step={5000}
-                  value={editingSvc.price}
-                  onChange={(e) =>
-                    setEditingSvc({ ...editingSvc, price: Math.max(0, Number(e.target.value) || 0) })
-                  }
-                  className="sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-right text-[13px]"
-                />
-                <div className="sm:col-span-3 flex items-center gap-2">
-                  <button
-                    type="submit"
-                    disabled={savingSvc}
-                    className="flex-1 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg bg-[#0F5132] text-white text-[12px] font-medium"
-                  >
-                    Lưu sửa
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingSvc(null)}
-                    className="min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[12px] text-[#57534E]"
-                  >
-                    Hủy
-                  </button>
-                </div>
-              </form>
-            )}
-
             {/* Grouped Catalog List */}
             <div className="space-y-4">
               {visibleGroups.map((g) => {
@@ -1831,6 +1792,7 @@ export const SettingsAndAdminView: React.FC = () => {
                                   <div className="flex items-center gap-1.5">
                                     <button
                                       type="button"
+                                      data-testid={`edit-service-btn-${it.id}`}
                                       onClick={() => setEditingSvc({ ...it })}
                                       className="min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white hover:bg-[#FAF9F6] text-[12px] inline-flex items-center gap-1"
                                     >
@@ -2121,6 +2083,528 @@ export const SettingsAndAdminView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* 1. RatePlanFormModal (Add / Edit PriceTier) */}
+      <AppModal
+        open={Boolean(ratePlanModal)}
+        title={ratePlanModal?.tierId ? 'Chỉnh sửa Gói giá phòng' : 'Thêm Gói giá phòng mới'}
+        description={
+          ratePlanModal ? `Hạng phòng: ${ratePlanModal.roomType.name}` : undefined
+        }
+        onClose={() => setRatePlanModal(null)}
+        onSubmit={handleSaveRatePlanModal}
+        submitLabel="Lưu thay đổi"
+        saving={savingRatePlan}
+        submitDisabled={!ratePlanModal?.tierName.trim() || (ratePlanModal?.price || 0) <= 0}
+        testId="rate-plan-form-modal"
+      >
+        {ratePlanModal && (
+          <div className="space-y-3.5">
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Tên gói giá (VD: Giá ngày thường, Giá cuối tuần, Giá Lễ) *
+              </label>
+              <input
+                type="text"
+                required
+                data-testid="rate-plan-name-input"
+                value={ratePlanModal.tierName}
+                onChange={(e) =>
+                  setRatePlanModal({ ...ratePlanModal, tierName: e.target.value })
+                }
+                placeholder="Nhập tên gói giá..."
+                className={APP_INPUT_CLASS}
+              />
+            </div>
+
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Đơn giá / đêm (VNĐ) *
+              </label>
+              <CurrencyInput
+                required
+                testId="rate-plan-price-input"
+                value={ratePlanModal.price}
+                onChange={(nextPrice) =>
+                  setRatePlanModal({ ...ratePlanModal, price: nextPrice })
+                }
+              />
+            </div>
+
+            <label className="min-h-[42px] px-3.5 py-2.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] flex items-center justify-between gap-3 text-[13px] font-medium text-[#1C1B18] cursor-pointer">
+              <span>Đặt làm gói giá mặc định của hạng phòng này</span>
+              <input
+                type="checkbox"
+                data-testid="rate-plan-default-checkbox"
+                checked={ratePlanModal.isDefault}
+                onChange={(e) =>
+                  setRatePlanModal({ ...ratePlanModal, isDefault: e.target.checked })
+                }
+                className="w-4 h-4 accent-[#0F5132]"
+              />
+            </label>
+          </div>
+        )}
+      </AppModal>
+
+      {/* 2. RoomTypeFormModal (Edit RoomType & 3-Tier Hourly Pricing) */}
+      <AppModal
+        open={Boolean(editingRt)}
+        title="Chỉnh sửa Loại phòng & Cài đặt giá"
+        description={
+          editingRt
+            ? `Cập nhật thông tin hạng phòng, giá ngày mặc định, giá theo giờ 3 bậc và sức chứa tiêu chuẩn.`
+            : undefined
+        }
+        onClose={() => setEditingRt(null)}
+        onSubmit={handleSaveEditedRoomType}
+        submitLabel="Lưu thay đổi"
+        saving={savingRt}
+        submitDisabled={!editingRt?.name.trim()}
+        testId="room-type-form-modal"
+      >
+        {editingRt && (
+          <div className="space-y-3.5">
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Tên loại phòng *
+              </label>
+              <input
+                type="text"
+                required
+                data-testid="room-type-name-input"
+                value={editingRt.name}
+                onChange={(e) => setEditingRt({ ...editingRt, name: e.target.value })}
+                className={APP_INPUT_CLASS}
+              />
+            </div>
+
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Giá ngày mặc định (/đêm)
+              </label>
+              <CurrencyInput
+                testId="room-type-default-daily-input"
+                value={editingRtDefaultDailyPrice}
+                onChange={setEditingRtDefaultDailyPrice}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Giá giờ 1
+                </label>
+                <CurrencyInput
+                  testId="room-type-hour1-input"
+                  value={editingRt.hourlyPricing?.firstHourPrice ?? 150000}
+                  onChange={(val) =>
+                    setEditingRt({
+                      ...editingRt,
+                      hourlyPricing: {
+                        ...editingRt.hourlyPricing,
+                        firstHourPrice: val,
+                      },
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Giá giờ 2
+                </label>
+                <CurrencyInput
+                  testId="room-type-hour2-input"
+                  value={editingRt.hourlyPricing?.secondHourPrice ?? 50000}
+                  onChange={(val) =>
+                    setEditingRt({
+                      ...editingRt,
+                      hourlyPricing: {
+                        ...editingRt.hourlyPricing,
+                        secondHourPrice: val,
+                      },
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Từ giờ 3 trở đi (/giờ)
+                </label>
+                <CurrencyInput
+                  testId="room-type-hour3-input"
+                  value={editingRt.hourlyPricing?.additionalHourPrice ?? 30000}
+                  onChange={(val) =>
+                    setEditingRt({
+                      ...editingRt,
+                      hourlyPricing: {
+                        ...editingRt.hourlyPricing,
+                        additionalHourPrice: val,
+                      },
+                    })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Sức chứa người lớn tiêu chuẩn
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  data-testid="room-type-max-adults-input"
+                  value={editingRt.maxAdults ?? 2}
+                  onChange={(e) =>
+                    setEditingRt({
+                      ...editingRt,
+                      maxAdults: Math.max(1, Number(e.target.value) || 1),
+                    })
+                  }
+                  className={APP_INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Sức chứa trẻ em tiêu chuẩn
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  data-testid="room-type-max-children-input"
+                  value={editingRt.maxChildren ?? 1}
+                  onChange={(e) =>
+                    setEditingRt({
+                      ...editingRt,
+                      maxChildren: Math.max(0, Number(e.target.value) || 0),
+                    })
+                  }
+                  className={APP_INPUT_CLASS}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </AppModal>
+
+      {/* 3. RoomFormModal (Edit Room) */}
+      <AppModal
+        open={Boolean(editingRoom)}
+        title={editingRoom ? `Chỉnh sửa Phòng P.${editingRoom.roomNumber}` : 'Chỉnh sửa Phòng'}
+        description="Cập nhật số phòng, tầng, hạng phòng, ghi chú kỹ thuật và trạng thái hoạt động."
+        onClose={() => setEditingRoom(null)}
+        onSubmit={handleSaveEditedRoom}
+        submitLabel="Lưu thay đổi"
+        saving={savingRoom}
+        submitDisabled={!editingRoom?.roomNumber.trim()}
+        testId="room-form-modal"
+      >
+        {editingRoom && (
+          <div className="space-y-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Số / Tên phòng *
+                </label>
+                <input
+                  type="text"
+                  required
+                  data-testid="room-number-input"
+                  value={editingRoom.roomNumber}
+                  onChange={(e) =>
+                    setEditingRoom({ ...editingRoom, roomNumber: e.target.value })
+                  }
+                  className={`${APP_INPUT_CLASS} font-mono-num font-semibold`}
+                />
+              </div>
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Tầng
+                </label>
+                <select
+                  data-testid="room-floor-select"
+                  value={editingRoom.floor}
+                  onChange={(e) => setEditingRoom({ ...editingRoom, floor: e.target.value })}
+                  className={APP_SELECT_CLASS}
+                >
+                  {['Tầng 1', 'Tầng 2', 'Tầng 3', 'Tầng 4', 'Tầng 5', 'Tầng 6'].map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Hạng phòng
+              </label>
+              <select
+                data-testid="room-type-select"
+                value={editingRoom.roomTypeId}
+                onChange={(e) => setEditingRoom({ ...editingRoom, roomTypeId: e.target.value })}
+                className={APP_SELECT_CLASS}
+              >
+                {roomTypes.map((rt) => (
+                  <option key={rt.id} value={rt.id}>
+                    {rt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Ghi chú kỹ thuật phòng (VD: Ban công hướng biển, mới bảo dưỡng điều hòa...)
+              </label>
+              <input
+                type="text"
+                data-testid="room-note-input"
+                value={editingRoom.note || ''}
+                onChange={(e) => setEditingRoom({ ...editingRoom, note: e.target.value })}
+                placeholder="Nhập ghi chú kỹ thuật phòng..."
+                className={APP_INPUT_CLASS}
+              />
+            </div>
+
+            <label className="min-h-[42px] px-3.5 py-2.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] flex items-center justify-between gap-3 text-[13px] font-medium text-[#1C1B18] cursor-pointer">
+              <span>Trạng thái phòng đang hoạt động (cho phép nhận khách)</span>
+              <input
+                type="checkbox"
+                data-testid="room-active-checkbox"
+                checked={editingRoom.isActive !== false}
+                onChange={(e) =>
+                  setEditingRoom({ ...editingRoom, isActive: e.target.checked })
+                }
+                className="w-4 h-4 accent-[#0F5132]"
+              />
+            </label>
+          </div>
+        )}
+      </AppModal>
+
+      {/* 4. ServiceCatalogFormModal (Edit Service & F&B Catalog Item) */}
+      <AppModal
+        open={Boolean(editingSvc && canManageServiceCatalog)}
+        title="Chỉnh sửa Dịch vụ & Bảng giá"
+        description="Cập nhật tên món/dịch vụ, phân nhóm doanh thu, đơn giá bán và trạng thái mở bán."
+        onClose={() => setEditingSvc(null)}
+        onSubmit={handleSaveEditedServiceCatalogItem}
+        submitLabel="Lưu thay đổi"
+        saving={savingSvc}
+        submitDisabled={!editingSvc?.name.trim()}
+        testId="service-catalog-form-modal"
+      >
+        {editingSvc && (
+          <div className="space-y-3.5">
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Tên món / đồ uống / dịch vụ *
+              </label>
+              <input
+                type="text"
+                required
+                data-testid="service-modal-name-input"
+                value={editingSvc.name}
+                onChange={(e) => setEditingSvc({ ...editingSvc, name: e.target.value })}
+                className={APP_INPUT_CLASS}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Nhóm dịch vụ
+                </label>
+                <select
+                  data-testid="service-modal-category-select"
+                  value={editingSvc.category}
+                  onChange={(e) =>
+                    setEditingSvc({
+                      ...editingSvc,
+                      category: e.target.value as ServiceItemGroup,
+                    })
+                  }
+                  className={APP_SELECT_CLASS}
+                >
+                  <option value="food">Thức ăn</option>
+                  <option value="drink">Đồ uống</option>
+                  <option value="service">Dịch vụ</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                  Đơn giá bán (VNĐ) *
+                </label>
+                <CurrencyInput
+                  required
+                  testId="service-modal-price-input"
+                  value={editingSvc.price}
+                  onChange={(val) => setEditingSvc({ ...editingSvc, price: val })}
+                />
+              </div>
+            </div>
+
+            <label className="min-h-[42px] px-3.5 py-2.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] flex items-center justify-between gap-3 text-[13px] font-medium text-[#1C1B18] cursor-pointer">
+              <span>Đang mở bán (hiển thị cho Lễ tân chọn nhanh)</span>
+              <input
+                type="checkbox"
+                data-testid="service-modal-active-checkbox"
+                checked={editingSvc.isActive !== false}
+                onChange={(e) =>
+                  setEditingSvc({ ...editingSvc, isActive: e.target.checked })
+                }
+                className="w-4 h-4 accent-[#0F5132]"
+              />
+            </label>
+          </div>
+        )}
+      </AppModal>
+
+      {/* 5. SourceFormModal (Edit OTA Channel / Booking Source) */}
+      <AppModal
+        open={Boolean(editingSource)}
+        title="Chỉnh sửa Kênh OTA / Nguồn đặt phòng"
+        onClose={() => setEditingSource(null)}
+        onSubmit={handleSaveEditedSource}
+        submitLabel="Lưu thay đổi"
+        saving={savingSource}
+        submitDisabled={!editingSource?.name.trim()}
+        testId="source-form-modal"
+      >
+        {editingSource && (
+          <div className="space-y-3.5">
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Tên kênh OTA / nguồn đặt phòng *
+              </label>
+              <input
+                type="text"
+                required
+                data-testid="source-modal-name-input"
+                value={editingSource.name}
+                onChange={(e) =>
+                  setEditingSource({ ...editingSource, name: e.target.value })
+                }
+                className={APP_INPUT_CLASS}
+              />
+            </div>
+
+            <div>
+              <label className="block text-[12px] font-medium text-[#57534E] mb-1">
+                Phân loại
+              </label>
+              <select
+                data-testid="source-modal-kind-select"
+                value={editingSource.kind}
+                onChange={(e) =>
+                  setEditingSource({
+                    ...editingSource,
+                    kind: e.target.value as 'direct' | 'ota',
+                  })
+                }
+                className={APP_SELECT_CLASS}
+              >
+                <option value="ota">Kênh OTA</option>
+                <option value="direct">Nguồn trực tiếp</option>
+              </select>
+            </div>
+
+            <label className="min-h-[42px] px-3.5 py-2.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] flex items-center justify-between gap-3 text-[13px] font-medium text-[#1C1B18] cursor-pointer">
+              <span>Đang sử dụng (hiển thị khi tạo đơn đặt phòng mới)</span>
+              <input
+                type="checkbox"
+                data-testid="source-modal-active-checkbox"
+                checked={editingSource.isActive !== false}
+                onChange={(e) =>
+                  setEditingSource({ ...editingSource, isActive: e.target.checked })
+                }
+                className="w-4 h-4 accent-[#0F5132]"
+              />
+            </label>
+          </div>
+        )}
+      </AppModal>
+
+      {/* Confirm 1: Delete Rate Plan */}
+      <ConfirmDialog
+        open={Boolean(confirmDeleteTier)}
+        title="Xóa gói giá phòng"
+        variant="danger"
+        message={
+          confirmDeleteTier
+            ? `Xác nhận xóa gói giá "${confirmDeleteTier.tier.tierName}" (${formatCurrency(
+                confirmDeleteTier.tier.price
+              )}) khỏi hạng phòng ${confirmDeleteTier.roomType.name}?`
+            : ''
+        }
+        confirmLabel="Xóa gói giá"
+        busy={deletingTierBusy}
+        onConfirm={executeDeletePriceTier}
+        onCancel={() => setConfirmDeleteTier(null)}
+        testId="confirm-delete-rate-plan-dialog"
+      />
+
+      {/* Confirm 2: Disable RoomType with Active Children */}
+      <ConfirmDialog
+        open={Boolean(confirmDisableRt)}
+        title={`Ngừng sử dụng hạng phòng "${confirmDisableRt?.roomType.name || ''}"`}
+        variant="danger"
+        message={
+          confirmDisableRt
+            ? `Loại phòng "${confirmDisableRt.roomType.name}" hiện còn ${
+                confirmDisableRt.activeChildren.length
+              } phòng con đang hoạt động (${confirmDisableRt.activeChildren
+                .map((r) => `P.${r.roomNumber}`)
+                .join(', ')}).\n\nXác nhận chuyển loại phòng này VÀ toàn bộ ${
+                confirmDisableRt.activeChildren.length
+              } phòng con sang trạng thái "Ngừng sử dụng"?`
+            : ''
+        }
+        confirmLabel="Ngừng sử dụng tất cả"
+        busy={disablingRtBusy}
+        onConfirm={executeDisableRoomTypeAndChildren}
+        onCancel={() => setConfirmDisableRt(null)}
+        testId="confirm-disable-room-type-dialog"
+      />
+
+      {/* Confirm 3: Restore Default Booking Sources */}
+      <ConfirmDialog
+        open={confirmRestoreSourcesOpen}
+        title="Khôi phục danh mục nguồn đặt phòng mặc định"
+        message={`Khôi phục các nguồn đặt phòng & kênh OTA mặc định còn thiếu vào cấu hình khách sạn?\n\n(Chỉ bổ sung nguồn còn thiếu — tuyệt đối không xóa hay ghi đè các nguồn tùy chỉnh hiện có.)`}
+        confirmLabel="Khôi phục nguồn thiếu"
+        busy={restoringSourcesBusy}
+        onConfirm={executeRestoreDefaultSources}
+        onCancel={() => setConfirmRestoreSourcesOpen(false)}
+        testId="confirm-restore-sources-dialog"
+      />
+
+      {/* Confirm 4: Cleanup Old Guest Document Photos */}
+      <ConfirmDialog
+        open={confirmCleanupPhotosOpen}
+        title="Xác nhận dọn dẹp kho ảnh giấy tờ cũ"
+        variant="danger"
+        message={
+          scanResult
+            ? `Xác nhận xóa trắng ${scanResult.imageCount} ảnh Base64 (${formatFileSizeKB(
+                scanResult.totalBytes
+              )}) trong ${scanResult.docs.length} hồ sơ đã check-out trước ${formatDateVN(
+                cutoffDate
+              )}? Toàn bộ thông tin văn bản của khách vẫn được giữ nguyên.`
+            : ''
+        }
+        confirmLabel="Xóa ảnh cũ"
+        busy={cleaning}
+        onConfirm={executeCleanupPhotos}
+        onCancel={() => setConfirmCleanupPhotosOpen(false)}
+        testId="confirm-cleanup-photos-dialog"
+      />
     </div>
   );
 };

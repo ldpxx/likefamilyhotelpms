@@ -61,6 +61,7 @@ import { DepositResolutionModal } from './DepositResolutionModal';
 import { PaginationBar, usePagination } from './PaginationBar';
 import { CountrySelect } from './CountrySelect';
 import { DateInputVN } from './DateInputVN';
+import { ConfirmDialog } from './AppDialogs';
 
 interface BookingsAndGroupsViewProps {
   onSelectBooking: (booking: Booking) => void;
@@ -628,13 +629,16 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
     }
   };
 
-  const handleMergeWalkInDuplicates = async () => {
-    const ok = window.confirm(
-      duplicateWalkInCount > 0
-        ? `Gộp ${duplicateWalkInCount} hồ sơ "Khách lẻ" vô danh trùng lặp thành 1 hồ sơ hệ thống duy nhất (WALK_IN_DEFAULT) và đồng bộ lại toàn bộ đơn đặt phòng liên quan?`
-        : 'Đồng bộ lại hồ sơ hệ thống "Khách lẻ" (WALK_IN_DEFAULT) và tính lại tổng số lần lưu trú?'
-    );
-    if (!ok) return;
+  const [confirmMergeWalkInOpen, setConfirmMergeWalkInOpen] = useState(false);
+  const [confirmDeleteGroupTarget, setConfirmDeleteGroupTarget] = useState<CustomerGroup | null>(null);
+  const [deletingGroupBusy, setDeletingGroupBusy] = useState(false);
+
+  const handleMergeWalkInDuplicates = () => {
+    setConfirmMergeWalkInOpen(true);
+  };
+
+  const executeMergeWalkInDuplicates = async () => {
+    setConfirmMergeWalkInOpen(false);
     setMergingWalkIn(true);
     try {
       const res = await mergeDuplicateWalkInGuests(guests, bookings, actor);
@@ -678,14 +682,14 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
     }
   };
 
-  const handleDeleteCustomerGroupItem = async (grp: CustomerGroup) => {
-    const usedCount = guests.filter((g) => g.customerGroupId === grp.id).length;
-    const ok = window.confirm(
-      usedCount > 0
-        ? `Xóa nhóm "${grp.name}"? Hiện có ${usedCount} khách thuộc nhóm này sẽ tự động chuyển về "Chưa phân nhóm".`
-        : `Xóa nhóm khách hàng "${grp.name}"?`
-    );
-    if (!ok) return;
+  const handleDeleteCustomerGroupItem = (grp: CustomerGroup) => {
+    setConfirmDeleteGroupTarget(grp);
+  };
+
+  const executeDeleteCustomerGroupItem = async () => {
+    const grp = confirmDeleteGroupTarget;
+    if (!grp) return;
+    setDeletingGroupBusy(true);
     try {
       await deleteCustomerGroup(grp.id, guests, actor);
       if (guestGroupFilter === grp.id) setGuestGroupFilter('all');
@@ -693,9 +697,12 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
         setEditingGroupId(null);
         setGroupFormName('');
       }
+      setConfirmDeleteGroupTarget(null);
       notify(`Đã xóa nhóm "${grp.name}"`);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi xóa nhóm khách hàng', 'error');
+    } finally {
+      setDeletingGroupBusy(false);
     }
   };
 
@@ -726,9 +733,8 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
               key={t.id}
               type="button"
               onClick={() => setSubTab(t.id as typeof subTab)}
-              className={`h-8 px-3.5 rounded-lg text-[13px] font-medium transition-colors ${
-                subTab === t.id ? 'bg-white text-[#1C1B18] shadow-xs' : 'text-[#57534E]'
-              }`}
+              className={`h-8 px-3.5 rounded-lg text-[13px] font-medium transition-colors ${subTab === t.id ? 'bg-white text-[#1C1B18] shadow-xs' : 'text-[#57534E]'
+                }`}
             >
               {t.label}
             </button>
@@ -801,10 +807,10 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   onChange={(e) =>
                     setBookingSort(
                       e.target.value as
-                        | 'newest'
-                        | 'checkin_nearest'
-                        | 'checkout_nearest'
-                        | 'balance_desc'
+                      | 'newest'
+                      | 'checkin_nearest'
+                      | 'checkout_nearest'
+                      | 'balance_desc'
                     )
                   }
                   data-testid="bookings-sort-select"
@@ -821,11 +827,10 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   type="button"
                   onClick={() => setShowAdvancedBookingFilters((v) => !v)}
                   data-testid="bookings-advanced-toggle"
-                  className={`lg:hidden shrink-0 min-h-[40px] px-3 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors ${
-                    showAdvancedBookingFilters || activeAdvancedBookingFilterCount > 0
-                      ? 'border-[#0F5132] bg-[#E8F2EE] text-[#0F5132]'
-                      : 'border-[#E5E2DC] bg-[#FAF9F6] text-[#57534E]'
-                  }`}
+                  className={`lg:hidden shrink-0 min-h-[40px] px-3 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors ${showAdvancedBookingFilters || activeAdvancedBookingFilterCount > 0
+                    ? 'border-[#0F5132] bg-[#E8F2EE] text-[#0F5132]'
+                    : 'border-[#E5E2DC] bg-[#FAF9F6] text-[#57534E]'
+                    }`}
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" strokeWidth={1.6} />
                   <span>Bộ lọc nâng cao</span>
@@ -935,10 +940,10 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                     onChange={(e) =>
                       setBookingDateField(
                         e.target.value as
-                          | 'checkIn'
-                          | 'checkOut'
-                          | 'createdAt'
-                          | 'in_house_overlap'
+                        | 'checkIn'
+                        | 'checkOut'
+                        | 'createdAt'
+                        | 'in_house_overlap'
                       )
                     }
                     data-testid="bookings-date-field-select"
@@ -1123,13 +1128,12 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap items-center gap-1">
                             <span
-                              className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
-                                b.status === 'no_show'
-                                  ? 'bg-[#FFFBEB] text-[#92400E]'
-                                  : b.status === 'cancelled'
+                              className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${b.status === 'no_show'
+                                ? 'bg-[#FFFBEB] text-[#92400E]'
+                                : b.status === 'cancelled'
                                   ? 'bg-[#FEF2F2] text-[#991B1B]'
                                   : 'bg-[#F1EFEA] text-[#1C1B18]'
-                              }`}
+                                }`}
                             >
                               {b.status === 'cancelled' && b.cancellationType
                                 ? getCancellationTypeLabel(b.cancellationType)
@@ -1256,17 +1260,15 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                     type="button"
                     data-testid={`groups-status-pill-${pill.id}`}
                     onClick={() => setGroupStatusFilter(pill.id)}
-                    className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium inline-flex items-center gap-1.5 border transition-colors ${
-                      active
-                        ? 'bg-[#0F5132] border-[#0F5132] text-white'
-                        : 'bg-[#FAF9F6] border-[#E5E2DC] text-[#57534E] hover:border-[#0F5132]/50 hover:text-[#1C1B18]'
-                    }`}
+                    className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium inline-flex items-center gap-1.5 border transition-colors ${active
+                      ? 'bg-[#0F5132] border-[#0F5132] text-white'
+                      : 'bg-[#FAF9F6] border-[#E5E2DC] text-[#57534E] hover:border-[#0F5132]/50 hover:text-[#1C1B18]'
+                      }`}
                   >
                     <span>{pill.label}</span>
                     <span
-                      className={`px-1.5 py-0.2 rounded-full font-mono-num text-[11px] ${
-                        active ? 'bg-white/20 text-white' : 'bg-[#EAE7E0] text-[#44403C]'
-                      }`}
+                      className={`px-1.5 py-0.2 rounded-full font-mono-num text-[11px] ${active ? 'bg-white/20 text-white' : 'bg-[#EAE7E0] text-[#44403C]'
+                        }`}
                     >
                       {pill.count}
                     </span>
@@ -1595,85 +1597,85 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
               </p>
             ) : (
               <>
-              <div className="overflow-x-auto border border-[#E5E2DC] rounded-xl">
-                <table className="w-full text-[12px]">
-                  <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
-                    <tr>
-                      <th className="text-left px-3 py-2 font-medium">Phòng</th>
-                      <th className="text-left px-3 py-2 font-medium">Họ tên / Quốc tịch</th>
-                      <th className="text-left px-3 py-2 font-medium">Hộ chiếu / Visa</th>
-                      <th className="text-left px-3 py-2 font-medium">Nhập cảnh / Hạn lưu trú</th>
-                      <th className="text-left px-3 py-2 font-medium">Trạng thái ASM</th>
-                      <th className="text-right px-3 py-2 font-medium">Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#F1EFEA]">
-                    {asmPag.pageItems.map(({ booking, occ }) => {
-                      const overstay =
-                        occ.stayPermitExpiryDate && occ.stayPermitExpiryDate < booking.checkOut;
-                      return (
-                        <tr key={`${booking.id}_${occ.occupantId}`}>
-                          <td className="px-3 py-2.5 font-mono-num font-semibold text-[#1B5E4B]">
-                            P.{booking.roomNumber}
-                          </td>
-                          <td className="px-3 py-2.5">
-                            <div className="font-medium text-[#1C1B18]">{occ.fullName}</div>
-                            <div className="text-[11px] text-[#57534E]">
-                              {formatCountryBadge(occ.nationality) || 'Chưa rõ'} • {occ.dob ? formatDateVN(occ.dob) : '—'}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2.5 font-mono-num">
-                            <div>PP: {occ.idNumber || '—'}</div>
-                            {occ.visaNumber && <div className="text-[11px]">Visa: {occ.visaNumber}</div>}
-                          </td>
-                          <td className="px-3 py-2.5 font-mono-num">
-                            <div>Vào: {formatDateVN(occ.entryDate)}</div>
-                            <div className={overstay ? 'text-[#B91C1C] font-semibold' : ''}>
-                              Hạn: {formatDateVN(occ.stayPermitExpiryDate)}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2.5">
-                            {occ.asmStatus === 'declared_asm' ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#ECFDF5] text-[#065F46] font-medium">
-                                <CheckCircle2 className="w-3 h-3" strokeWidth={1.5} /> Đã khai báo
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#FFFBEB] text-[#92400E] font-medium">
-                                <Globe className="w-3 h-3" strokeWidth={1.5} /> Yêu cầu khai báo ASM
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2.5 text-right">
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await markOccupantAsmDeclared(
-                                  booking,
-                                  occ.occupantId,
-                                  occ.asmStatus !== 'declared_asm',
-                                  actor
-                                );
-                                notify(`Đã cập nhật trạng thái ASM cho ${occ.fullName}`);
-                              }}
-                              className="h-7 px-2.5 rounded-lg border border-[#E5E2DC] hover:border-[#1B5E4B] text-[11px] font-medium"
-                            >
-                              {occ.asmStatus === 'declared_asm' ? 'Chuyển chờ' : 'Đánh dấu đã khai'}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <PaginationBar
-                testId="asm-pagination"
-                page={asmPag.page}
-                pageSize={asmPag.pageSize}
-                totalItems={asmPag.totalItems}
-                onPageChange={asmPag.setPage}
-                onPageSizeChange={asmPag.setPageSize}
-              />
+                <div className="overflow-x-auto border border-[#E5E2DC] rounded-xl">
+                  <table className="w-full text-[12px]">
+                    <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">Phòng</th>
+                        <th className="text-left px-3 py-2 font-medium">Họ tên / Quốc tịch</th>
+                        <th className="text-left px-3 py-2 font-medium">Hộ chiếu / Visa</th>
+                        <th className="text-left px-3 py-2 font-medium">Nhập cảnh / Hạn lưu trú</th>
+                        <th className="text-left px-3 py-2 font-medium">Trạng thái ASM</th>
+                        <th className="text-right px-3 py-2 font-medium">Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#F1EFEA]">
+                      {asmPag.pageItems.map(({ booking, occ }) => {
+                        const overstay =
+                          occ.stayPermitExpiryDate && occ.stayPermitExpiryDate < booking.checkOut;
+                        return (
+                          <tr key={`${booking.id}_${occ.occupantId}`}>
+                            <td className="px-3 py-2.5 font-mono-num font-semibold text-[#1B5E4B]">
+                              P.{booking.roomNumber}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <div className="font-medium text-[#1C1B18]">{occ.fullName}</div>
+                              <div className="text-[11px] text-[#57534E]">
+                                {formatCountryBadge(occ.nationality) || 'Chưa rõ'} • {occ.dob ? formatDateVN(occ.dob) : '—'}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2.5 font-mono-num">
+                              <div>PP: {occ.idNumber || '—'}</div>
+                              {occ.visaNumber && <div className="text-[11px]">Visa: {occ.visaNumber}</div>}
+                            </td>
+                            <td className="px-3 py-2.5 font-mono-num">
+                              <div>Vào: {formatDateVN(occ.entryDate)}</div>
+                              <div className={overstay ? 'text-[#B91C1C] font-semibold' : ''}>
+                                Hạn: {formatDateVN(occ.stayPermitExpiryDate)}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2.5">
+                              {occ.asmStatus === 'declared_asm' ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#ECFDF5] text-[#065F46] font-medium">
+                                  <CheckCircle2 className="w-3 h-3" strokeWidth={1.5} /> Đã khai báo
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#FFFBEB] text-[#92400E] font-medium">
+                                  <Globe className="w-3 h-3" strokeWidth={1.5} /> Yêu cầu khai báo ASM
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await markOccupantAsmDeclared(
+                                    booking,
+                                    occ.occupantId,
+                                    occ.asmStatus !== 'declared_asm',
+                                    actor
+                                  );
+                                  notify(`Đã cập nhật trạng thái ASM cho ${occ.fullName}`);
+                                }}
+                                className="h-7 px-2.5 rounded-lg border border-[#E5E2DC] hover:border-[#1B5E4B] text-[11px] font-medium"
+                              >
+                                {occ.asmStatus === 'declared_asm' ? 'Chuyển chờ' : 'Đánh dấu đã khai'}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <PaginationBar
+                  testId="asm-pagination"
+                  page={asmPag.page}
+                  pageSize={asmPag.pageSize}
+                  totalItems={asmPag.totalItems}
+                  onPageChange={asmPag.setPage}
+                  onPageSizeChange={asmPag.setPageSize}
+                />
               </>
             )}
           </div>
@@ -1739,11 +1741,10 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                     disabled={mergingWalkIn}
                     onClick={() => void handleMergeWalkInDuplicates()}
                     data-testid="merge-walkin-btn"
-                    className={`min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border text-[12px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 ${
-                      duplicateWalkInCount > 0
-                        ? 'border-[#F59E0B] bg-[#FFFBEB] text-[#92400E] hover:bg-[#FEF3C7]'
-                        : 'border-[#E5E2DC] bg-white text-[#57534E] hover:bg-[#F7F6F3]'
-                    }`}
+                    className={`min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border text-[12px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 ${duplicateWalkInCount > 0
+                      ? 'border-[#F59E0B] bg-[#FFFBEB] text-[#92400E] hover:bg-[#FEF3C7]'
+                      : 'border-[#E5E2DC] bg-white text-[#57534E] hover:bg-[#F7F6F3]'
+                      }`}
                     title="Gộp toàn bộ hồ sơ Khách lẻ vô danh trùng lặp về 1 hồ sơ hệ thống duy nhất (WALK_IN_DEFAULT)"
                   >
                     <Merge className="w-3.5 h-3.5" strokeWidth={1.6} />
@@ -1916,21 +1917,20 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                       setEditingGuest((prev) =>
                         prev
                           ? {
-                              ...prev,
-                              guestCategory: cat,
-                              nationality:
-                                cat === 'vietnamese'
-                                  ? 'VN'
-                                  : normalizeCountryCode(prev.nationality) === 'VN'
-                                    ? ''
-                                    : normalizeCountryCode(prev.nationality),
-                            }
+                            ...prev,
+                            guestCategory: cat,
+                            nationality:
+                              cat === 'vietnamese'
+                                ? 'VN'
+                                : normalizeCountryCode(prev.nationality) === 'VN'
+                                  ? ''
+                                  : normalizeCountryCode(prev.nationality),
+                          }
                           : null
                       )
                     }
-                    className={`px-3 py-1 rounded-md font-medium ${
-                      editingGuest.guestCategory === cat ? 'bg-white text-[#1C1B18]' : 'text-[#57534E]'
-                    }`}
+                    className={`px-3 py-1 rounded-md font-medium ${editingGuest.guestCategory === cat ? 'bg-white text-[#1C1B18]' : 'text-[#57534E]'
+                      }`}
                   >
                     {cat === 'vietnamese' ? 'Khách Việt Nam' : 'Khách nước ngoài'}
                   </button>
@@ -2104,11 +2104,10 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                       type="button"
                       title={c.label}
                       onClick={() => setGroupFormColor(c.hex)}
-                      className={`w-6 h-6 rounded-full border-2 transition-transform ${
-                        groupFormColor === c.hex
-                          ? 'border-[#1C1B18] scale-110'
-                          : 'border-white shadow-xs'
-                      }`}
+                      className={`w-6 h-6 rounded-full border-2 transition-transform ${groupFormColor === c.hex
+                        ? 'border-[#1C1B18] scale-110'
+                        : 'border-white shadow-xs'
+                        }`}
                       style={{ backgroundColor: c.hex }}
                     />
                   ))}
@@ -2214,6 +2213,39 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
           onClose={() => setResolveDepositBooking(null)}
         />
       )}
+
+      <ConfirmDialog
+        open={confirmMergeWalkInOpen}
+        title="Gộp hồ sơ Khách lẻ vô danh trùng lặp"
+        message={
+          duplicateWalkInCount > 0
+            ? `Gộp ${duplicateWalkInCount} hồ sơ "Khách lẻ" vô danh trùng lặp thành 1 hồ sơ hệ thống duy nhất (WALK_IN_DEFAULT) và đồng bộ lại toàn bộ đơn đặt phòng liên quan?`
+            : 'Đồng bộ lại hồ sơ hệ thống "Khách lẻ" (WALK_IN_DEFAULT) và tính lại tổng số lần lưu trú?'
+        }
+        confirmLabel="Xác nhận gộp"
+        busy={mergingWalkIn}
+        onConfirm={executeMergeWalkInDuplicates}
+        onCancel={() => setConfirmMergeWalkInOpen(false)}
+        testId="confirm-merge-walkin-dialog"
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmDeleteGroupTarget)}
+        title={`Xóa nhóm khách hàng "${confirmDeleteGroupTarget?.name || ''}"`}
+        variant="danger"
+        message={(() => {
+          if (!confirmDeleteGroupTarget) return '';
+          const usedCount = guests.filter((g) => g.customerGroupId === confirmDeleteGroupTarget.id).length;
+          return usedCount > 0
+            ? `Xóa nhóm "${confirmDeleteGroupTarget.name}"? Hiện có ${usedCount} khách thuộc nhóm này sẽ tự động chuyển về "Chưa phân nhóm".`
+            : `Xác nhận xóa nhóm khách hàng "${confirmDeleteGroupTarget.name}" khỏi danh mục?`;
+        })()}
+        confirmLabel="Xóa nhóm"
+        busy={deletingGroupBusy}
+        onConfirm={executeDeleteCustomerGroupItem}
+        onCancel={() => setConfirmDeleteGroupTarget(null)}
+        testId="confirm-delete-customer-group-dialog"
+      />
     </div>
   );
 };

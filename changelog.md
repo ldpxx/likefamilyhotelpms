@@ -7,6 +7,16 @@ Tất cả các thay đổi quan trọng của dự án **Like Family PMS** đ�
 
 ---
 
+## [2.2.2] - 28/11/2026 (Hệ thống AppModal & ConfirmDialog thay thế 100% hộp thoại trình duyệt)
+
+### Added
+- `src/components/AppDialogs.tsx`: bộ component `AppModal`, `ConfirmDialog` (`primary` / `danger`), `CurrencyInput` (định dạng phân tách hàng nghìn `VNĐ`), hỗ trợ phím `ESC`, nút Back vật lý Android và cỡ chữ input `16px` trên Mobile chống auto-zoom WebView.
+- Bộ 5 Modal Form trong `SettingsAndAdminView.tsx`: `RatePlanFormModal`, `RoomTypeFormModal`, `RoomFormModal`, `ServiceCatalogFormModal`, `SourceFormModal`.
+- `scripts/qa_app_dialogs_v222.mjs`: kiểm thử Playwright E2E xác nhận `0` native dialog trên Desktop & Mobile.
+
+### Changed
+- Thay thế triệt để toàn bộ 20 vị trí dùng `window.prompt()` / `window.confirm()` trong `SettingsAndAdminView.tsx`, `StaffAndAuditView.tsx`, `OtaReconciliationView.tsx`, `FinanceReportsView.tsx`, `BookingsAndGroupsView.tsx` và `App.tsx` bằng `AppModal` & `ConfirmDialog`.
+
 ## [2.2.2] - 28/11/2026 (Biểu mẫu: Wi-Fi dùng chung & Hiển thị số phòng)
 
 ### Added
