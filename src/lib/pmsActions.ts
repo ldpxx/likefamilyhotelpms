@@ -437,10 +437,10 @@ export async function mergeDuplicateWalkInGuests(
       data: {
         ...(shouldRelinkPrimary
           ? {
-              primaryGuestId: WALK_IN_DEFAULT_GUEST_ID,
-              primaryGuestName: 'Khách lẻ',
-              primaryGuestNormalizedName: 'khach le',
-            }
+            primaryGuestId: WALK_IN_DEFAULT_GUEST_ID,
+            primaryGuestName: 'Khách lẻ',
+            primaryGuestNormalizedName: 'khach le',
+          }
           : {}),
         occupants: nextOccupants,
         updatedAt: now,
@@ -475,7 +475,7 @@ export async function mergeDuplicateWalkInGuests(
     },
     reason: 'Dọn dẹp & gộp hồ sơ Khách lẻ vô danh trùng lặp thành 1 hồ sơ hệ thống duy nhất',
     actor,
-  }).catch(() => {});
+  }).catch(() => { });
 
   return {
     mergedGuestCount: duplicateGuests.length,
@@ -523,7 +523,7 @@ export async function saveCustomerGroup(
     newState: { name: cleanName, color: payload.color },
     reason: input.id ? 'Cập nhật nhóm khách hàng' : 'Thêm nhóm khách hàng mới',
     actor,
-  }).catch(() => {});
+  }).catch(() => { });
   return payload;
 }
 
@@ -547,7 +547,7 @@ export async function deleteCustomerGroup(
     newState: { clearedGuests: affected.length },
     reason: 'Xóa nhóm khách hàng khỏi danh mục',
     actor,
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 export async function assignGuestCustomerGroup(
@@ -558,6 +558,28 @@ export async function assignGuestCustomerGroup(
     customerGroupId: customerGroupId || null,
     updatedAt: new Date().toISOString(),
   });
+}
+
+export async function updateBookingNote(
+  booking: Booking,
+  nextNote: string,
+  actor: ActorInfo
+): Promise<void> {
+  const trimmed = nextNote.trim();
+  const now = new Date().toISOString();
+  await updateDoc(doc(db, 'bookings', booking.id), {
+    note: trimmed,
+    updatedAt: now,
+  });
+  await writeAuditLog({
+    actionType: 'update_booking',
+    targetId: booking.id,
+    targetLabel: `${booking.bookingCode} (P.${booking.roomNumber})`,
+    previousState: { note: booking.note || '' },
+    newState: { note: trimmed },
+    reason: 'Cập nhật ghi chú đặt phòng',
+    actor,
+  }).catch(() => {});
 }
 
 export async function saveGuestDocumentImages(params: {

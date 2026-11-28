@@ -1,17 +1,27 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRightLeft,
+  BedDouble,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Copy,
   CreditCard,
   FileText,
+  History,
   LogIn,
   LogOut,
   Merge,
-  MoreHorizontal,
+  MoreVertical,
+  Pencil,
   Plus,
   RotateCcw,
+  StickyNote,
   Trash2,
+  User,
+  Users,
   X,
 } from 'lucide-react';
 import { usePms } from '../context/PmsContext';
@@ -31,6 +41,7 @@ import {
   formatCurrency,
   formatDateTimeVN,
   formatDateVN,
+  formatShortDate,
   getBookingGuestBalance,
   getCancellationTypeLabel,
   getDepositResolutionLabel,
@@ -45,6 +56,7 @@ import {
 } from '../lib/utils';
 import {
   addBookingService,
+  bulkCheckInGroup,
   checkInBooking,
   checkOutBooking,
   consolidateRoomIntoTarget,
@@ -53,8 +65,10 @@ import {
   removeBookingService,
   transferBookingRoom,
   undoBookingAction,
+  updateBookingNote,
   updateBookingPricing,
   updateHourlySurcharge,
+  upsertGuestProfile,
 } from '../lib/pmsActions';
 import { buildVietQrUrl } from '../lib/vietqr';
 import { PricingEditor } from './PricingEditor';
@@ -65,9 +79,12 @@ import { UndoCancelModal } from './UndoCancelModal';
 import { PostStayAccountingModal, type PostStayModalMode } from './PostStayAccountingModal';
 import { ReclassifyPaymentModal } from './ReclassifyPaymentModal';
 
+export type BookingDetailTab = 'details' | 'occupants' | 'payment' | 'history';
+
 interface BookingDetailModalProps {
   bookingId: string;
-  initialTab?: 'overview' | 'occupants' | 'pricing' | 'transfer' | 'forms';
+  initialTab?: BookingDetailTab;
+  openTransferInitially?: boolean;
   preselectedTransferRoom?: Room | null;
   onClose: () => void;
   onOpenFormPreview: (booking: Booking, type: FormTemplateType) => void;
@@ -75,19 +92,22 @@ interface BookingDetailModalProps {
 
 export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
   bookingId,
-  initialTab = 'overview',
+  initialTab = 'details',
+  openTransferInitially = false,
   preselectedTransferRoom = null,
   onClose,
   onOpenFormPreview,
 }) => {
   const {
     bookings,
+    groups,
     activeRooms,
     roomTypes,
     guests,
     customerGroups,
     transactions,
     postCheckoutAdjustments,
+    auditLogs,
     hotelConfig,
     actor,
     isAdmin,
@@ -96,18 +116,62 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
     triggerUndoBanner,
   } = usePms();
 
-  const booking = bookings.find((b) => b.id === bookingId);
-  const [tab, setTab] = useState<'overview' | 'occupants' | 'pricing' | 'transfer' | 'forms'>(
-    preselectedTransferRoom ? 'transfer' : initialTab
+  const rootBooking = bookings.find((b) => b.id === bookingId);
+
+  const groupRecord = useMemo(
+    () => (rootBooking?.groupId ? groups.find((g) => g.id === rootBooking.groupId) : undefined),
+    [groups, rootBooking?.groupId]
   );
 
-  // Pricing edit state (daily or hourly)
-  const [editRates, setEditRates] = useState<DailyRate[]>(booking?.dailyRates || []);
-  const [editTierId, setEditTierId] = useState<string | null>(
-    booking?.selectedPriceTierId || null
+  const groupSiblings = useMemo(() => {
+    if (!rootBooking) return [];
+    if (!rootBooking.groupId) return [rootBooking];
+    const list = bookings
+      .filter((b) => b.groupId === rootBooking.groupId)
+      .sort((a, b) => a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true }));
+    return list.length > 0 ? list : [rootBooking];
+  }, [bookings, rootBooking]);
+
+  const [tab, setTab] = useState<BookingDetailTab>(initialTab);
+  const [selectedRoomId, setSelectedRoomId] = useState<string>(bookingId);
+
+  // Sync selected room & tab whenever bookingId changes (eliminates stale room/code mismatch!)
+  useEffect(() => {
+    setSelectedRoomId(bookingId);
+    setTab(initialTab);
+  }, [bookingId, initialTab]);
+
+  const booking = useMemo(
+    () => groupSiblings.find((b) => b.id === selectedRoomId) || rootBooking,
+    [groupSiblings, selectedRoomId, rootBooking]
   );
-  const [editHourlyHours, setEditHourlyHours] = useState<number>(booking?.hourlyHours || 2);
-  const [editHourlyTotal, setEditHourlyTotal] = useState<number>(booking?.grossRoomTotal || 0);
+
+  // Accordion state per room card + inline sub-editors (pricing / services / transfer)
+  const [expandedRoomIds, setExpandedRoomIds] = useState<Record<string, boolean>>(() => ({
+    [bookingId]: true,
+  }));
+  const [activeRoomSubPanel, setActiveRoomSubPanel] = useState<{
+    bookingId: string;
+    panel: 'pricing' | 'services' | 'transfer';
+  } | null>(() =>
+    openTransferInitially || preselectedTransferRoom
+      ? { bookingId, panel: 'transfer' }
+      : null
+  );
+  const [openRoomActionMenuId, setOpenRoomActionMenuId] = useState<string | null>(null);
+
+  // General Info inline editing (Guest name/phone + Booking Note)
+  const [editingGuestBasic, setEditingGuestBasic] = useState(false);
+  const [guestNameDraft, setGuestNameDraft] = useState('');
+  const [guestPhoneDraft, setGuestPhoneDraft] = useState('');
+  const [editingNote, setEditingNote] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+
+  // Pricing edit state (scoped to active sub-panel room)
+  const [editRates, setEditRates] = useState<DailyRate[]>([]);
+  const [editTierId, setEditTierId] = useState<string | null>(null);
+  const [editHourlyHours, setEditHourlyHours] = useState<number>(2);
+  const [editHourlyTotal, setEditHourlyTotal] = useState<number>(0);
 
   // Service state (quick-pick from centralized serviceCatalog OR custom entry)
   const [serviceCatalogFilter, setServiceCatalogFilter] = useState<'all' | ServiceItemGroup>('all');
@@ -117,41 +181,120 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
   const [serviceName, setServiceName] = useState('');
   const [serviceQty, setServiceQty] = useState(1);
   const [servicePrice, setServicePrice] = useState(20000);
-
-  // Hourly surcharge state
-  const [surchargeAmount, setSurchargeAmount] = useState(booking?.hourlySurcharge || 0);
-  const [surchargeNote, setSurchargeNote] = useState(booking?.hourlySurchargeNote || '');
+  const [surchargeAmount, setSurchargeAmount] = useState(0);
+  const [surchargeNote, setSurchargeNote] = useState('');
 
   // Payment form state
   const [payAmount, setPayAmount] = useState(0);
   const [payType, setPayType] = useState<'payment' | 'deposit' | 'refund'>('payment');
   const [payMethod, setPayMethod] = useState<PaymentMethod>(
-    booking?.source === 'ota' ? 'ota_debt' : 'bank_transfer'
+    rootBooking?.source === 'ota' ? 'ota_debt' : 'bank_transfer'
   );
   const [payNote, setPayNote] = useState('');
+  const [showInlineQr, setShowInlineQr] = useState(false);
 
-  // Transfer room state
+  // Transfer & Merge state
   const [transferRoomId, setTransferRoomId] = useState(preselectedTransferRoom?.id || '');
   const [transferPricingMode, setTransferPricingMode] = useState<
     'new_room_rate' | 'keep_old_rate' | 'custom_rate'
   >('new_room_rate');
   const [transferCustomRate, setTransferCustomRate] = useState(400000);
-
-  // Room Merge state
   const [mergeTargetId, setMergeTargetId] = useState('');
   const [mergeMode, setMergeMode] = useState<'billing' | 'consolidate'>('billing');
 
-  // Undo prompt & v2.0.0 Cancellation / Part C Post-Stay Modals
+  // Header overflow menu, Undo, and Sub-modals
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [showUndoBox, setShowUndoBox] = useState(false);
   const [undoReason, setUndoReason] = useState('');
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
-  const [showInlineQr, setShowInlineQr] = useState(false);
-  const [showCancelModal, setShowCancelModal] = useState(false);
-  const [showDepositResModal, setShowDepositResModal] = useState(false);
-  const [showUndoCancelModal, setShowUndoCancelModal] = useState(false);
-  const [postStayMode, setPostStayMode] = useState<PostStayModalMode | null>(null);
+  const [cancelScope, setCancelScope] = useState<Booking[] | null>(null);
+  const [depositResBooking, setDepositResBooking] = useState<Booking | null>(null);
+  const [undoCancelBooking, setUndoCancelBooking] = useState<Booking | null>(null);
+  const [postStayTarget, setPostStayTarget] = useState<{
+    booking: Booking;
+    mode: PostStayModalMode;
+  } | null>(null);
   const [reclassifyTx, setReclassifyTx] = useState<(typeof transactions)[number] | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Android Back button support (Layer 2: closes BookingDetailModal cleanly without losing Layer 1 Quick-Preview — StrictMode safe)
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  const requestClose = () => {
+    const st = window.history.state as { lfpmsLayer?: string } | null;
+    if (st?.lfpmsLayer === 'booking_detail') {
+      window.history.back();
+      return;
+    }
+    onCloseRef.current();
+  };
+
+  useEffect(() => {
+    try {
+      const currentState = window.history.state as { lfpmsLayer?: string } | null;
+      if (currentState?.lfpmsLayer !== 'booking_detail') {
+        window.history.pushState({ lfpmsLayer: 'booking_detail', bookingId }, '');
+      }
+    } catch {
+      // Ignore History API restrictions
+    }
+
+    const handlePopState = () => {
+      const st = window.history.state as { lfpmsLayer?: string } | null;
+      if (st?.lfpmsLayer === 'booking_detail') return;
+      onCloseRef.current();
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        requestClose();
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [bookingId]);
+
+  useEffect(() => {
+    if (!rootBooking) return;
+    setGuestNameDraft(rootBooking.primaryGuestName || '');
+    setGuestPhoneDraft(rootBooking.primaryGuestPhone || '');
+    setNoteDraft(rootBooking.note || '');
+  }, [rootBooking?.id, rootBooking?.primaryGuestName, rootBooking?.primaryGuestPhone, rootBooking?.note]);
+
+  const siblingIdSet = useMemo(() => new Set(groupSiblings.map((b) => b.id)), [groupSiblings]);
+  const siblingCodeSet = useMemo(() => new Set(groupSiblings.map((b) => b.bookingCode)), [groupSiblings]);
+
+  const scopeTransactions = useMemo(
+    () =>
+      transactions
+        .filter((t) => (t.bookingId ? siblingIdSet.has(t.bookingId) : false))
+        .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')),
+    [transactions, siblingIdSet]
+  );
+
+  const scopePostAdjustments = useMemo(
+    () =>
+      postCheckoutAdjustments.filter((a) => siblingIdSet.has(a.bookingId)),
+    [postCheckoutAdjustments, siblingIdSet]
+  );
+
+  const scopeAuditLogs = useMemo(() => {
+    const gId = rootBooking?.groupId || '';
+    return auditLogs.filter((l) => {
+      if (l.targetId && (siblingIdSet.has(l.targetId) || (gId && l.targetId === gId))) return true;
+      const lbl = l.targetLabel || '';
+      for (const code of siblingCodeSet) {
+        if (code && lbl.includes(code)) return true;
+      }
+      if (groupRecord?.groupCode && lbl.includes(groupRecord.groupCode)) return true;
+      return false;
+    });
+  }, [auditLogs, siblingIdSet, siblingCodeSet, rootBooking?.groupId, groupRecord?.groupCode]);
 
   const chainBookings = useMemo(() => {
     if (!booking?.bookingChainId) return [];
@@ -160,71 +303,125 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
       .sort((a, b) => (a.chainSequence || 1) - (b.chainSequence || 1));
   }, [bookings, booking?.bookingChainId]);
 
-  const bookingTransactions = useMemo(
-    () => transactions.filter((t) => t.bookingId === booking?.id),
-    [transactions, booking?.id]
+  const activeServiceCatalog = useMemo(
+    () =>
+      (hotelConfig.serviceCatalog || [])
+        .filter((item) => item.isActive !== false)
+        .sort((a, b) => (a.order || 0) - (b.order || 0)),
+    [hotelConfig.serviceCatalog]
   );
 
-  const bookingPostAdjustments = useMemo(
-    () => postCheckoutAdjustments.filter((a) => a.bookingId === booking?.id),
-    [postCheckoutAdjustments, booking?.id]
+  const filteredServiceCatalog = useMemo(
+    () =>
+      serviceCatalogFilter === 'all'
+        ? activeServiceCatalog
+        : activeServiceCatalog.filter((item) => item.category === serviceCatalogFilter),
+    [activeServiceCatalog, serviceCatalogFilter]
   );
 
-  const transferableRooms = useMemo(() => {
-    if (!booking) return [];
-    const start = booking.status === 'in_house' ? todayISO() : booking.checkIn;
-    return activeRooms.filter((r) => {
-      if (r.id === booking.roomId || r.hkStatus === 'maintenance') return false;
-      const conflict = bookings.some(
-        (b) =>
-          b.id !== booking.id &&
-          b.roomId === r.id &&
-          isBookingBlockingCalendar(b.status) &&
-          isDateRangeOverlap(b.checkIn, b.checkOut, start, booking.checkOut)
-      );
-      return !conflict;
-    });
-  }, [activeRooms, bookings, booking]);
+  if (!rootBooking || !booking) return null;
 
-  const mergeCandidates = useMemo(() => {
-    if (!booking) return [];
-    return bookings.filter(
-      (b) => b.id !== booking.id && (b.status === 'in_house' || b.status === 'reserved')
-    );
-  }, [bookings, booking]);
+  const isMultiRoomGroup = groupSiblings.length > 1;
+  const headerCode = isMultiRoomGroup
+    ? groupRecord?.groupCode || rootBooking.bookingCode.replace(/-\d+$/, '')
+    : rootBooking.bookingCode;
 
-  if (!booking) return null;
-
-  const roomType = roomTypes.find((rt) => rt.id === booking.roomTypeId);
-  const primaryGuestRecord = guests.find((g) => g.id === booking.primaryGuestId);
+  const primaryGuestRecord = guests.find((g) => g.id === rootBooking.primaryGuestId);
   const primaryGuestGroup = primaryGuestRecord?.customerGroupId
     ? customerGroups.find((cg) => cg.id === primaryGuestRecord.customerGroupId)
     : undefined;
 
+  const nonCancelledSiblings = groupSiblings.filter(
+    (b) => b.status !== 'cancelled' && b.status !== 'no_show'
+  );
+  const metricsScope = nonCancelledSiblings.length > 0 ? nonCancelledSiblings : groupSiblings;
+  const scopeTotalAmount = metricsScope.reduce(
+    (s, b) => s + (b.grossRoomTotal || 0) + (b.serviceTotal || 0) + (b.hourlySurcharge || 0),
+    0
+  );
+  const scopeTotalPaid = metricsScope.reduce(
+    (s, b) => s + (b.depositPaid || 0) + (b.guestPaid || 0),
+    0
+  );
+  const scopeTotalBalance = Math.max(
+    0,
+    metricsScope.reduce((s, b) => s + Math.max(0, getBookingGuestBalance(b)), 0)
+  );
+
   const guestBalance = getBookingGuestBalance(booking);
   const today = todayISO();
-  const isHourly = booking.bookingMode === 'hourly';
-  const canEarlyCheckout = !isHourly && booking.status === 'in_house' && today < booking.checkOut;
+  const defaultCiTime = hotelConfig.checkInTime || '14:00';
+  const defaultCoTime = hotelConfig.checkOutTime || '12:00';
 
-  const earlyStayedNights = Math.max(1, diffDays(booking.checkIn, today));
-  const earlyGross = sumDailyRates(booking.dailyRates.slice(0, earlyStayedNights));
-  const earlyPaid = (booking.depositPaid || 0) + (booking.guestPaid || 0);
-  const earlySuggestedRefund = Math.max(
-    0,
-    earlyPaid - (earlyGross + (booking.serviceTotal || 0) + (booking.hourlySurcharge || 0))
-  );
+  const allRoomsExpanded = groupSiblings.every((b) => Boolean(expandedRoomIds[b.id]));
+  const toggleAllRooms = () => {
+    if (allRoomsExpanded) {
+      setExpandedRoomIds({});
+      setActiveRoomSubPanel(null);
+    } else {
+      const next: Record<string, boolean> = {};
+      for (const b of groupSiblings) next[b.id] = true;
+      setExpandedRoomIds(next);
+    }
+  };
+
+  const toggleSingleRoom = (id: string) => {
+    setExpandedRoomIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const openRoomSubPanel = (rb: Booking, panel: 'pricing' | 'services' | 'transfer') => {
+    setExpandedRoomIds((prev) => ({ ...prev, [rb.id]: true }));
+    setSelectedRoomId(rb.id);
+    if (activeRoomSubPanel?.bookingId === rb.id && activeRoomSubPanel.panel === panel) {
+      setActiveRoomSubPanel(null);
+      return;
+    }
+    if (panel === 'pricing') {
+      setEditRates(rb.dailyRates || []);
+      setEditTierId(rb.selectedPriceTierId || null);
+      setEditHourlyHours(rb.hourlyHours || 2);
+      setEditHourlyTotal(rb.grossRoomTotal || 0);
+    } else if (panel === 'services') {
+      setSurchargeAmount(rb.hourlySurcharge || 0);
+      setSurchargeNote(rb.hourlySurchargeNote || '');
+    } else if (panel === 'transfer') {
+      setTransferRoomId(preselectedTransferRoom?.id || '');
+    }
+    setActiveRoomSubPanel({ bookingId: rb.id, panel });
+  };
+
+  const getTransferableRoomsFor = (rb: Booking) => {
+    const start = rb.status === 'in_house' ? todayISO() : rb.checkIn;
+    return activeRooms.filter((r) => {
+      if (r.id === rb.roomId || r.hkStatus === 'maintenance') return false;
+      const conflict = bookings.some(
+        (b) =>
+          b.id !== rb.id &&
+          b.roomId === r.id &&
+          isBookingBlockingCalendar(b.status) &&
+          isDateRangeOverlap(b.checkIn, b.checkOut, start, rb.checkOut)
+      );
+      return !conflict;
+    });
+  };
+
+  const mergeCandidatesFor = (rb: Booking) =>
+    bookings.filter(
+      (b) => b.id !== rb.id && (b.status === 'in_house' || b.status === 'reserved')
+    );
 
   const vietQrUrl = buildVietQrUrl({
     bankAccount: hotelConfig.bankAccount,
-    amount: Math.max(0, guestBalance),
+    amount: Math.max(0, payAmount || guestBalance),
     addInfo: `THANH TOAN ${booking.bookingCode} P${booking.roomNumber}`,
   });
 
-  const handleCheckIn = async () => {
+  // --- Action Handlers ---
+  const handleCheckInRoom = async (rb: Booking) => {
     setBusy(true);
     try {
-      await checkInBooking(booking, actor);
-      notify(`Đã Check-in P.${booking.roomNumber} (${booking.primaryGuestName})`);
+      await checkInBooking(rb, actor);
+      notify(`Đã Check-in P.${rb.roomNumber} (${rb.primaryGuestName})`);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi Check-in', 'error');
     } finally {
@@ -232,19 +429,30 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
     }
   };
 
-  const handleCheckOut = async (early = false) => {
+  const handleBulkCheckInAll = async () => {
+    const reservedList = groupSiblings.filter((b) => b.status === 'reserved');
+    if (reservedList.length === 0) return;
     setBusy(true);
     try {
-      await checkOutBooking(booking, actor, {
-        earlyCheckOut: early,
-        refundAmount: early ? earlySuggestedRefund : 0,
-        refundMethod: 'cash',
-      });
-      notify(
-        early
-          ? `Đã chốt trả phòng sớm P.${booking.roomNumber} (${earlyStayedNights} đêm)`
-          : `Đã trả phòng P.${booking.roomNumber} — Phòng chuyển sang Chờ dọn`
-      );
+      if (reservedList.length === 1) {
+        await checkInBooking(reservedList[0], actor);
+        notify(`Đã Check-in P.${reservedList[0].roomNumber}`);
+      } else {
+        const count = await bulkCheckInGroup(reservedList, actor);
+        notify(`Đã Check-in cả đoàn (${count} phòng)`);
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi Check-in đoàn', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCheckOutRoom = async (rb: Booking) => {
+    setBusy(true);
+    try {
+      await checkOutBooking(rb, actor, { earlyCheckOut: false });
+      notify(`Đã trả phòng P.${rb.roomNumber} — Phòng chuyển sang Chờ dọn`);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi trả phòng', 'error');
     } finally {
@@ -252,101 +460,128 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
     }
   };
 
-  const handleCancel = () => {
-    setShowCancelModal(true);
-  };
-
-  const handleUndoNow = async () => {
-    if (!undoReason.trim()) {
-      notify('Vui lòng nhập lý do hoàn tác để lưu vết kiểm toán', 'warning');
+  const handleSaveGeneralGuest = async () => {
+    if (!guestNameDraft.trim()) {
+      notify('Họ tên khách không được để trống', 'warning');
       return;
     }
     setBusy(true);
     try {
-      await undoBookingAction({ booking, reason: undoReason, actor });
-      setShowUndoBox(false);
-      setUndoReason('');
-      notify('Đã hoàn tác thao tác và ghi nhận vào nhật ký audit_logs');
+      await upsertGuestProfile(
+        {
+          id: rootBooking.primaryGuestId,
+          fullName: guestNameDraft.trim(),
+          phone: guestPhoneDraft.trim(),
+          guestCategory: primaryGuestRecord?.guestCategory || 'vietnamese',
+          nationality: primaryGuestRecord?.nationality || 'VN',
+        },
+        guests,
+        false
+      );
+      notify('Đã cập nhật thông tin khách hàng');
+      setEditingGuestBasic(false);
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Không thể hoàn tác', 'error');
+      notify(err instanceof Error ? err.message : 'Lỗi cập nhật khách', 'error');
     } finally {
       setBusy(false);
     }
   };
 
-  const handleSavePricing = async () => {
+  const handleSaveNote = async () => {
     setBusy(true);
     try {
-      if (isHourly) {
+      await updateBookingNote(rootBooking, noteDraft, actor);
+      notify('Đã lưu ghi chú đặt phòng');
+      setEditingNote(false);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi lưu ghi chú', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSavePricingForRoom = async (rb: Booking) => {
+    setBusy(true);
+    try {
+      if (rb.bookingMode === 'hourly') {
         await updateBookingPricing(
-          booking,
-          { hourlyHours: editHourlyHours, hourlyRoomTotal: editHourlyTotal },
+          rb,
+          {
+            dailyRates: [{ date: rb.checkIn, rate: editHourlyTotal }],
+            selectedPriceTierId: null,
+            hourlyHours: editHourlyHours,
+            hourlyRoomTotal: editHourlyTotal,
+          },
           actor
         );
       } else {
         await updateBookingPricing(
-          booking,
-          { dailyRates: editRates, selectedPriceTierId: editTierId },
+          rb,
+          {
+            dailyRates: editRates,
+            selectedPriceTierId: editTierId,
+          },
           actor
         );
       }
-      notify('Đã cập nhật bảng giá phòng');
+      notify(`Đã lưu giá phòng P.${rb.roomNumber}`);
+      setActiveRoomSubPanel(null);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi lưu giá phòng', 'error');
     } finally {
       setBusy(false);
     }
   };
 
-  const activeServiceCatalog = useMemo(
-    () => (hotelConfig.serviceCatalog || []).filter((it) => it.isActive !== false),
-    [hotelConfig.serviceCatalog]
-  );
-
-  const handlePickCatalogItem = (item: ServiceCatalogItem) => {
+  const handleSelectCatalogItem = (item: ServiceCatalogItem) => {
     setServiceCustomMode(false);
     setSelectedCatalogId(item.id);
     setServiceName(item.name);
-    setServiceCategory(item.category);
     setServicePrice(item.price);
-    setServiceQty(1);
+    setServiceCategory(item.category);
   };
 
-  const handleAddService = async (e: React.FormEvent) => {
+  const handleAddServiceForRoom = async (e: React.FormEvent, rb: Booking) => {
     e.preventDefault();
-    if (!serviceName.trim()) return;
+    if (!serviceName.trim() || servicePrice <= 0) {
+      notify('Vui lòng chọn dịch vụ hoặc nhập tên & đơn giá hợp lệ', 'warning');
+      return;
+    }
     setBusy(true);
     try {
       await addBookingService(
-        booking,
+        rb,
         {
-          name: serviceName,
+          name: serviceName.trim(),
           quantity: serviceQty,
           unitPrice: servicePrice,
-          catalogItemId: serviceCustomMode ? undefined : selectedCatalogId || undefined,
           category: serviceCategory,
-          accountingLockDate: hotelConfig.accountingLockDate,
+          catalogItemId: serviceCustomMode ? undefined : selectedCatalogId || undefined,
         },
         actor
       );
       setServiceName('');
       setSelectedCatalogId('');
       setServiceQty(1);
-      notify('Đã thêm dịch vụ vào hóa đơn phòng');
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Không thể thêm dịch vụ', 'error');
+      notify(`Đã thêm dịch vụ vào P.${rb.roomNumber}`);
     } finally {
       setBusy(false);
     }
   };
 
-  const handleSaveSurcharge = async () => {
-    await updateHourlySurcharge(booking, surchargeAmount, surchargeNote, actor);
-    notify('Đã cập nhật phụ thu nhận sớm / trả muộn');
+  const handleSaveSurchargeForRoom = async (rb: Booking) => {
+    setBusy(true);
+    try {
+      await updateHourlySurcharge(rb, surchargeAmount, surchargeNote, actor);
+      notify(`Đã lưu phụ thu P.${rb.roomNumber}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    const amount = payAmount > 0 ? payAmount : Math.max(0, guestBalance);
-    if (amount <= 0 && payMethod !== 'ota_debt') {
+    if (payAmount <= 0) {
       notify('Vui lòng nhập số tiền lớn hơn 0', 'warning');
       return;
     }
@@ -357,59 +592,52 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
         type: payType,
         direction: payType === 'refund' ? 'out' : 'in',
         category:
-          payMethod === 'ota_debt'
-            ? 'Ghi nhận Công nợ OTA'
-            : payType === 'deposit'
-              ? 'Thu tiền đặt cọc'
-              : payType === 'refund'
-                ? 'Hoàn tiền cho khách'
-                : 'Thanh toán tiền phòng & dịch vụ',
-        amount: payMethod === 'ota_debt' ? booking.grossRoomTotal : amount,
+          payType === 'deposit'
+            ? 'Tiền cọc phòng'
+            : payType === 'refund'
+              ? 'Hoàn tiền khách'
+              : 'Thanh toán tiền phòng',
+        amount: payAmount,
         method: payMethod,
-        note: payNote || `Đơn ${booking.bookingCode} - P.${booking.roomNumber}`,
-        accountingLockDate: hotelConfig.accountingLockDate,
+        note: payNote,
         actor,
+        accountingLockDate: hotelConfig.accountingLockDate,
       });
       setPayAmount(0);
       setPayNote('');
-      notify(`Đã ghi nhận giao dịch (${getPaymentMethodLabel(payMethod)})`);
+      notify(`Đã ghi nhận giao dịch cho P.${booking.roomNumber}`);
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Lỗi ghi nhận thanh toán', 'error');
+      notify(err instanceof Error ? err.message : 'Lỗi ghi nhận giao dịch', 'error');
     } finally {
       setBusy(false);
     }
   };
 
-  const handleTransferRoom = async () => {
+  const handleTransferRoom = async (rb: Booking) => {
     const targetRoom = activeRooms.find((r) => r.id === transferRoomId);
     if (!targetRoom) {
-      notify('Vui lòng chọn phòng đích muốn chuyển sang', 'warning');
+      notify('Vui lòng chọn phòng đích cần chuyển', 'warning');
       return;
     }
-    const targetRt = roomTypes.find((t) => t.id === targetRoom.roomTypeId);
-    const targetDefaultRate =
-      targetRt?.priceTiers.find((p) => p.isDefault)?.price ||
-      targetRt?.priceTiers[0]?.price ||
-      350000;
-    const oldRate = booking.dailyRates[0]?.rate || 350000;
-    const chosenRate =
-      transferPricingMode === 'new_room_rate'
-        ? targetDefaultRate
+    const targetType = roomTypes.find((rt) => rt.id === targetRoom.roomTypeId);
+    const defaultTier = targetType?.priceTiers.find((p) => p.isDefault) || targetType?.priceTiers[0];
+    const resolvedTargetRate =
+      transferPricingMode === 'custom_rate'
+        ? transferCustomRate
         : transferPricingMode === 'keep_old_rate'
-          ? oldRate
-          : transferCustomRate;
-
+          ? rb.dailyRates?.[0]?.rate || defaultTier?.price || 400000
+          : defaultTier?.price || 400000;
     setBusy(true);
     try {
-      const { newBooking } = await transferBookingRoom({
-        booking,
+      await transferBookingRoom({
+        booking: rb,
         targetRoom,
-        transferDate: booking.status === 'in_house' ? todayISO() : booking.checkIn,
+        transferDate: today,
         pricingMode: transferPricingMode,
-        targetRoomRate: chosenRate,
+        targetRoomRate: resolvedTargetRate,
         actor,
       });
-      notify(`Đã chuyển phòng sang P.${newBooking.roomNumber} (${newBooking.bookingCode})`);
+      notify(`Đã chuyển P.${rb.roomNumber} → P.${targetRoom.roomNumber}`);
       onClose();
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi chuyển phòng', 'error');
@@ -418,28 +646,22 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
     }
   };
 
-  const handleMergeRooms = async () => {
+  const handleMergeRoom = async (rb: Booking) => {
     const target = bookings.find((b) => b.id === mergeTargetId);
     if (!target) {
-      notify('Vui lòng chọn phòng muốn ghép', 'warning');
+      notify('Vui lòng chọn đơn đích để ghép', 'warning');
       return;
     }
     setBusy(true);
     try {
       if (mergeMode === 'billing') {
-        const grp = await mergeBookingsIntoGroup(
-          [booking, target],
-          `Nhóm ghép P.${booking.roomNumber} + P.${target.roomNumber}`,
-          actor
-        );
-        notify(`Đã gộp hóa đơn chung vào ${grp.groupName}`);
+        await mergeBookingsIntoGroup([rb, target], '', actor);
+        notify(`Đã ghép hóa đơn P.${rb.roomNumber} chung với P.${target.roomNumber}`);
       } else {
-        await consolidateRoomIntoTarget(booking, target, actor);
-        notify(
-          `Đã dồn khách & kết chuyển công nợ P.${booking.roomNumber} sang P.${target.roomNumber}`
-        );
-        onClose();
+        await consolidateRoomIntoTarget(rb, target, actor);
+        notify(`Đã gộp toàn bộ khách & phí P.${rb.roomNumber} sang P.${target.roomNumber}`);
       }
+      onClose();
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi ghép phòng', 'error');
     } finally {
@@ -447,461 +669,1294 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
     }
   };
 
+  const handleUndoNow = async () => {
+    if (!undoReason.trim()) {
+      notify('Vui lòng nhập lý do hoàn tác', 'warning');
+      return;
+    }
+    setBusy(true);
+    try {
+      await undoBookingAction({ booking, reason: undoReason.trim(), actor });
+      triggerUndoBanner({
+        bookingId: booking.id,
+        actionType: 'undo',
+        label: `Đã hoàn tác P.${booking.roomNumber}`,
+        previousState: {},
+      });
+      setShowUndoBox(false);
+      setUndoReason('');
+      notify('Đã hoàn tác thao tác thành công');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Không thể hoàn tác', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reservedSiblings = groupSiblings.filter((b) => b.status === 'reserved');
+  const inHouseSiblings = groupSiblings.filter((b) => b.status === 'in_house');
+  const initials = (rootBooking.primaryGuestName || 'KH')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(-2)
+    .map((w) => w[0])
+    .join('');
+
+  const statusBadgeClass = (st: Booking['status']) =>
+    st === 'in_house'
+      ? 'bg-[#E8F3EC] text-[#0F5132]'
+      : st === 'reserved'
+        ? 'bg-[#FFFBEB] text-[#B45309]'
+        : st === 'cancelled' || st === 'no_show'
+          ? 'bg-[#FEF2F2] text-[#B91C1C]'
+          : 'bg-[#E6EFF1] text-[#335C67]';
+
   return (
     <div
-      className="fixed inset-0 left-0 right-0 top-0 bottom-0 w-screen max-w-[100vw] z-50 bg-black/40 flex justify-end overflow-hidden"
+      data-testid="booking-detail-modal-backdrop"
+      className="fixed inset-0 left-0 right-0 top-0 bottom-0 w-screen max-w-[100vw] z-50 bg-black/45 flex justify-end overflow-hidden"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
-      <div className="bg-white border-l border-[#E7E3DA] w-full max-w-[100vw] sm:max-w-3xl h-full flex flex-col shadow-2xl overflow-hidden">
-        {/* Top Drawer Header with Initials Avatar & 1-Click Copy */}
-        <div className="px-4 sm:px-6 py-4 border-b border-[#E7E3DA] flex flex-nowrap items-start justify-between gap-3 bg-white shrink-0">
-          <div className="flex items-start gap-3 flex-1 min-w-0">
-            <div className="w-10 h-10 rounded-xl bg-[#E8F3EC] text-[#0F5132] font-bold text-[13px] flex items-center justify-center shrink-0 uppercase">
-              {(booking.primaryGuestName || 'KH')
-                .split(/\s+/)
-                .filter(Boolean)
-                .slice(-2)
-                .map((w) => w[0])
-                .join('')}
-            </div>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="font-mono-num text-[15px] font-bold text-[#0F5132]">
-                  P.{booking.roomNumber}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(booking.bookingCode);
-                    notify(`Đã sao chép mã đơn ${booking.bookingCode}`, 'info');
-                  }}
-                  title="Sao chép mã đặt phòng"
-                  className="inline-flex items-center gap-1 font-mono-num text-[12px] text-[#57534E] hover:text-[#0F5132]"
-                >
-                  {booking.bookingCode}
-                  <Copy className="w-3 h-3" strokeWidth={1.5} />
-                </button>
-                <span className="px-2 py-0.5 rounded-full bg-[#E8F3EC] text-[11px] font-semibold text-[#0F5132]">
-                  {getStatusLabel(booking.status)}
-                </span>
-                {isHourly && (
-                  <span className="px-2 py-0.5 rounded-full bg-[#FFFBEB] text-[11px] font-medium text-[#B45309] inline-flex items-center gap-1">
-                    <Clock className="w-3 h-3" strokeWidth={1.5} />
-                    Nghỉ giờ ({booking.hourlyHours || 1}h)
-                  </span>
-                )}
-                <span className="px-2 py-0.5 rounded-full bg-[#FAF9F6] border border-[#E7E3DA] text-[11px] font-medium text-[#57534E]">
-                  {getSourceLabel(booking.source, booking.otaChannel, booking.sourceLabel)}
-                </span>
-                {primaryGuestGroup && (
-                  <span
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border"
-                    style={{
-                      backgroundColor: `${primaryGuestGroup.color}18`,
-                      borderColor: `${primaryGuestGroup.color}40`,
-                      color: primaryGuestGroup.color,
-                    }}
-                  >
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ backgroundColor: primaryGuestGroup.color }}
-                    />
-                    {primaryGuestGroup.name}
-                  </span>
-                )}
-                {booking.groupName && (
-                  <span className="px-2 py-0.5 rounded-full bg-[#F3F0E9] text-[11px] font-medium text-[#1C1B18]">
-                    Đoàn: {booking.groupName}
-                  </span>
-                )}
-                {booking.isBillingReopened && (
-                  <span className="px-2 py-0.5 rounded-full bg-[#FFFBEB] border border-[#FDE68A] text-[11px] font-medium text-[#92400E]">
-                    Mở lại sửa hóa đơn (không chiếm phòng)
-                  </span>
-                )}
-                {booking.voidCheckedOutAt && (
-                  <span className="px-2 py-0.5 rounded-full bg-[#FEF2F2] border border-[#FECACA] text-[11px] font-medium text-[#B91C1C]">
-                    Đã hủy ghi nhận sau Check-out
-                  </span>
-                )}
-              </div>
-              <p className="text-[13px] text-[#57534E] mt-0.5 flex flex-wrap items-center gap-1.5">
-                <strong className="text-[#1C1B18]">{booking.primaryGuestName}</strong>
-                {booking.primaryGuestPhone && (
+      <div
+        role="dialog"
+        aria-label="Chi tiết đơn đặt phòng"
+        data-testid="booking-detail-modal"
+        className="bg-white border-l border-[#E7E3DA] w-full max-w-[100vw] sm:max-w-2xl h-full flex flex-col shadow-2xl overflow-hidden"
+      >
+        {/* COMPACT 1-LINE FIXED HEADER (52px) */}
+        <div
+          data-testid="booking-detail-header"
+          className="h-[52px] px-2.5 sm:px-4 border-b border-[#E7E3DA] bg-white flex items-center justify-between gap-2 shrink-0"
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <button
+              type="button"
+              onClick={requestClose}
+              aria-label="Quay lại"
+              data-testid="booking-detail-back-btn"
+              className="w-9 h-9 rounded-lg hover:bg-[#F5F4F0] text-[#1C1B18] flex items-center justify-center shrink-0"
+            >
+              <ChevronLeft className="w-5 h-5" strokeWidth={1.9} />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText(headerCode);
+                notify(`Đã sao chép mã ${headerCode}`, 'info');
+              }}
+              data-testid="booking-detail-header-code"
+              className="inline-flex items-center gap-1 font-mono-num text-[14px] font-bold text-[#1C1B18] hover:text-[#0F5132] truncate"
+              title="Bấm sao chép mã đơn"
+            >
+              {!isMultiRoomGroup && (
+                <span className="text-[#0F5132]">P.{rootBooking.roomNumber} ·</span>
+              )}
+              <span className="truncate">{headerCode}</span>
+              <Copy className="w-3 h-3 text-[#8A847C] shrink-0" strokeWidth={1.6} />
+            </button>
+
+            {isMultiRoomGroup ? (
+              <span
+                data-testid="booking-detail-room-count"
+                className="px-2 py-0.5 rounded-full bg-[#E8F3EC] text-[#0F5132] text-[11px] font-semibold shrink-0"
+              >
+                {groupSiblings.length} phòng
+              </span>
+            ) : (
+              <span
+                className={`px-2 py-0.5 rounded-full text-[11px] font-semibold shrink-0 ${statusBadgeClass(
+                  rootBooking.status
+                )}`}
+              >
+                {getStatusLabel(rootBooking.status)}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0 relative">
+            <button
+              type="button"
+              onClick={() => setShowHeaderMenu((v) => !v)}
+              aria-label="Tùy chọn khác"
+              data-testid="booking-detail-header-menu-btn"
+              className="relative z-50 w-9 h-9 rounded-lg hover:bg-[#F5F4F0] text-[#57534E] flex items-center justify-center"
+            >
+              <MoreVertical className="w-4 h-4" strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              onClick={requestClose}
+              aria-label="Đóng"
+              data-testid="booking-detail-close-btn"
+              className="w-9 h-9 rounded-lg hover:bg-[#F5F4F0] text-[#57534E] flex items-center justify-center"
+            >
+              <X className="w-4 h-4" strokeWidth={1.75} />
+            </button>
+
+            {showHeaderMenu && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setShowHeaderMenu(false)}
+                />
+                <div className="absolute right-0 top-10 z-50 w-60 bg-white border border-[#E7E3DA] rounded-xl shadow-2xl py-1.5 text-[12px]">
+                  {booking.status !== 'cancelled' &&
+                    booking.status !== 'no_show' &&
+                    booking.lastActionSnapshot &&
+                    !['check_in', 'check_out', 'early_checkout'].includes(
+                      String(booking.lastActionSnapshot.action || '')
+                    ) &&
+                    staffProfile?.permissions.canUndoAction && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          setShowUndoBox(true);
+                        }}
+                        className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FFFBEB] text-[#92400E] font-medium flex items-center gap-2"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" /> Hoàn tác thao tác vừa rồi
+                      </button>
+                    )}
+
                   <button
                     type="button"
                     onClick={() => {
-                      navigator.clipboard?.writeText(booking.primaryGuestPhone);
-                      notify(`Đã sao chép SĐT ${booking.primaryGuestPhone}`, 'info');
+                      setShowHeaderMenu(false);
+                      onOpenFormPreview(booking, 'payment_receipt');
                     }}
-                    className="inline-flex items-center gap-1 font-mono-num text-[12px] hover:text-[#0F5132]"
-                    title="Sao chép SĐT"
+                    className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FAF9F6] text-[#1C1B18] flex items-center gap-2"
                   >
-                    • {booking.primaryGuestPhone}
-                    <Copy className="w-3 h-3" strokeWidth={1.5} />
+                    <FileText className="w-3.5 h-3.5 text-[#0F5132]" /> In Phiếu thanh toán & VietQR
                   </button>
-                )}
-                <span className="font-mono-num text-[12px]">
-                  •{' '}
-                  {isHourly
-                    ? `${formatDateVN(booking.checkIn)} (${booking.checkInTime || ''} → ${booking.checkOutTime || ''
-                    } • ${booking.hourlyHours || 1} giờ)`
-                    : `${formatDateVN(booking.checkIn)} → ${formatDateVN(booking.checkOut)} (${booking.nights
-                    } đêm)`}
-                </span>
-              </p>
-            </div>
-          </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      onOpenFormPreview(booking, 'booking_confirmation');
+                    }}
+                    className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FAF9F6] text-[#1C1B18] flex items-center gap-2"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-[#57534E]" /> In Phiếu xác nhận đặt phòng
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      onOpenFormPreview(booking, 'registration_card');
+                    }}
+                    className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FAF9F6] text-[#1C1B18] flex items-center gap-2"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-[#57534E]" /> In Phiếu đăng ký nhận phòng
+                  </button>
 
-          <div className="flex items-center gap-2">
-            {booking.status !== 'cancelled' &&
-              booking.status !== 'no_show' &&
-              booking.lastActionSnapshot &&
-              !['check_in', 'check_out', 'early_checkout'].includes(
-                String(booking.lastActionSnapshot.action || '')
-              ) &&
-              staffProfile?.permissions.canUndoAction && (
-                <button
-                  type="button"
-                  onClick={() => setShowUndoBox((v) => !v)}
-                  className="h-8 px-3 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] text-[#92400E] text-[12px] font-medium inline-flex items-center gap-1.5"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  Hoàn tác
-                </button>
-              )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-8 h-8 rounded-lg hover:bg-[#FAF9F6] flex items-center justify-center text-[#57534E]"
-            >
-              <X className="w-4 h-4" strokeWidth={1.5} />
-            </button>
+                  {booking.status === 'checked_out' && isAdmin && (
+                    <>
+                      <div className="my-1 border-t border-[#F1EFEA]" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          setPostStayTarget({ booking, mode: 'reopen_checked_out' });
+                        }}
+                        className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FAF9F6] text-[#0F5132] font-medium"
+                      >
+                        Mở lại đơn (Hóa đơn / Lưu trú)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          setPostStayTarget({ booking, mode: 'post_checkout_adjustment' });
+                        }}
+                        className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
+                      >
+                        Điều chỉnh / Phụ thu sau Check-out
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          setPostStayTarget({ booking, mode: 'void_checked_out' });
+                        }}
+                        className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FEF2F2] text-[#B91C1C] font-medium"
+                      >
+                        Hủy đơn đã trả phòng (Void)
+                      </button>
+                    </>
+                  )}
+
+                  {reservedSiblings.length > 0 && (
+                    <>
+                      <div className="my-1 border-t border-[#F1EFEA]" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          setCancelScope(isMultiRoomGroup ? reservedSiblings : [booking]);
+                        }}
+                        className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FEF2F2] text-[#B91C1C] font-medium"
+                      >
+                        {isMultiRoomGroup ? 'Hủy một phần / cả đoàn' : 'Hủy đặt phòng'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
         {/* Universal Undo Reason Bar */}
         {showUndoBox && (
-          <div className="px-6 py-3 bg-[#FFFBEB] border-b border-[#FDE68A] flex flex-wrap items-center gap-2">
+          <div className="px-4 py-2.5 bg-[#FFFBEB] border-b border-[#FDE68A] flex flex-wrap items-center gap-2 shrink-0">
             <input
               type="text"
               value={undoReason}
               onChange={(e) => setUndoReason(e.target.value)}
-              placeholder="Nhập lý do hoàn tác (bắt buộc để lưu vết kiểm toán)..."
-              className="flex-1 min-w-[220px] h-8 px-3 rounded-lg border border-[#F59E0B] bg-white text-[12px]"
+              placeholder="Nhập lý do hoàn tác (bắt buộc lưu vết)..."
+              className="flex-1 min-w-[200px] h-9 px-3 rounded-lg border border-[#F59E0B] bg-white text-[12px]"
             />
             <button
               type="button"
-              onClick={handleUndoNow}
+              onClick={() => void handleUndoNow()}
               disabled={busy}
-              className="h-8 px-3.5 rounded-lg bg-[#B45309] text-white text-[12px] font-medium"
+              className="h-9 px-3.5 rounded-lg bg-[#B45309] text-white text-[12px] font-medium"
             >
-              Xác nhận hoàn tác
+              Xác nhận
             </button>
           </div>
         )}
 
-        {/* Tabs */}
-        <div className="px-6 border-b border-[#E5E2DC] bg-[#FAF9F6] flex overflow-x-auto gap-1">
-          {[
-            { id: 'overview', label: 'Tổng quan & Thanh toán' },
-            { id: 'occupants', label: `Khách lưu trú (${booking.occupantCount}) & AI OCR` },
-            { id: 'pricing', label: 'Giá phòng, Dịch vụ & Phụ thu' },
-            { id: 'transfer', label: 'Đổi / Ghép phòng' },
-            { id: 'forms', label: 'Biểu mẫu & VietQR' },
-          ].map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => {
-                setTab(t.id as typeof tab);
-                if (t.id === 'pricing') {
-                  setEditRates(booking.dailyRates);
-                  setEditHourlyHours(booking.hourlyHours || 2);
-                  setEditHourlyTotal(booking.grossRoomTotal);
-                }
-              }}
-              className={`shrink-0 px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap border-b-2 transition-colors ${tab === t.id
-                ? 'border-[#1B5E4B] text-[#1B5E4B]'
-                : 'border-transparent text-[#57534E] hover:text-[#1C1B18]'
-                }`}
-            >
-              {t.label}
-            </button>
-          ))}
+        {/* COMPACT 4-TAB BAR (Zero clipping on 390px screens!) */}
+        <div
+          data-testid="booking-detail-tabs"
+          className="grid grid-cols-4 border-b border-[#E5E2DC] bg-[#FAF9F6] shrink-0"
+        >
+          {(
+            [
+              { id: 'details', label: 'Chi tiết' },
+              { id: 'occupants', label: 'Khách & OCR' },
+              { id: 'payment', label: 'Thanh toán' },
+              { id: 'history', label: 'Lịch sử' },
+            ] as Array<{ id: BookingDetailTab; label: string }>
+          ).map((t) => {
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                data-testid={`booking-detail-tab-${t.id}`}
+                onClick={() => setTab(t.id)}
+                className={`min-h-[42px] px-1 text-[12px] sm:text-[13px] font-medium border-b-2 transition-colors whitespace-nowrap text-center ${active
+                  ? 'border-[#0F5132] text-[#0F5132] bg-white font-semibold'
+                  : 'border-transparent text-[#57534E] hover:text-[#1C1B18]'
+                  }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
         </div>
 
-        {/* Body */}
-        <div className="p-6 overflow-y-auto flex-1 space-y-5">
-          {tab === 'overview' && (
-            <>
-              {chainBookings.length > 1 && (
-                <div className="p-3.5 rounded-xl bg-[#EFF6FF] border border-[#BFDBFE] space-y-1.5 text-[12px]">
-                  <div className="font-semibold text-[#1E40AF]">
-                    Chuỗi chặng chuyển phòng (Split-Stay — {chainBookings.length} chặng)
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {chainBookings.map((leg) => (
-                      <div
-                        key={leg.id}
-                        className={`px-2.5 py-1 rounded-lg border ${leg.id === booking.id
-                          ? 'bg-[#1D4ED8] text-white border-[#1D4ED8]'
-                          : 'bg-white text-[#1C1B18] border-[#BFDBFE]'
-                          }`}
-                      >
-                        Chặng {leg.chainSequence || 1}: P.{leg.roomNumber} ({leg.nights}đ) •{' '}
-                        {formatCurrency(leg.grossRoomTotal)}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="text-[#1E3A8A] font-mono-num">
-                    Tổng tiền phòng gộp cả chuỗi:{' '}
-                    <strong>
-                      {formatCurrency(chainBookings.reduce((s, l) => s + l.grossRoomTotal, 0))}
-                    </strong>
-                  </div>
+        {/* MAIN SCROLLABLE CONTENT */}
+        <div className="flex-1 overflow-y-auto p-3.5 sm:p-5 space-y-4 bg-[#FAF9F6]/50">
+          {/* Status / Pending Deposit / Cancelled Alerts */}
+          {(booking.status === 'cancelled' || booking.status === 'no_show') && (
+            <div className="p-3.5 rounded-xl bg-[#FEF2F2] border border-[#FECACA] text-[12px] space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-semibold text-[#991B1B]">
+                  {booking.status === 'no_show'
+                    ? 'Không đến (No-show)'
+                    : booking.cancellationType
+                      ? getCancellationTypeLabel(booking.cancellationType)
+                      : 'Đơn đã hủy'}
+                  {booking.cancelledAt ? ` • ${formatDateTimeVN(booking.cancelledAt)}` : ''}
                 </div>
-              )}
-
-              {/* Financial Summary Grid (Simplified OTA — Direct Receivable Amount) */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6]">
-                  <div className="text-[11px] text-[#57534E]">
-                    {isHourly ? `Tiền phòng giờ (${booking.hourlyHours}h)` : 'Tiền phòng thực thu'}
-                  </div>
-                  <div className="mt-1 text-[16px] font-semibold font-mono-num text-[#1C1B18]">
-                    {formatCurrency(booking.grossRoomTotal)}
-                  </div>
-                  {booking.paymentMethod === 'ota_debt' && (
-                    <div className="text-[11px] text-[#C2410C] font-medium">
-                      Hình thức: Công nợ OTA
-                    </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {booking.depositResolutionStatus === 'pending_deposit_resolution' && (
+                    <button
+                      type="button"
+                      onClick={() => setDepositResBooking(booking)}
+                      className="h-8 px-3 rounded-lg bg-[#D97706] text-white font-semibold"
+                    >
+                      Xử lý cọc treo ({formatCurrency(booking.pendingDepositAmount)})
+                    </button>
                   )}
-                </div>
-                <div className="p-3.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6]">
-                  <div className="text-[11px] text-[#57534E]">Dịch vụ & Phụ thu giờ</div>
-                  <div className="mt-1 text-[16px] font-semibold font-mono-num text-[#1C1B18]">
-                    {formatCurrency((booking.serviceTotal || 0) + (booking.hourlySurcharge || 0))}
-                  </div>
-                </div>
-                <div className="p-3.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6]">
-                  <div className="text-[11px] text-[#57534E]">Khách đã cọc / thanh toán</div>
-                  <div className="mt-1 text-[16px] font-semibold font-mono-num text-[#15803D]">
-                    {formatCurrency((booking.depositPaid || 0) + (booking.guestPaid || 0))}
-                  </div>
-                </div>
-                <div
-                  className={`p-3.5 rounded-xl border ${guestBalance > 0
-                    ? 'border-[#FDE68A] bg-[#FFFBEB]'
-                    : 'border-[#A7F3D0] bg-[#ECFDF5]'
-                    }`}
-                >
-                  <div className="text-[11px] text-[#57534E]">Khách cần thanh toán tại quầy</div>
-                  <div
-                    className={`mt-1 text-[16px] font-semibold font-mono-num ${guestBalance > 0 ? 'text-[#B45309]' : 'text-[#15803D]'
-                      }`}
+                  <button
+                    type="button"
+                    onClick={() => setUndoCancelBooking(booking)}
+                    className="h-8 px-3 rounded-lg border border-[#1B5E4B] bg-white text-[#1B5E4B] font-medium"
                   >
-                    {formatCurrency(Math.max(0, guestBalance))}
-                  </div>
-                  {(booking.transferredBalance || 0) > 0 && (
-                    <div className="text-[11px] text-[#0F5132] mt-0.5 font-mono-num">
-                      Gồm công nợ nhận chuyển: +{formatCurrency(booking.transferredBalance || 0)}
-                    </div>
-                  )}
-                  {booking.consolidatedInto && (
-                    <div className="text-[11px] text-[#57534E] mt-0.5">
-                      Đã chuyển công nợ ({formatCurrency(booking.balanceTransferredOut || 0)}) sang đơn ghép
-                    </div>
-                  )}
+                    Khôi phục đơn
+                  </button>
                 </div>
               </div>
+              {booking.cancellationReason && (
+                <div className="text-[#7F1D1D]">Lý do: {booking.cancellationReason}</div>
+              )}
+              {booking.depositResolutionStatus && booking.depositResolutionStatus !== 'none' && (
+                <div className="text-[#92400E] font-medium">
+                  Tiền cọc: {getDepositResolutionLabel(booking.depositResolutionStatus)}
+                  {booking.otaCancelStatus && booking.otaCancelStatus !== 'none'
+                    ? ` • OTA: ${getOtaCancelStatusLabel(booking.otaCancelStatus)}`
+                    : ''}
+                </div>
+              )}
+            </div>
+          )}
 
-              {/* v2.0.0 Cancellation / No-Show Status & Strict Undo Cancel Card */}
-              {(booking.status === 'cancelled' || booking.status === 'no_show') && (
-                <div className="p-4 rounded-xl border border-[#FECACA] bg-[#FEF2F2]/60 space-y-3 text-[12px]">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="text-[13px] font-semibold text-[#991B1B]">
-                        {getCancellationTypeLabel(booking.cancellationType)} •{' '}
-                        {getStatusLabel(booking.status)}
+          {/* ================= TAB 1: CHI TIẾT (HIERARCHICAL ACCORDION) ================= */}
+          {tab === 'details' && (
+            <>
+              {/* KHỐI 1 — THÔNG TIN CHUNG */}
+              <section
+                data-testid="detail-general-info"
+                className="bg-white border border-[#E7E3DA] rounded-2xl p-4 space-y-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-[11px] font-bold tracking-wider uppercase text-[#8A847C]">
+                    Thông tin chung
+                  </h3>
+                  {!editingGuestBasic && (
+                    <button
+                      type="button"
+                      onClick={() => setEditingGuestBasic(true)}
+                      className="text-[12px] text-[#0F5132] font-medium inline-flex items-center gap-1 hover:underline"
+                    >
+                      <Pencil className="w-3 h-3" /> Sửa
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-[#E8F3EC] text-[#0F5132] font-bold text-[14px] flex items-center justify-center shrink-0 uppercase">
+                    {initials}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    {editingGuestBasic ? (
+                      <div className="space-y-2">
+                        <input
+                          type="text"
+                          value={guestNameDraft}
+                          onChange={(e) => setGuestNameDraft(e.target.value)}
+                          placeholder="Họ và tên khách"
+                          className="w-full h-9 px-2.5 rounded-lg border border-[#0F5132] text-[13px]"
+                        />
+                        <input
+                          type="tel"
+                          value={guestPhoneDraft}
+                          onChange={(e) => setGuestPhoneDraft(e.target.value)}
+                          placeholder="Số điện thoại"
+                          className="w-full h-9 px-2.5 rounded-lg border border-[#E7E3DA] text-[13px] font-mono-num"
+                        />
+                        <div className="flex gap-1.5">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handleSaveGeneralGuest()}
+                            className="h-8 px-3 rounded-lg bg-[#0F5132] text-white text-[12px] font-medium"
+                          >
+                            Lưu
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingGuestBasic(false)}
+                            className="h-8 px-3 rounded-lg border border-[#E7E3DA] text-[#57534E] text-[12px]"
+                          >
+                            Hủy
+                          </button>
+                        </div>
                       </div>
-                      <div className="text-[#57534E]">
-                        Lý do: <strong>{booking.cancellationReason || '—'}</strong> • Thực hiện bởi{' '}
-                        {booking.cancelledBy || '—'} ({formatDateTimeVN(booking.cancelledAt)})
-                      </div>
-                      <div className="text-[#1C1B18]">
-                        Xử lý tiền cọc:{' '}
-                        <strong>{getDepositResolutionLabel(booking.depositResolutionStatus)}</strong>
-                        {booking.depositResolutionStatus === 'pending_deposit_resolution' && (
-                          <span className="ml-1.5 font-mono-num font-semibold text-[#B45309]">
-                            (Đang treo {formatCurrency(booking.pendingDepositAmount)})
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-semibold text-[15px] text-[#1C1B18] truncate">
+                            {isMultiRoomGroup && groupRecord?.leaderName
+                              ? groupRecord.leaderName
+                              : rootBooking.primaryGuestName}
                           </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const name =
+                                (isMultiRoomGroup && groupRecord?.leaderName) ||
+                                rootBooking.primaryGuestName;
+                              navigator.clipboard?.writeText(name);
+                              notify(`Đã sao chép tên "${name}"`, 'info');
+                            }}
+                            className="p-1 text-[#8A847C] hover:text-[#0F5132]"
+                            title="Sao chép tên khách"
+                          >
+                            <Copy className="w-3.5 h-3.5" strokeWidth={1.6} />
+                          </button>
+                          {primaryGuestGroup && (
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border"
+                              style={{
+                                backgroundColor: `${primaryGuestGroup.color}18`,
+                                borderColor: `${primaryGuestGroup.color}40`,
+                                color: primaryGuestGroup.color,
+                              }}
+                            >
+                              {primaryGuestGroup.name}
+                            </span>
+                          )}
+                        </div>
+                        {groupRecord?.groupName && (
+                          <div className="text-[12px] text-[#0F5132] font-medium truncate">
+                            Đoàn: {groupRecord.groupName}
+                          </div>
                         )}
-                        {booking.depositTransferredToBookingCode && (
-                          <span className="ml-1.5 text-[#1B5E4B]">
-                            → Đơn {booking.depositTransferredToBookingCode}
-                          </span>
-                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Aligned Key-Value Rows */}
+                <div className="divide-y divide-[#F3F0E9] border-t border-[#F3F0E9] text-[13px]">
+                  <div className="py-2 flex items-center justify-between gap-3">
+                    <span className="text-[#8A847C]">Số điện thoại</span>
+                    {rootBooking.primaryGuestPhone || groupRecord?.leaderPhone ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ph = rootBooking.primaryGuestPhone || groupRecord?.leaderPhone || '';
+                          navigator.clipboard?.writeText(ph);
+                          notify(`Đã sao chép SĐT ${ph}`, 'info');
+                        }}
+                        className="font-mono-num font-medium text-[#1C1B18] hover:text-[#0F5132] inline-flex items-center gap-1"
+                      >
+                        {rootBooking.primaryGuestPhone || groupRecord?.leaderPhone}
+                        <Copy className="w-3 h-3 text-[#8A847C]" />
+                      </button>
+                    ) : (
+                      <span className="text-[#8A847C]">—</span>
+                    )}
+                  </div>
+
+                  <div className="py-2 flex items-center justify-between gap-3">
+                    <span className="text-[#8A847C]">Email</span>
+                    {primaryGuestRecord?.email ? (
+                      <span className="font-medium text-[#1C1B18] truncate max-w-[60%] text-right">
+                        {primaryGuestRecord.email}
+                      </span>
+                    ) : (
+                      <span className="text-[#8A847C]">—</span>
+                    )}
+                  </div>
+
+                  <div className="py-2 flex items-center justify-between gap-3">
+                    <span className="text-[#8A847C]">Nguồn đặt phòng</span>
+                    <span className="font-medium text-[#1C1B18] text-right">
+                      {getSourceLabel(
+                        rootBooking.source,
+                        rootBooking.otaChannel,
+                        rootBooking.sourceLabel
+                      )}
+                      {rootBooking.otaBookingRef ? ` (${rootBooking.otaBookingRef})` : ''}
+                    </span>
+                  </div>
+
+                  <div className="py-2 flex items-center justify-between gap-3">
+                    <span className="text-[#8A847C]">Ngày đặt</span>
+                    <span className="font-mono-num text-[#1C1B18]">
+                      {rootBooking.createdAt ? formatDateTimeVN(rootBooking.createdAt) : '—'}
+                    </span>
+                  </div>
+
+                  <div className="pt-2 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[#8A847C] inline-flex items-center gap-1">
+                        <StickyNote className="w-3.5 h-3.5 text-[#D97706]" />
+                        Ghi chú đặt phòng
+                      </span>
+                      {!editingNote && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingNote(true)}
+                          className="text-[12px] text-[#0F5132] font-medium hover:underline"
+                        >
+                          {rootBooking.note ? 'Sửa' : '+ Thêm'}
+                        </button>
+                      )}
+                    </div>
+                    {editingNote ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={noteDraft}
+                          onChange={(e) => setNoteDraft(e.target.value)}
+                          placeholder="Nhập ghi chú..."
+                          className="flex-1 h-9 px-2.5 rounded-lg border border-[#0F5132] text-[12px]"
+                        />
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleSaveNote()}
+                          className="h-9 px-3 rounded-lg bg-[#0F5132] text-white text-[12px] font-medium"
+                        >
+                          Lưu
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingNote(false);
+                            setNoteDraft(rootBooking.note || '');
+                          }}
+                          className="h-9 px-2.5 rounded-lg border border-[#E7E3DA] text-[#57534E] text-[12px]"
+                        >
+                          Hủy
+                        </button>
                       </div>
-                      {booking.otaCancelStatus && booking.otaCancelStatus !== 'none' && (
-                        <div className="text-[#9A3412]">
-                          Trạng thái hủy OTA:{' '}
-                          <strong>{getOtaCancelStatusLabel(booking.otaCancelStatus)}</strong>
+                    ) : (
+                      <div
+                        className={`text-[12px] ${rootBooking.note ? 'text-[#1C1B18]' : 'text-[#8A847C] italic'
+                          }`}
+                      >
+                        {rootBooking.note || 'Chưa có ghi chú'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              {/* KHỐI 2 — PHÒNG · {số_phòng} (ACCORDION CARDS) */}
+              <section data-testid="detail-rooms-section" className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <h3 className="text-[11px] font-bold tracking-wider uppercase text-[#57534E] inline-flex items-center gap-1.5">
+                    <BedDouble className="w-3.5 h-3.5 text-[#0F5132]" strokeWidth={1.75} />
+                    <span>PHÒNG · {groupSiblings.length}</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={toggleAllRooms}
+                    data-testid="toggle-all-rooms-btn"
+                    className="min-h-[34px] px-2.5 rounded-lg text-[12px] font-semibold text-[#0F5132] hover:bg-[#E8F3EC] transition-colors"
+                  >
+                    {allRoomsExpanded ? 'Thu gọn tất cả' : 'Mở rộng tất cả'}
+                  </button>
+                </div>
+
+                {groupSiblings.map((rb) => {
+                  const isExp = Boolean(expandedRoomIds[rb.id]);
+                  const rbIsHourly = rb.bookingMode === 'hourly';
+                  const rbTotal =
+                    (rb.grossRoomTotal || 0) + (rb.serviceTotal || 0) + (rb.hourlySurcharge || 0);
+                  const rbCiTime = rb.checkInTime || defaultCiTime;
+                  const rbCoTime = rb.checkOutTime || defaultCoTime;
+                  const rbCanEarlyCo = !rbIsHourly && rb.status === 'in_house' && today < rb.checkOut;
+                  const rbSub = activeRoomSubPanel?.bookingId === rb.id ? activeRoomSubPanel.panel : null;
+                  const rbRoomType = roomTypes.find((rt) => rt.id === rb.roomTypeId);
+
+                  return (
+                    <div
+                      key={rb.id}
+                      data-testid={`room-accordion-card-${rb.roomNumber}`}
+                      className="bg-white border border-[#E7E3DA] rounded-2xl overflow-visible shadow-2xs"
+                    >
+                      {/* Accordion Summary Header */}
+                      <div className="p-3.5 flex items-start justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleSingleRoom(rb.id)}
+                          data-testid={`room-accordion-toggle-${rb.roomNumber}`}
+                          className="flex-1 min-w-0 text-left space-y-1"
+                        >
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <ChevronDown
+                              className={`w-4 h-4 text-[#57534E] shrink-0 transition-transform ${isExp ? '' : '-rotate-90'
+                                }`}
+                              strokeWidth={2}
+                            />
+                            <span className="font-mono-num text-[15px] font-bold text-[#1C1B18]">
+                              {rb.roomNumber}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${statusBadgeClass(
+                                rb.status
+                              )}`}
+                            >
+                              {getStatusLabel(rb.status)}
+                            </span>
+                            {rbIsHourly && (
+                              <span className="px-1.5 py-0.5 rounded bg-[#FFFBEB] text-[#B45309] text-[10px] font-medium">
+                                {rb.hourlyHours || 1} giờ
+                              </span>
+                            )}
+                          </div>
+                          <div className="pl-5 text-[12px] font-mono-num text-[#57534E] leading-snug">
+                            {formatShortDate(rb.checkIn)} · {rbCiTime} →{' '}
+                            {formatShortDate(rb.checkOut)} · {rbCoTime} ·{' '}
+                            {rbIsHourly ? `${rb.hourlyHours || 1}h` : `${rb.nights} đêm`} ·{' '}
+                            {Math.max(1, rb.occupantCount || 1)} NL ·{' '}
+                            <strong className="text-[#1C1B18]">{formatCurrency(rbTotal)}</strong>
+                          </div>
+                        </button>
+
+                        {/* Per-Room "Thao tác" Action Menu */}
+                        <div className="relative shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenRoomActionMenuId((cur) => (cur === rb.id ? null : rb.id));
+                            }}
+                            data-testid={`room-action-btn-${rb.roomNumber}`}
+                            className="min-h-[36px] px-2.5 rounded-lg border border-[#E7E3DA] bg-[#FAF9F6] hover:border-[#0F5132] text-[12px] font-semibold text-[#1C1B18] inline-flex items-center gap-1"
+                          >
+                            <span>Thao tác</span>
+                            <ChevronDown className="w-3.5 h-3.5 text-[#8A847C]" />
+                          </button>
+
+                          {openRoomActionMenuId === rb.id && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-40"
+                                onClick={() => setOpenRoomActionMenuId(null)}
+                              />
+                              <div className="absolute right-0 top-10 z-50 w-52 bg-white border border-[#E7E3DA] rounded-xl shadow-2xl py-1.5 text-[12px]">
+                                {rb.status === 'reserved' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenRoomActionMenuId(null);
+                                      void handleCheckInRoom(rb);
+                                    }}
+                                    className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#E8F3EC] text-[#0F5132] font-semibold flex items-center gap-2"
+                                  >
+                                    <LogIn className="w-3.5 h-3.5" /> Nhận phòng P.{rb.roomNumber}
+                                  </button>
+                                )}
+                                {rb.status === 'in_house' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenRoomActionMenuId(null);
+                                      void handleCheckOutRoom(rb);
+                                    }}
+                                    className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#E8F3EC] text-[#0F5132] font-semibold flex items-center gap-2"
+                                  >
+                                    <LogOut className="w-3.5 h-3.5" /> Trả phòng P.{rb.roomNumber}
+                                  </button>
+                                )}
+                                {rbCanEarlyCo && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenRoomActionMenuId(null);
+                                      setPostStayTarget({ booking: rb, mode: 'early_checkout' });
+                                    }}
+                                    className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FFFBEB] text-[#B45309] font-medium"
+                                  >
+                                    Trả phòng sớm
+                                  </button>
+                                )}
+                                {(rb.status === 'reserved' || rb.status === 'in_house') && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenRoomActionMenuId(null);
+                                      openRoomSubPanel(rb, 'transfer');
+                                    }}
+                                    className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FAF9F6] text-[#1C1B18] flex items-center gap-2"
+                                  >
+                                    <ArrowRightLeft className="w-3.5 h-3.5 text-[#57534E]" /> Đổi phòng / Ghép đơn
+                                  </button>
+                                )}
+                                {rb.status === 'in_house' && staffProfile?.permissions.canUndoAction && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenRoomActionMenuId(null);
+                                      setPostStayTarget({ booking: rb, mode: 'reverse_checkin' });
+                                    }}
+                                    className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FAF9F6] text-[#57534E]"
+                                  >
+                                    Đảo Check-in nhầm
+                                  </button>
+                                )}
+                                {rb.status === 'reserved' && (
+                                  <>
+                                    <div className="my-1 border-t border-[#F1EFEA]" />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenRoomActionMenuId(null);
+                                        setCancelScope([rb]);
+                                      }}
+                                      className="w-full min-h-[38px] px-3.5 text-left hover:bg-[#FEF2F2] text-[#B91C1C] font-medium"
+                                    >
+                                      Hủy phòng P.{rb.roomNumber}
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Expanded Body */}
+                      {isExp && (
+                        <div
+                          data-testid={`room-accordion-body-${rb.roomNumber}`}
+                          className="px-3.5 pb-3.5 pt-2 border-t border-[#F1EFEA] space-y-2.5 text-[13px]"
+                        >
+                          {/* Visual Check-in ── [Nights] ── Check-out inside room card */}
+                          <div className="p-2.5 rounded-xl bg-[#FAF9F6] border border-[#EFECE4] flex items-center justify-between gap-2 text-[12px]">
+                            <div>
+                              <div className="text-[10px] text-[#8A847C]">Nhận phòng</div>
+                              <div className="font-mono-num font-semibold text-[#1C1B18]">
+                                {formatShortDate(rb.checkIn)} · {rbCiTime}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="w-3 h-px bg-[#D6D1C7]" />
+                              <span className="px-2 py-0.5 rounded-full bg-white border border-[#E7E3DA] font-mono-num text-[11px] font-semibold text-[#0F5132]">
+                                {rbIsHourly ? `${rb.hourlyHours || 1} giờ` : `${rb.nights} đêm`}
+                              </span>
+                              <span className="w-3 h-px bg-[#D6D1C7]" />
+                            </div>
+                            <div className="text-right">
+                              <div className="text-[10px] text-[#8A847C]">Trả phòng</div>
+                              <div className="font-mono-num font-semibold text-[#1C1B18]">
+                                {formatShortDate(rb.checkOut)} · {rbCoTime}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Structured Detail Rows */}
+                          <div className="divide-y divide-[#F3F0E9]">
+                            <div className="py-2 flex items-center justify-between gap-2">
+                              <span className="text-[#8A847C]">Mã đặt phòng</span>
+                              <span className="font-mono-num text-[12px] font-medium text-[#1C1B18]">
+                                {rb.bookingCode}
+                              </span>
+                            </div>
+                            <div className="py-2 flex items-center justify-between gap-2">
+                              <span className="text-[#8A847C]">Loại phòng</span>
+                              <span className="font-medium text-[#1C1B18] text-right">
+                                {rb.roomTypeName}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedRoomId(rb.id);
+                                setTab('occupants');
+                              }}
+                              className="w-full py-2 flex items-center justify-between gap-2 text-left hover:bg-[#FAF9F6] rounded-lg px-1 -mx-1"
+                            >
+                              <span className="text-[#8A847C]">Khách lưu trú</span>
+                              <span className="font-medium text-[#1C1B18] inline-flex items-center gap-1">
+                                <User className="w-3.5 h-3.5 text-[#0F5132]" />
+                                {rb.primaryGuestName} ({Math.max(1, rb.occupantCount || 1)})
+                                <ChevronRight className="w-4 h-4 text-[#8A847C]" />
+                              </span>
+                            </button>
+
+                            {/* Clickable Room Rate Row -> Inline Pricing Editor */}
+                            <button
+                              type="button"
+                              onClick={() => openRoomSubPanel(rb, 'pricing')}
+                              data-testid={`room-edit-pricing-btn-${rb.roomNumber}`}
+                              className="w-full py-2 flex items-center justify-between gap-2 text-left hover:bg-[#FAF9F6] rounded-lg px-1 -mx-1"
+                            >
+                              <span className="text-[#8A847C]">Tiền phòng phải thu</span>
+                              <span className="font-mono-num font-semibold text-[#0F5132] inline-flex items-center gap-1">
+                                {formatCurrency(rb.grossRoomTotal)}
+                                <ChevronRight
+                                  className={`w-4 h-4 text-[#8A847C] transition-transform ${rbSub === 'pricing' ? 'rotate-90 text-[#0F5132]' : ''
+                                    }`}
+                                />
+                              </span>
+                            </button>
+
+                            {rbSub === 'pricing' && (
+                              <div
+                                data-testid={`room-pricing-editor-${rb.roomNumber}`}
+                                className="py-3 px-2.5 my-1 rounded-xl bg-[#FAF9F6] border border-[#E7E3DA] space-y-3"
+                              >
+                                {rbIsHourly ? (
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                      <label className="block text-[11px] text-[#57534E] mb-1">
+                                        Số giờ nghỉ
+                                      </label>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        max={12}
+                                        value={editHourlyHours}
+                                        onChange={(e) => {
+                                          const h = Math.max(1, Number(e.target.value) || 1);
+                                          setEditHourlyHours(h);
+                                          setEditHourlyTotal(
+                                            calculateHourlyRoomTotal(h, rbRoomType?.hourlyPricing)
+                                          );
+                                        }}
+                                        className="w-full h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[13px]"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[11px] text-[#57534E] mb-1">
+                                        Tổng tiền phòng giờ (VNĐ)
+                                      </label>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step={10000}
+                                        value={editHourlyTotal}
+                                        onChange={(e) =>
+                                          setEditHourlyTotal(Number(e.target.value) || 0)
+                                        }
+                                        className="w-full h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[13px]"
+                                      />
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <PricingEditor
+                                    roomType={rbRoomType}
+                                    dailyRates={editRates}
+                                    selectedTierId={editTierId}
+                                    onChange={(nextRates, nextTierId) => {
+                                      setEditRates(nextRates);
+                                      if (nextTierId !== undefined) setEditTierId(nextTierId);
+                                    }}
+                                    compact
+                                  />
+                                )}
+                                <div className="flex items-center justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveRoomSubPanel(null)}
+                                    className="h-8 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[12px] text-[#57534E]"
+                                  >
+                                    Đóng
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => void handleSavePricingForRoom(rb)}
+                                    data-testid={`room-save-pricing-btn-${rb.roomNumber}`}
+                                    className="h-8 px-3.5 rounded-lg bg-[#0F5132] text-white text-[12px] font-medium"
+                                  >
+                                    Lưu giá P.{rb.roomNumber}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Clickable Services & Surcharge Row -> Inline Service Picker */}
+                            <button
+                              type="button"
+                              onClick={() => openRoomSubPanel(rb, 'services')}
+                              data-testid={`room-edit-services-btn-${rb.roomNumber}`}
+                              className="w-full py-2 flex items-center justify-between gap-2 text-left hover:bg-[#FAF9F6] rounded-lg px-1 -mx-1"
+                            >
+                              <span className="text-[#8A847C]">
+                                Tiền dịch vụ ({(rb.services || []).length}) &amp; Phụ thu
+                              </span>
+                              <span className="font-mono-num font-semibold text-[#1C1B18] inline-flex items-center gap-1">
+                                {formatCurrency((rb.serviceTotal || 0) + (rb.hourlySurcharge || 0))}
+                                <ChevronRight
+                                  className={`w-4 h-4 text-[#8A847C] transition-transform ${rbSub === 'services' ? 'rotate-90 text-[#0F5132]' : ''
+                                    }`}
+                                />
+                              </span>
+                            </button>
+
+                            {rbSub === 'services' && (
+                              <div
+                                data-testid={`room-services-editor-${rb.roomNumber}`}
+                                className="py-3 px-2.5 my-1 rounded-xl bg-[#FAF9F6] border border-[#E7E3DA] space-y-3"
+                              >
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {(['all', 'drink', 'food', 'service'] as const).map((cat) => (
+                                    <button
+                                      key={cat}
+                                      type="button"
+                                      onClick={() => {
+                                        setServiceCustomMode(false);
+                                        setServiceCatalogFilter(cat);
+                                      }}
+                                      className={`h-7 px-2.5 rounded-md text-[11px] font-medium border ${!serviceCustomMode && serviceCatalogFilter === cat
+                                        ? 'bg-[#0F5132] text-white border-[#0F5132]'
+                                        : 'bg-white text-[#57534E] border-[#E5E2DC]'
+                                        }`}
+                                    >
+                                      {cat === 'all' ? 'Tất cả' : getServiceGroupLabel(cat)}
+                                    </button>
+                                  ))}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setServiceCustomMode(true);
+                                      setSelectedCatalogId('');
+                                      setServiceName('');
+                                    }}
+                                    className={`h-7 px-2.5 rounded-md text-[11px] font-medium border ${serviceCustomMode
+                                      ? 'bg-[#D97706] text-white border-[#D97706]'
+                                      : 'bg-white text-[#57534E] border-[#E5E2DC]'
+                                      }`}
+                                  >
+                                    + Nhập tự do
+                                  </button>
+                                </div>
+
+                                {!serviceCustomMode && filteredServiceCatalog.length > 0 && (
+                                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                                    {filteredServiceCatalog.map((item) => (
+                                      <button
+                                        key={item.id}
+                                        type="button"
+                                        onClick={() => handleSelectCatalogItem(item)}
+                                        className={`px-2.5 py-1 rounded-lg border text-[11px] transition-colors ${selectedCatalogId === item.id
+                                          ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132] font-semibold'
+                                          : 'border-[#E5E2DC] bg-white text-[#1C1B18]'
+                                          }`}
+                                      >
+                                        {item.name} ·{' '}
+                                        <span className="font-mono-num">
+                                          {formatCurrency(item.price)}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+
+                                <form
+                                  onSubmit={(e) => void handleAddServiceForRoom(e, rb)}
+                                  className="grid grid-cols-2 sm:grid-cols-12 gap-2"
+                                >
+                                  <input
+                                    type="text"
+                                    value={serviceName}
+                                    onChange={(e) => setServiceName(e.target.value)}
+                                    placeholder="Tên dịch vụ..."
+                                    className="col-span-2 sm:col-span-5 h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
+                                  />
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={serviceQty}
+                                    onChange={(e) => setServiceQty(Number(e.target.value) || 1)}
+                                    className="sm:col-span-2 h-9 px-2 rounded-lg border border-[#E5E2DC] bg-white text-[12px] font-mono-num"
+                                  />
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={5000}
+                                    value={servicePrice}
+                                    onChange={(e) => setServicePrice(Number(e.target.value) || 0)}
+                                    className="sm:col-span-3 h-9 px-2 rounded-lg border border-[#E5E2DC] bg-white text-[12px] font-mono-num"
+                                  />
+                                  <button
+                                    type="submit"
+                                    disabled={busy}
+                                    data-testid={`room-service-submit-btn-${rb.roomNumber}`}
+                                    className="col-span-2 sm:col-span-2 h-9 rounded-lg bg-[#0F5132] text-white text-[12px] font-medium inline-flex items-center justify-center gap-1"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" /> Thêm
+                                  </button>
+                                </form>
+
+                                {(rb.services || []).length > 0 && (
+                                  <div className="divide-y divide-[#E5E2DC] border border-[#E5E2DC] rounded-lg bg-white text-[12px]">
+                                    {(rb.services || []).map((sv) => (
+                                      <div
+                                        key={sv.id}
+                                        className="px-2.5 py-2 flex items-center justify-between gap-2"
+                                      >
+                                        <div className="min-w-0">
+                                          <div className="font-medium text-[#1C1B18] truncate">
+                                            {sv.name}{' '}
+                                            <span className="text-[10px] text-[#8A847C]">
+                                              ({getServiceGroupLabel(classifyServiceGroup(sv.category))})
+                                            </span>
+                                          </div>
+                                          <div className="text-[11px] font-mono-num text-[#57534E]">
+                                            {sv.quantity} × {formatCurrency(sv.unitPrice)} ={' '}
+                                            <strong>{formatCurrency(sv.total)}</strong>
+                                          </div>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={async () => {
+                                            await removeBookingService(
+                                              rb,
+                                              sv.id,
+                                              hotelConfig.accountingLockDate
+                                            );
+                                            notify('Đã xóa dịch vụ');
+                                          }}
+                                          className="p-1.5 text-[#8A847C] hover:text-[#B91C1C]"
+                                          aria-label="Xóa dịch vụ"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Surcharge inline */}
+                                <div className="pt-2 border-t border-[#E5E2DC] grid grid-cols-1 sm:grid-cols-12 gap-2">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={10000}
+                                    value={surchargeAmount}
+                                    onChange={(e) => setSurchargeAmount(Number(e.target.value) || 0)}
+                                    placeholder="Phụ thu giờ (VNĐ)"
+                                    className="sm:col-span-4 h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px] font-mono-num"
+                                  />
+                                  <input
+                                    type="text"
+                                    value={surchargeNote}
+                                    onChange={(e) => setSurchargeNote(e.target.value)}
+                                    placeholder="Lý do phụ thu (nhận sớm / trả trễ)..."
+                                    className="sm:col-span-5 h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => void handleSaveSurchargeForRoom(rb)}
+                                    className="sm:col-span-3 h-8 rounded-lg border border-[#0F5132] text-[#0F5132] bg-white hover:bg-[#E8F3EC] text-[12px] font-medium"
+                                  >
+                                    Lưu phụ thu
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Inline Transfer / Merge Panel if triggered */}
+                            {rbSub === 'transfer' && (
+                              <div className="py-3 px-2.5 my-1 rounded-xl bg-[#FAF9F6] border border-[#E7E3DA] space-y-3 text-[12px]">
+                                <div className="font-semibold text-[#1C1B18] flex items-center gap-1.5">
+                                  <ArrowRightLeft className="w-3.5 h-3.5 text-[#0F5132]" />
+                                  Đổi phòng (Split-Stay) cho P.{rb.roomNumber}
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <select
+                                    value={transferRoomId}
+                                    onChange={(e) => setTransferRoomId(e.target.value)}
+                                    className="h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white"
+                                  >
+                                    <option value="">-- Chọn phòng trống đích --</option>
+                                    {getTransferableRoomsFor(rb).map((r) => (
+                                      <option key={r.id} value={r.id}>
+                                        P.{r.roomNumber} ({r.roomTypeName})
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    value={transferPricingMode}
+                                    onChange={(e) =>
+                                      setTransferPricingMode(
+                                        e.target.value as typeof transferPricingMode
+                                      )
+                                    }
+                                    className="h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white"
+                                  >
+                                    <option value="new_room_rate">Theo giá phòng mới</option>
+                                    <option value="keep_old_rate">Giữ nguyên giá phòng cũ</option>
+                                    <option value="custom_rate">Nhập giá tùy chỉnh</option>
+                                  </select>
+                                </div>
+                                {transferPricingMode === 'custom_rate' && (
+                                  <input
+                                    type="number"
+                                    value={transferCustomRate}
+                                    onChange={(e) =>
+                                      setTransferCustomRate(Number(e.target.value) || 0)
+                                    }
+                                    className="w-full h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white font-mono-num"
+                                  />
+                                )}
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveRoomSubPanel(null)}
+                                    className="h-8 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[#57534E]"
+                                  >
+                                    Đóng
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={busy || !transferRoomId}
+                                    onClick={() => void handleTransferRoom(rb)}
+                                    className="h-8 px-3.5 rounded-lg bg-[#0F5132] disabled:opacity-50 text-white font-medium"
+                                  >
+                                    Xác nhận đổi phòng
+                                  </button>
+                                </div>
+
+                                <div className="pt-2 border-t border-[#E5E2DC] space-y-2">
+                                  <div className="font-semibold text-[#1C1B18] flex items-center gap-1.5">
+                                    <Merge className="w-3.5 h-3.5 text-[#0F5132]" />
+                                    Ghép đơn / Gộp hóa đơn
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <select
+                                      value={mergeTargetId}
+                                      onChange={(e) => setMergeTargetId(e.target.value)}
+                                      className="h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white"
+                                    >
+                                      <option value="">-- Chọn phòng/đơn đích --</option>
+                                      {mergeCandidatesFor(rb).map((cand) => (
+                                        <option key={cand.id} value={cand.id}>
+                                          P.{cand.roomNumber} — {cand.primaryGuestName} ({cand.bookingCode})
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <select
+                                      value={mergeMode}
+                                      onChange={(e) =>
+                                        setMergeMode(e.target.value as 'billing' | 'consolidate')
+                                      }
+                                      className="h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white"
+                                    >
+                                      <option value="billing">Ghép chung hóa đơn đoàn</option>
+                                      <option value="consolidate">Gộp khách & trả trống phòng này</option>
+                                    </select>
+                                  </div>
+                                  <div className="flex justify-end">
+                                    <button
+                                      type="button"
+                                      disabled={busy || !mergeTargetId}
+                                      onClick={() => void handleMergeRoom(rb)}
+                                      className="h-8 px-3.5 rounded-lg border border-[#0F5132] text-[#0F5132] bg-white disabled:opacity-50 font-medium"
+                                    >
+                                      Thực hiện ghép
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Room Total Line */}
+                            <div className="pt-2.5 flex items-center justify-between gap-2 font-semibold">
+                              <span className="text-[#1C1B18]">Tổng cộng phòng {rb.roomNumber}</span>
+                              <span className="font-mono-num text-[14px] text-[#0F5132]">
+                                {formatCurrency(rbTotal)}
+                              </span>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
+                  );
+                })}
+              </section>
+            </>
+          )}
 
-                    <div className="flex flex-wrap gap-2">
-                      {booking.depositResolutionStatus === 'pending_deposit_resolution' && (
-                        <button
-                          type="button"
-                          onClick={() => setShowDepositResModal(true)}
-                          className="h-8 px-3 rounded-lg bg-[#B45309] hover:bg-[#92400E] text-white text-[12px] font-medium"
-                        >
-                          Chốt xử lý cọc treo
-                        </button>
-                      )}
-                      {staffProfile?.permissions.canUndoAction && (
-                        <button
-                          type="button"
-                          onClick={() => setShowUndoCancelModal(true)}
-                          className="h-8 px-3 rounded-lg border border-[#1B5E4B] bg-white hover:bg-[#E8F2EE] text-[#1B5E4B] text-[12px] font-medium inline-flex items-center gap-1.5"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          Khôi phục đơn (Undo Cancel)
-                        </button>
-                      )}
-                    </div>
+          {/* ================= TAB 2: KHÁCH & OCR ================= */}
+          {tab === 'occupants' && (
+            <div className="space-y-3" data-testid="detail-tab-occupants-panel">
+              {isMultiRoomGroup && (
+                <div className="flex flex-wrap items-center gap-1.5 bg-white border border-[#E7E3DA] rounded-xl p-2">
+                  <span className="text-[11px] font-medium text-[#8A847C] px-1">Chọn phòng:</span>
+                  {groupSiblings.map((rb) => (
+                    <button
+                      key={rb.id}
+                      type="button"
+                      onClick={() => setSelectedRoomId(rb.id)}
+                      className={`min-h-[34px] px-2.5 rounded-lg text-[12px] font-mono-num font-semibold transition-colors ${rb.id === booking.id
+                        ? 'bg-[#0F5132] text-white'
+                        : 'bg-[#FAF9F6] text-[#57534E] border border-[#E7E3DA]'
+                        }`}
+                    >
+                      P.{rb.roomNumber}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <OccupantOcrPanel booking={booking} />
+            </div>
+          )}
+
+          {/* ================= TAB 3: THANH TOÁN ================= */}
+          {tab === 'payment' && (
+            <div className="space-y-4" data-testid="detail-tab-payment-panel">
+              {/* 3-Column Financial Summary */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="p-3 rounded-xl bg-white border border-[#E7E3DA]">
+                  <div className="text-[11px] text-[#8A847C]">
+                    {isMultiRoomGroup ? 'Tổng cả đoàn' : 'Tổng hóa đơn'}
                   </div>
+                  <div className="font-mono-num text-[14px] font-bold text-[#1C1B18] mt-0.5">
+                    {formatCurrency(scopeTotalAmount)}
+                  </div>
+                </div>
+                <div className="p-3 rounded-xl bg-white border border-[#E7E3DA]">
+                  <div className="text-[11px] text-[#8A847C]">Đã thanh toán</div>
+                  <div className="font-mono-num text-[14px] font-bold text-[#0F5132] mt-0.5">
+                    {formatCurrency(scopeTotalPaid)}
+                  </div>
+                </div>
+                <div className="p-3 rounded-xl bg-[#FAF9F6] border border-[#E7E3DA]">
+                  <div className="text-[11px] text-[#8A847C]">Còn thiếu</div>
+                  <div
+                    className={`font-mono-num text-[14px] font-bold mt-0.5 ${scopeTotalBalance > 0 ? 'text-[#B45309]' : 'text-[#0F5132]'
+                      }`}
+                  >
+                    {formatCurrency(scopeTotalBalance)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Room selector for recording payment when multi-room group */}
+              {isMultiRoomGroup && (
+                <div className="flex flex-wrap items-center gap-1.5 bg-white border border-[#E7E3DA] rounded-xl p-2">
+                  <span className="text-[11px] font-medium text-[#8A847C] px-1">
+                    Ghi thu cho phòng:
+                  </span>
+                  {groupSiblings.map((rb) => (
+                    <button
+                      key={rb.id}
+                      type="button"
+                      onClick={() => setSelectedRoomId(rb.id)}
+                      className={`min-h-[34px] px-2.5 rounded-lg text-[12px] font-mono-num font-semibold ${rb.id === booking.id
+                        ? 'bg-[#0F5132] text-white'
+                        : 'bg-[#FAF9F6] text-[#57534E] border border-[#E7E3DA]'
+                        }`}
+                    >
+                      P.{rb.roomNumber} ({formatCurrency(Math.max(0, getBookingGuestBalance(rb)))})
+                    </button>
+                  ))}
                 </div>
               )}
 
-              <div className="flex flex-wrap gap-2">
-                {booking.status === 'reserved' && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handleCheckIn}
-                      disabled={busy}
-                      className="h-9 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[13px] font-medium inline-flex items-center gap-1.5"
-                    >
-                      <LogIn className="w-4 h-4" strokeWidth={1.5} />
-                      Nhận phòng (Check-in)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCancel}
-                      disabled={busy}
-                      className="h-9 px-4 rounded-lg border border-[#FECACA] bg-white hover:bg-[#FEF2F2] text-[#B91C1C] text-[13px] font-medium"
-                    >
-                      Hủy đặt phòng
-                    </button>
-                  </>
-                )}
-
-                {booking.status === 'in_house' && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => handleCheckOut(false)}
-                      disabled={busy}
-                      className="h-9 px-4 rounded-lg bg-[#1C1B18] hover:bg-black text-white text-[13px] font-medium inline-flex items-center gap-1.5"
-                    >
-                      <LogOut className="w-4 h-4" strokeWidth={1.5} />
-                      Trả phòng (Check-out)
-                    </button>
-                    {canEarlyCheckout && (
-                      <button
-                        type="button"
-                        onClick={() => setPostStayMode('early_checkout')}
-                        disabled={busy}
-                        className="h-9 px-4 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] hover:bg-[#FEF3C7] text-[#92400E] text-[13px] font-medium inline-flex items-center gap-1.5"
-                      >
-                        <Clock className="w-4 h-4" strokeWidth={1.5} />
-                        Trả phòng sớm ({earlyStayedNights}đ
-                        {earlySuggestedRefund > 0
-                          ? ` • Dư ${formatCurrency(earlySuggestedRefund)}`
-                          : ''}
-                        )
-                      </button>
-                    )}
-                    {staffProfile?.permissions.canUndoAction && (
-                      <button
-                        type="button"
-                        onClick={() => setPostStayMode('reverse_checkin')}
-                        disabled={busy}
-                        className="h-9 px-3.5 rounded-lg border border-[#FECACA] bg-white hover:bg-[#FEF2F2] text-[#B91C1C] text-[13px] font-medium inline-flex items-center gap-1.5"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.5} />
-                        Đảo Check-in nhầm
-                      </button>
-                    )}
-                  </>
-                )}
-
-                {/* Part C Owner / SuperAdmin Controls for Checked-out Bookings */}
-                {booking.status === 'checked_out' && isAdmin && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setPostStayMode('reopen_checked_out')}
-                      className="h-9 px-3.5 rounded-lg border border-[#1B5E4B] bg-[#E8F2EE] hover:bg-[#D5EAE2] text-[#1B5E4B] text-[13px] font-medium"
-                    >
-                      Mở lại đơn (Hóa đơn / Lưu trú)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPostStayMode('post_checkout_adjustment')}
-                      className="h-9 px-3.5 rounded-lg border border-[#E5E2DC] bg-white hover:bg-[#F7F6F3] text-[#1C1B18] text-[13px] font-medium"
-                    >
-                      Điều chỉnh / Phụ thu sau Check-out
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPostStayMode('void_checked_out')}
-                      className="h-9 px-3.5 rounded-lg border border-[#FECACA] bg-white hover:bg-[#FEF2F2] text-[#B91C1C] text-[13px] font-medium"
-                    >
-                      Hủy đơn đã trả phòng (Void)
-                    </button>
-                  </>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => onOpenFormPreview(booking, 'payment_receipt')}
-                  className="h-9 px-3.5 rounded-lg border border-[#E5E2DC] bg-white hover:bg-[#F7F6F3] text-[#1C1B18] text-[13px] font-medium inline-flex items-center gap-1.5"
-                >
-                  <FileText className="w-4 h-4" strokeWidth={1.5} />
-                  Xuất Hóa đơn & VietQR
-                </button>
-              </div>
-
-              {/* Record Payment Form (Quick 50% / 100% + Inline VietQR + Công nợ OTA) */}
+              {/* Record Payment Form + Quick 50%/100% + VietQR */}
               <form
-                onSubmit={handleRecordPayment}
-                className="rounded-xl border border-[#E7E3DA] bg-[#FAF9F6]/60 p-4 space-y-3"
+                onSubmit={(e) => void handleRecordPayment(e)}
+                className="rounded-2xl border border-[#E7E3DA] bg-white p-4 space-y-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-[13px] font-semibold text-[#1C1B18]">
-                    <CreditCard className="w-4 h-4 text-[#0F5132]" strokeWidth={1.5} />
-                    Thu tiền / Đặt cọc / Công nợ OTA / Hoàn tiền
+                  <div className="flex items-center gap-1.5 text-[13px] font-semibold text-[#1C1B18]">
+                    <CreditCard className="w-4 h-4 text-[#0F5132]" />
+                    Thu tiền / Đặt cọc / Hoàn tiền (P.{booking.roomNumber})
                   </div>
                   {guestBalance > 0 && (
                     <div className="flex items-center gap-1.5 text-[11px]">
-                      <span className="text-[#8A847C]">Nhập nhanh:</span>
                       <button
                         type="button"
                         onClick={() => setPayAmount(Math.round(guestBalance * 0.5))}
-                        className="h-6 px-2 rounded-md border border-[#E7E3DA] bg-white hover:border-[#0F5132] hover:text-[#0F5132] font-mono-num font-medium"
+                        className="h-7 px-2 rounded-md border border-[#E7E3DA] bg-[#FAF9F6] font-mono-num font-medium"
                       >
                         50%
                       </button>
                       <button
                         type="button"
                         onClick={() => setPayAmount(guestBalance)}
-                        className="h-6 px-2 rounded-md border border-[#0F5132]/30 bg-[#E8F3EC] text-[#0F5132] hover:bg-[#0F5132] hover:text-white font-mono-num font-semibold"
+                        className="h-7 px-2 rounded-md bg-[#E8F3EC] text-[#0F5132] font-mono-num font-semibold"
                       >
                         100%
                       </button>
@@ -909,20 +1964,20 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                         <button
                           type="button"
                           onClick={() => setShowInlineQr((v) => !v)}
-                          className="h-6 px-2 rounded-md border border-[#FDE68A] bg-[#FFFBEB] text-[#B45309] font-medium"
+                          className="h-7 px-2 rounded-md border border-[#FDE68A] bg-[#FFFBEB] text-[#B45309] font-medium"
                         >
-                          {showInlineQr ? 'Ẩn QR' : 'Hiện VietQR'}
+                          {showInlineQr ? 'Ẩn QR' : 'VietQR'}
                         </button>
                       )}
                     </div>
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <select
                     value={payType}
                     onChange={(e) => setPayType(e.target.value as typeof payType)}
-                    className="h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px]"
+                    className="min-h-[40px] sm:h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px]"
                   >
                     <option value="payment">Thu thanh toán</option>
                     <option value="deposit">Thu tiền cọc</option>
@@ -934,13 +1989,13 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                     step={10000}
                     value={payAmount || ''}
                     onChange={(e) => setPayAmount(Number(e.target.value) || 0)}
-                    placeholder={`Còn lại: ${Math.max(0, guestBalance)}`}
-                    className="h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px] font-mono-num"
+                    placeholder={`Còn thiếu: ${Math.max(0, guestBalance)}`}
+                    className="min-h-[40px] sm:h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px] font-mono-num"
                   />
                   <select
                     value={payMethod}
                     onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
-                    className="h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px]"
+                    className="min-h-[40px] sm:h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[13px]"
                   >
                     <option value="bank_transfer">Chuyển khoản (VietQR)</option>
                     <option value="cash">Tiền mặt</option>
@@ -950,18 +2005,20 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   <button
                     type="submit"
                     disabled={busy}
-                    className="h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium"
+                    className="min-h-[40px] sm:h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-semibold"
                   >
                     Ghi nhận giao dịch
                   </button>
                 </div>
+
                 <input
                   type="text"
                   value={payNote}
                   onChange={(e) => setPayNote(e.target.value)}
                   placeholder="Ghi chú phiếu thu (tùy chọn)..."
-                  className="w-full h-8 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
+                  className="w-full h-9 px-3 rounded-lg border border-[#E7E3DA] bg-white text-[12px]"
                 />
+
                 {showInlineQr && guestBalance > 0 && vietQrUrl && (
                   <div className="pt-3 flex flex-col items-center gap-1.5 border-t border-[#E7E3DA] text-center">
                     <img
@@ -973,40 +2030,68 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                       {hotelConfig.bankAccount.bankId} • {hotelConfig.bankAccount.accountNo} •{' '}
                       {formatCurrency(Math.max(0, payAmount || guestBalance))}
                     </span>
-                    <span className="text-[12px] font-mono-num text-[#57534E]">
+                    <span className="text-[11px] font-mono-num text-[#57534E]">
                       ND: THANH TOAN {booking.bookingCode} P{booking.roomNumber}
                     </span>
                   </div>
                 )}
               </form>
 
-              {bookingTransactions.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-[12px] font-semibold text-[#57534E]">
-                    Lịch sử thu chi của đơn này
-                  </h4>
-                  <div className="border border-[#E5E2DC] rounded-xl divide-y divide-[#E5E2DC]">
-                    {bookingTransactions.map((tx) => (
+              {/* Quick Print Forms */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {(
+                  [
+                    { type: 'payment_receipt', label: 'Phiếu thanh toán & QR' },
+                    { type: 'booking_confirmation', label: 'Phiếu xác nhận ĐP' },
+                    { type: 'registration_card', label: 'Phiếu đăng ký lưu trú' },
+                  ] as Array<{ type: FormTemplateType; label: string }>
+                ).map((f) => (
+                  <button
+                    key={f.type}
+                    type="button"
+                    onClick={() => onOpenFormPreview(booking, f.type)}
+                    className="min-h-[40px] px-3 rounded-xl border border-[#E7E3DA] bg-white hover:border-[#0F5132] text-[12px] font-medium text-[#1C1B18] inline-flex items-center justify-center gap-1.5"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-[#0F5132]" />
+                    <span>{f.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Transactions List */}
+              <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-hidden">
+                <div className="px-4 py-2.5 border-b border-[#F1EFEA] text-[12px] font-semibold text-[#57534E]">
+                  Lịch sử thu chi ({scopeTransactions.length})
+                </div>
+                {scopeTransactions.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-[12px] text-[#8A847C]">
+                    Chưa có giao dịch thanh toán nào.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-[#F1EFEA]">
+                    {scopeTransactions.map((tx) => (
                       <div
                         key={tx.id}
-                        className={`px-3.5 py-2.5 flex items-center justify-between text-[12px] ${tx.status === 'voided_by_undo' ? 'opacity-50 line-through' : ''
+                        className={`px-4 py-2.5 flex items-center justify-between gap-2 text-[12px] ${tx.status === 'voided_by_undo' ? 'opacity-50 line-through' : ''
                           }`}
                       >
-                        <div>
-                          <div className="font-medium text-[#1C1B18]">{tx.category}</div>
+                        <div className="min-w-0">
+                          <div className="font-medium text-[#1C1B18] truncate">
+                            {tx.category} {tx.roomNumber ? `(P.${tx.roomNumber})` : ''}
+                          </div>
                           <div className="text-[11px] text-[#8A847C]">
                             {formatDateVN(tx.date)} • {getPaymentMethodLabel(tx.method)} •{' '}
                             {tx.createdByName}
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <div
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span
                             className={`font-mono-num font-semibold ${tx.direction === 'in' ? 'text-[#15803D]' : 'text-[#B91C1C]'
                               }`}
                           >
                             {tx.direction === 'in' ? '+' : '-'}
                             {formatCurrency(tx.amount)}
-                          </div>
+                          </span>
                           {isAdmin &&
                             tx.type !== 'reclassification_in' &&
                             tx.type !== 'reclassification_out' &&
@@ -1014,7 +2099,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => setReclassifyTx(tx)}
-                                className="h-6 px-2 rounded border border-[#E5E2DC] hover:border-[#1B5E4B] text-[10px] text-[#57534E]"
+                                className="h-7 px-2 rounded border border-[#E5E2DC] hover:border-[#0F5132] text-[10px] text-[#57534E]"
                               >
                                 Đổi PTTT
                               </button>
@@ -1023,763 +2108,220 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
 
-              {/* Part C Rule 6: Post-Checkout Adjustments History */}
-              {bookingPostAdjustments.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-[12px] font-semibold text-[#57534E]">
-                    Lịch sử Điều chỉnh & Phụ thu sau Check-out (`post_checkout_adjustments`)
-                  </h4>
-                  <div className="border border-[#E5E2DC] rounded-xl divide-y divide-[#E5E2DC] text-[12px]">
-                    {bookingPostAdjustments.map((adj) => (
-                      <div key={adj.id} className="px-3.5 py-2.5 space-y-0.5">
+              {scopePostAdjustments.length > 0 && (
+                <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-[#F1EFEA] text-[12px] font-semibold text-[#57534E]">
+                    Điều chỉnh sau Check-out ({scopePostAdjustments.length})
+                  </div>
+                  <div className="divide-y divide-[#F1EFEA] text-[12px]">
+                    {scopePostAdjustments.map((adj) => (
+                      <div key={adj.id} className="px-4 py-2.5 space-y-0.5">
                         <div className="flex items-center justify-between">
                           <span className="font-medium text-[#1C1B18]">{adj.addedItemsSummary}</span>
                           <span
-                            className={`font-mono-num font-semibold ${adj.diffAmount >= 0 ? 'text-[#1B5E4B]' : 'text-[#B91C1C]'
+                            className={`font-mono-num font-semibold ${adj.diffAmount >= 0 ? 'text-[#0F5132]' : 'text-[#B91C1C]'
                               }`}
                           >
                             {adj.diffAmount > 0 ? '+' : ''}
                             {formatCurrency(adj.diffAmount)}
                           </span>
                         </div>
-                        <div className="text-[11px] font-mono-num text-[#57534E]">
-                          Hóa đơn: {formatCurrency(adj.oldTotal)} → {formatCurrency(adj.newTotal)} •
-                          Hạch toán: {formatDateVN(adj.accountingDate)} • {adj.performedByName}
+                        <div className="text-[11px] text-[#8A847C]">
+                          {formatDateVN(adj.accountingDate)} • {adj.performedByName} — {adj.reason}
                         </div>
-                        <div className="text-[11px] text-[#8A847C]">Lý do: {adj.reason}</div>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-            </>
+            </div>
           )}
 
-          {tab === 'occupants' && <OccupantOcrPanel booking={booking} />}
-
-          {tab === 'pricing' && (
-            <div className="space-y-5">
-              {isHourly ? (
-                <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 space-y-3">
-                  <div className="text-[14px] font-semibold text-[#1C1B18]">
-                    Điều chỉnh tiền phòng Theo Giờ (3 bậc lũy tiến)
+          {/* ================= TAB 4: LỊCH SỬ ================= */}
+          {tab === 'history' && (
+            <div className="space-y-3" data-testid="detail-tab-history-panel">
+              {chainBookings.length > 1 && (
+                <div className="bg-white border border-[#E7E3DA] rounded-2xl p-3.5 space-y-2">
+                  <div className="text-[12px] font-semibold text-[#1C1B18]">
+                    Chuỗi chuyển phòng (Split-Stay)
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-[12px] text-[#57534E] mb-1">Số giờ ở thực tế</label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={24}
-                        value={editHourlyHours}
-                        onChange={(e) => {
-                          const h = Math.max(1, Number(e.target.value) || 1);
-                          setEditHourlyHours(h);
-                          setEditHourlyTotal(calculateHourlyRoomTotal(h, roomType?.hourlyPricing));
-                        }}
-                        className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[13px]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[12px] text-[#57534E] mb-1">
-                        Tổng tiền phòng giờ (có thể sửa tay)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        step={10000}
-                        value={editHourlyTotal}
-                        onChange={(e) => setEditHourlyTotal(Math.max(0, Number(e.target.value) || 0))}
-                        className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white font-mono-num text-[13px] font-semibold text-[#1B5E4B]"
-                      />
-                    </div>
-                    <div className="flex items-end">
-                      {staffProfile?.permissions.canEditPrice && (
-                        <button
-                          type="button"
-                          onClick={handleSavePricing}
-                          disabled={busy}
-                          className="w-full h-9 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[13px] font-medium"
-                        >
-                          Lưu tiền phòng giờ
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2.5">
-                  <PricingEditor
-                    roomType={roomType}
-                    dailyRates={editRates}
-                    selectedTierId={editTierId}
-                    onChange={(next, tierId) => {
-                      setEditRates(next);
-                      if (tierId !== undefined) setEditTierId(tierId);
-                    }}
-                    disabled={!staffProfile?.permissions.canEditPrice}
-                  />
-                  {staffProfile?.permissions.canEditPrice && (
-                    <div className="flex justify-end">
-                      <button
-                        type="button"
-                        onClick={handleSavePricing}
-                        disabled={busy}
-                        className="h-9 px-4 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[13px] font-medium"
+                  <div className="flex flex-wrap gap-1.5">
+                    {chainBookings.map((cb) => (
+                      <span
+                        key={cb.id}
+                        className="px-2.5 py-1 rounded-lg bg-[#FAF9F6] border border-[#E7E3DA] text-[11px] font-mono-num"
                       >
-                        Lưu thay đổi giá phòng
-                      </button>
-                    </div>
-                  )}
+                        P.{cb.roomNumber} ({formatShortDate(cb.checkIn)} → {formatShortDate(cb.checkOut)}) ·{' '}
+                        {getStatusLabel(cb.status)}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* Hourly Surcharge */}
-              <div className="rounded-xl border border-[#E5E2DC] p-4 space-y-3">
-                <div className="text-[13px] font-semibold text-[#1C1B18]">
-                  Phụ thu Nhận phòng sớm / Trả phòng muộn theo giờ
+              <div className="bg-white border border-[#E7E3DA] rounded-2xl overflow-hidden">
+                <div className="px-4 py-2.5 border-b border-[#F1EFEA] flex items-center gap-1.5 text-[12px] font-semibold text-[#57534E]">
+                  <History className="w-3.5 h-3.5 text-[#0F5132]" />
+                  Nhật ký thao tác &amp; Mốc lưu trú
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  <input
-                    type="number"
-                    min={0}
-                    step={50000}
-                    value={surchargeAmount}
-                    onChange={(e) => setSurchargeAmount(Math.max(0, Number(e.target.value) || 0))}
-                    placeholder="Số tiền phụ thu"
-                    className="h-9 px-3 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
-                  />
-                  <input
-                    type="text"
-                    value={surchargeNote}
-                    onChange={(e) => setSurchargeNote(e.target.value)}
-                    placeholder="VD: Trả phòng muộn 3 giờ (15:00)"
-                    className="h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSaveSurcharge}
-                    className="h-9 px-4 rounded-lg border border-[#1B5E4B] text-[#1B5E4B] hover:bg-[#E8F2EE] text-[13px] font-medium"
-                  >
-                    Cập nhật phụ thu
-                  </button>
-                </div>
-              </div>
-
-              {/* Services — Quick-Pick from Service Catalog + Custom Entry */}
-              <div className="rounded-xl border border-[#E5E2DC] p-3.5 sm:p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-[13px] font-semibold text-[#1C1B18]">
-                    Dịch vụ phát sinh (Thức ăn / Đồ uống / Dịch vụ)
-                  </div>
-                  <button
-                    type="button"
-                    data-testid="toggle-custom-service-mode"
-                    onClick={() => {
-                      setServiceCustomMode((prev) => !prev);
-                      setSelectedCatalogId('');
-                      if (!serviceCustomMode) {
-                        setServiceName('');
-                        setServicePrice(20000);
-                      }
-                    }}
-                    className={`min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border text-[11px] font-medium transition-colors ${serviceCustomMode
-                      ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132]'
-                      : 'border-[#E5E2DC] bg-[#FAF9F6] text-[#57534E] hover:text-[#1C1B18]'
-                      }`}
-                  >
-                    {serviceCustomMode ? '← Chọn từ bảng giá chuẩn' : '+ Nhập dịch vụ ngoài danh mục'}
-                  </button>
-                </div>
-
-                {!serviceCustomMode && (
-                  <div className="space-y-2.5">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {(
-                        [
-                          { id: 'all', label: 'Tất cả' },
-                          { id: 'food', label: 'Thức ăn' },
-                          { id: 'drink', label: 'Đồ uống' },
-                          { id: 'service', label: 'Dịch vụ' },
-                        ] as const
-                      ).map((g) => (
-                        <button
-                          key={g.id}
-                          type="button"
-                          onClick={() => setServiceCatalogFilter(g.id)}
-                          className={`min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg text-[11px] font-medium transition-colors ${serviceCatalogFilter === g.id
-                            ? 'bg-[#0F5132] text-white'
-                            : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
-                            }`}
-                        >
-                          {g.label}
-                        </button>
-                      ))}
+                <div className="divide-y divide-[#F1EFEA] text-[12px]">
+                  {scopeAuditLogs.map((log) => (
+                    <div key={log.id} className="px-4 py-2.5 space-y-0.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-[#1C1B18]">{log.targetLabel}</span>
+                        <span className="text-[11px] font-mono-num text-[#8A847C] shrink-0">
+                          {formatDateTimeVN(log.timestamp)}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-[#57534E]">
+                        {log.reason || log.actionType} • <strong>{log.performedByName}</strong>
+                      </div>
                     </div>
+                  ))}
 
-                    <div
-                      data-testid="service-catalog-quick-pick"
-                      className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto pr-0.5"
-                    >
-                      {activeServiceCatalog
-                        .filter(
-                          (it) =>
-                            serviceCatalogFilter === 'all' || it.category === serviceCatalogFilter
-                        )
-                        .map((item) => {
-                          const isSelected = selectedCatalogId === item.id;
-                          return (
-                            <button
-                              key={item.id}
-                              type="button"
-                              onClick={() => handlePickCatalogItem(item)}
-                              className={`min-h-[40px] px-3 py-1.5 rounded-lg border text-left flex items-center justify-between gap-2 text-[12px] transition-colors ${isSelected
-                                ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132] font-semibold'
-                                : 'border-[#E7E3DA] bg-[#FAF9F6] hover:border-[#0F5132]/50 text-[#1C1B18]'
-                                }`}
-                            >
-                              <span className="truncate">{item.name}</span>
-                              <span className="font-mono-num text-[11px] font-semibold shrink-0">
-                                {formatCurrency(item.price)}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      {activeServiceCatalog.filter(
-                        (it) =>
-                          serviceCatalogFilter === 'all' || it.category === serviceCatalogFilter
-                      ).length === 0 && (
-                          <div className="col-span-full text-[12px] text-[#8A847C] py-2">
-                            Chưa có mục đang bán trong nhóm này.
-                          </div>
-                        )}
+                  {/* Baseline booking milestones always shown */}
+                  {groupSiblings.map((rb) => (
+                    <div key={`mile_${rb.id}`} className="px-4 py-2.5 bg-[#FAF9F6]/60 space-y-0.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-[#1C1B18]">
+                          Tạo đơn P.{rb.roomNumber} ({rb.bookingCode})
+                        </span>
+                        <span className="text-[11px] font-mono-num text-[#8A847C]">
+                          {rb.createdAt ? formatDateTimeVN(rb.createdAt) : formatDateVN(rb.checkIn)}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-[#57534E]">
+                        Lưu trú: {formatDateVN(rb.checkIn)} → {formatDateVN(rb.checkOut)}
+                        {rb.actualCheckInAt ? ` • Nhận phòng: ${formatDateTimeVN(rb.actualCheckInAt)}` : ''}
+                        {rb.actualCheckOutAt ? ` • Trả phòng: ${formatDateTimeVN(rb.actualCheckOutAt)}` : ''}
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                <form onSubmit={handleAddService} className="grid grid-cols-2 sm:grid-cols-12 gap-2">
-                  <input
-                    type="text"
-                    required
-                    value={serviceName}
-                    onChange={(e) => setServiceName(e.target.value)}
-                    placeholder={
-                      serviceCustomMode
-                        ? 'Nhập tên dịch vụ phát sinh ngoài danh mục...'
-                        : 'Chọn nhanh ở trên hoặc gõ tên dịch vụ...'
-                    }
-                    data-testid="booking-service-name-input"
-                    className="col-span-2 sm:col-span-4 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
-                  />
-                  <select
-                    aria-label="Loại dịch vụ"
-                    value={serviceCategory}
-                    onChange={(e) => setServiceCategory(e.target.value as ServiceItemGroup)}
-                    data-testid="booking-service-category-select"
-                    className="col-span-1 sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-2 rounded-lg border border-[#E5E2DC] bg-white text-[12px]"
-                  >
-                    <option value="food">Thức ăn</option>
-                    <option value="drink">Đồ uống</option>
-                    <option value="service">Dịch vụ</option>
-                  </select>
-                  <input
-                    type="number"
-                    min={1}
-                    aria-label="Số lượng"
-                    value={serviceQty}
-                    onChange={(e) => setServiceQty(Math.max(1, Number(e.target.value) || 1))}
-                    data-testid="booking-service-qty-input"
-                    className="col-span-1 sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 text-center rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
-                  />
-                  <input
-                    type="number"
-                    min={0}
-                    step={5000}
-                    aria-label="Đơn giá"
-                    value={servicePrice}
-                    onChange={(e) => setServicePrice(Math.max(0, Number(e.target.value) || 0))}
-                    data-testid="booking-service-price-input"
-                    className="col-span-1 sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 text-right rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
-                  />
-                  <button
-                    type="submit"
-                    disabled={busy}
-                    data-testid="add-booking-service-btn"
-                    className="col-span-1 sm:col-span-2 min-h-[40px] sm:min-h-0 sm:h-9 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center justify-center gap-1 disabled:opacity-50"
-                  >
-                    <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
-                    Thêm
-                  </button>
-                </form>
-
-                {(booking.services || []).filter((s) => s.status !== 'voided').length > 0 && (
-                  <div className="divide-y divide-[#E5E2DC] border border-[#E5E2DC] rounded-lg">
-                    {(booking.services || [])
-                      .filter((s) => s.status !== 'voided')
-                      .map((s) => {
-                        const grp = classifyServiceGroup(s.category, s.name);
-                        const grpLabel = getServiceGroupLabel(grp);
-                        return (
-                          <div
-                            key={s.id}
-                            className="px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[12px]"
-                          >
-                            <div className="min-w-0 flex flex-wrap items-center gap-1.5">
-                              <span
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${grp === 'food'
-                                  ? 'bg-[#FFFBEB] text-[#B45309]'
-                                  : grp === 'drink'
-                                    ? 'bg-[#E8F3EC] text-[#0F5132]'
-                                    : 'bg-[#F0F7F9] text-[#335C67]'
-                                  }`}
-                              >
-                                {grpLabel}
-                              </span>
-                              <span className="font-medium text-[#1C1B18]">{s.name}</span>
-                              <span className="text-[#57534E]">
-                                × <span className="font-mono-num">{s.quantity}</span> (
-                                {formatCurrency(s.unitPrice)})
-                              </span>
-                              {s.businessDate && (
-                                <span className="text-[10px] font-mono-num text-[#8A847C]">
-                                  • {formatDateVN(s.businessDate)}
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2.5 shrink-0">
-                              <span className="font-mono-num font-semibold text-[#1C1B18]">
-                                {formatCurrency(s.total)}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  removeBookingService(booking, s.id, hotelConfig.accountingLockDate)
-                                }
-                                aria-label={`Xóa ${s.name}`}
-                                className="p-1 text-[#8A847C] hover:text-[#B91C1C]"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {tab === 'transfer' && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              <div className="rounded-xl border border-[#E5E2DC] p-4 space-y-3">
-                <div className="flex items-center gap-2 text-[14px] font-semibold text-[#1C1B18]">
-                  <ArrowRightLeft className="w-4 h-4 text-[#1B5E4B]" strokeWidth={1.5} />
-                  Chuyển phòng (Split-Stay Chain)
-                </div>
-                <p className="text-[12px] text-[#57534E]">
-                  Giữ nguyên lịch sử chặng cũ, chuyển phòng cũ sang Chờ dọn và mang toàn bộ hồ sơ
-                  khách/ASM sang phòng mới.
-                </p>
-
-                <div>
-                  <label className="block text-[12px] text-[#57534E] mb-1">
-                    Chọn phòng trống đích
-                  </label>
-                  <select
-                    value={transferRoomId}
-                    onChange={(e) => setTransferRoomId(e.target.value)}
-                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-                  >
-                    <option value="">-- Chọn phòng trống --</option>
-                    {transferableRooms.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        P.{r.roomNumber} — {r.roomTypeName} ({r.floor})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[12px] text-[#57534E] mb-1">
-                    Cách tính giá phòng mới
-                  </label>
-                  <select
-                    value={transferPricingMode}
-                    onChange={(e) =>
-                      setTransferPricingMode(e.target.value as typeof transferPricingMode)
-                    }
-                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-                  >
-                    <option value="new_room_rate">Áp dụng đơn giá mặc định của phòng mới</option>
-                    <option value="keep_old_rate">Giữ nguyên giá phòng cũ (miễn phí nâng hạng)</option>
-                    <option value="custom_rate">Nhập giá thỏa thuận mới</option>
-                  </select>
-                </div>
-
-                {transferPricingMode === 'custom_rate' && (
-                  <input
-                    type="number"
-                    min={0}
-                    step={10000}
-                    value={transferCustomRate}
-                    onChange={(e) => setTransferCustomRate(Number(e.target.value) || 0)}
-                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] font-mono-num text-[13px]"
-                  />
-                )}
-
-                <button
-                  type="button"
-                  onClick={handleTransferRoom}
-                  disabled={busy || !transferRoomId}
-                  className="w-full h-9 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] disabled:opacity-50 text-white text-[13px] font-medium"
-                >
-                  Xác nhận chuyển phòng
-                </button>
-              </div>
-
-              <div className="rounded-xl border border-[#E5E2DC] p-4 space-y-3">
-                <div className="flex items-center gap-2 text-[14px] font-semibold text-[#1C1B18]">
-                  <Merge className="w-4 h-4 text-[#1B5E4B]" strokeWidth={1.5} />
-                  Ghép phòng & Gộp hóa đơn
-                </div>
-                <p className="text-[12px] text-[#57534E]">
-                  Gộp hóa đơn thanh toán chung vào 1 nhóm hoặc dồn khách từ phòng này sang ở chung
-                  phòng khác và kết chuyển công nợ.
-                </p>
-
-                <div>
-                  <label className="block text-[12px] text-[#57534E] mb-1">Hình thức ghép</label>
-                  <select
-                    value={mergeMode}
-                    onChange={(e) => setMergeMode(e.target.value as typeof mergeMode)}
-                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-                  >
-                    <option value="billing">Gộp hóa đơn thanh toán chung (giữ cả 2 phòng)</option>
-                    <option value="consolidate">
-                      Dồn khách sang ở chung phòng đích (trả P.{booking.roomNumber})
-                    </option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[12px] text-[#57534E] mb-1">
-                    Chọn phòng đích đang hoạt động
-                  </label>
-                  <select
-                    value={mergeTargetId}
-                    onChange={(e) => setMergeTargetId(e.target.value)}
-                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-                  >
-                    <option value="">-- Chọn phòng --</option>
-                    {mergeCandidates.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        P.{b.roomNumber} — {b.primaryGuestName} ({b.bookingCode})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleMergeRooms}
-                  disabled={busy || !mergeTargetId}
-                  className="w-full h-9 rounded-lg bg-[#1C1B18] hover:bg-black disabled:opacity-50 text-white text-[13px] font-medium"
-                >
-                  Thực hiện ghép phòng
-                </button>
-              </div>
-            </div>
-          )}
-
-          {tab === 'forms' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <div className="space-y-3">
-                <h4 className="text-[14px] font-semibold text-[#1C1B18]">
-                  Xuất biểu mẫu chuẩn gửi khách hàng (PNG / In PDF)
-                </h4>
-                <div className="space-y-2">
-                  {[
-                    {
-                      type: 'booking_confirmation' as FormTemplateType,
-                      title: '1. Phiếu Xác nhận Đặt phòng',
-                      desc: 'Gửi qua Zalo / WhatsApp khi khách vừa đặt phòng',
-                    },
-                    {
-                      type: 'payment_receipt' as FormTemplateType,
-                      title: '2. Hóa đơn Thanh toán / Phiếu Thu',
-                      desc: 'Kèm chi tiết tiền phòng/giờ, dịch vụ, phụ thu và mã VietQR',
-                    },
-                    {
-                      type: 'registration_card' as FormTemplateType,
-                      title: '3. Phiếu Đăng ký Nhận phòng',
-                      desc: 'Danh sách khách lưu trú, thông tin Wi-Fi & khung chữ ký',
-                    },
-                  ].map((item) => (
-                    <button
-                      key={item.type}
-                      type="button"
-                      onClick={() => onOpenFormPreview(booking, item.type)}
-                      className="w-full text-left p-3.5 rounded-xl border border-[#E5E2DC] hover:border-[#1B5E4B] bg-white transition-colors"
-                    >
-                      <div className="text-[13px] font-semibold text-[#1C1B18]">{item.title}</div>
-                      <div className="text-[12px] text-[#57534E]">{item.desc}</div>
-                    </button>
                   ))}
                 </div>
               </div>
-
-              <div className="rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] p-4 flex flex-col items-center justify-center text-center">
-                <div className="text-[13px] font-semibold text-[#1C1B18] mb-1">
-                  Mã VietQR thanh toán động
-                </div>
-                <div className="text-[12px] font-mono-num text-[#1B5E4B] mb-3">
-                  Số tiền cần thu: {formatCurrency(Math.max(0, guestBalance))}
-                </div>
-                {vietQrUrl ? (
-                  <>
-                    <img
-                      src={vietQrUrl}
-                      alt="VietQR"
-                      className="w-56 h-auto rounded-xl border border-[#E5E2DC] bg-white p-2"
-                    />
-                    <div className="mt-2 text-[11px] font-mono-num text-[#57534E]">
-                      {hotelConfig.bankAccount.bankId} • {hotelConfig.bankAccount.accountNo} •{' '}
-                      {hotelConfig.bankAccount.accountName}
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-[12px] text-[#92400E] bg-[#FFFBEB] border border-[#FDE68A] rounded-lg p-3">
-                    Chưa nhập Số tài khoản ngân hàng. SuperAdmin vào mục Cài đặt để cấu hình VietQR
-                    (MB Bank — LE DUC PHUONG).
-                  </div>
-                )}
-              </div>
             </div>
           )}
         </div>
 
-        {/* GoHost-Inspired Sticky Bottom Action Bar (4 Priority Buttons + "... Khác" Menu) */}
-        <div className="shrink-0 px-6 py-3 border-t border-[#E7E3DA] bg-white flex flex-wrap items-center justify-between gap-2 relative">
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setTab('pricing');
-                setEditRates(booking.dailyRates);
-                setEditHourlyHours(booking.hourlyHours || 2);
-                setEditHourlyTotal(booking.grossRoomTotal);
-              }}
-              className="h-9 px-3.5 rounded-lg border border-[#E7E3DA] hover:bg-[#FAF9F6] text-[13px] font-medium text-[#1C1B18]"
-            >
-              Sửa giá / DV
-            </button>
-
-            {booking.status === 'reserved' && (
+        {/* FIXED THUMB-ZONE PRIMARY ACTION BAR (Bottom) */}
+        <div
+          data-testid="booking-detail-bottom-bar"
+          className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t border-[#E7E3DA] bg-white flex items-center gap-2 shrink-0"
+        >
+          {reservedSiblings.length > 0 ? (
+            <>
               <button
                 type="button"
-                onClick={handleCheckIn}
                 disabled={busy}
-                className="h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5"
+                onClick={() => void handleBulkCheckInAll()}
+                data-testid="detail-primary-action-btn"
+                className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#0F5132] hover:bg-[#0B3D26] disabled:opacity-50 text-white text-[14px] font-semibold inline-flex items-center justify-center gap-1.5"
               >
-                <LogIn className="w-4 h-4" strokeWidth={1.5} />
-                Nhận phòng
+                <LogIn className="w-4 h-4" strokeWidth={2} />
+                <span>
+                  {isMultiRoomGroup && reservedSiblings.length > 1
+                    ? `Nhận phòng (${reservedSiblings.length} phòng)`
+                    : 'Nhận phòng'}
+                </span>
               </button>
-            )}
-
-            {booking.status === 'in_house' && (
-              <button
-                type="button"
-                onClick={() => handleCheckOut(false)}
-                disabled={busy}
-                className="h-9 px-4 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-medium inline-flex items-center gap-1.5"
-              >
-                <LogOut className="w-4 h-4" strokeWidth={1.5} />
-                Trả phòng
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => {
-                setTab('overview');
-                if (guestBalance > 0) setPayAmount(guestBalance);
-              }}
-              className="h-9 px-3.5 rounded-lg border border-[#0F5132]/30 bg-[#E8F3EC] hover:bg-[#0F5132] text-[#0F5132] hover:text-white text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors"
-            >
-              <CreditCard className="w-4 h-4" strokeWidth={1.5} />
-              Thanh toán
-            </button>
-
-            {/* Grouped "... Khác" Popover Menu */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowMoreMenu((v) => !v)}
-                className="h-9 px-3 rounded-lg border border-[#E7E3DA] hover:bg-[#FAF9F6] text-[13px] font-medium text-[#57534E] inline-flex items-center gap-1"
-              >
-                <MoreHorizontal className="w-4 h-4" strokeWidth={1.5} />
-                Khác
-              </button>
-
-              {showMoreMenu && (
-                <div className="absolute bottom-11 left-0 w-60 bg-white border border-[#E7E3DA] rounded-xl shadow-xl py-1.5 z-50 text-[12px]">
-                  {booking.status === 'in_house' && canEarlyCheckout && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        setPostStayMode('early_checkout');
-                      }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#B45309] font-medium"
-                    >
-                      Trả phòng sớm ({earlyStayedNights}đ)
-                    </button>
-                  )}
-                  {booking.status === 'in_house' && staffProfile?.permissions.canUndoAction && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        setPostStayMode('reverse_checkin');
-                      }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
-                    >
-                      Đảo Check-in nhầm
-                    </button>
-                  )}
-                  {(booking.status === 'reserved' || booking.status === 'in_house') && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        setTab('transfer');
-                      }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
-                    >
-                      Đổi phòng (Split-Stay) / Ghép đơn
-                    </button>
-                  )}
-                  {booking.status === 'checked_out' && isAdmin && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMoreMenu(false);
-                          setPostStayMode('reopen_checked_out');
-                        }}
-                        className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#0F5132] font-medium"
-                      >
-                        Mở lại đơn (Hóa đơn / Lưu trú)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMoreMenu(false);
-                          setPostStayMode('post_checkout_adjustment');
-                        }}
-                        className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
-                      >
-                        Điều chỉnh / Phụ thu sau Check-out
-                      </button>
-                    </>
-                  )}
-
-                  <div className="my-1 border-t border-[#F1EFEA]" />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowMoreMenu(false);
-                      onOpenFormPreview(booking, 'payment_receipt');
-                    }}
-                    className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
-                  >
-                    Phiếu thanh toán &amp; VietQR
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowMoreMenu(false);
-                      onOpenFormPreview(booking, 'booking_confirmation');
-                    }}
-                    className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
-                  >
-                    Phiếu xác nhận đặt phòng
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowMoreMenu(false);
-                      onOpenFormPreview(booking, 'registration_card');
-                    }}
-                    className="w-full px-3.5 py-2 text-left hover:bg-[#FAF9F6] text-[#1C1B18]"
-                  >
-                    Phiếu đăng ký nhận phòng
-                  </button>
-
-                  {(booking.status === 'reserved' ||
-                    (booking.status === 'checked_out' && isAdmin)) && (
-                      <>
-                        <div className="my-1 border-t border-[#F1EFEA]" />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowMoreMenu(false);
-                            if (booking.status === 'reserved') handleCancel();
-                            else setPostStayMode('void_checked_out');
-                          }}
-                          className="w-full px-3.5 py-2 text-left hover:bg-[#FEF2F2] text-[#B91C1C] font-medium"
-                        >
-                          {booking.status === 'reserved'
-                            ? 'Hủy đặt phòng'
-                            : 'Hủy đơn đã trả phòng (Void)'}
-                        </button>
-                      </>
-                    )}
-                </div>
+              {scopeTotalBalance > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setTab('payment')}
+                  className="min-h-[44px] px-3.5 rounded-xl border border-[#0F5132]/30 bg-[#E8F3EC] text-[#0F5132] text-[13px] font-semibold inline-flex items-center gap-1 shrink-0"
+                >
+                  <CreditCard className="w-4 h-4" />
+                  <span>Thu tiền</span>
+                </button>
               )}
-            </div>
-          </div>
-
-          <div className="text-[12px] font-mono-num text-[#57534E]">
-            Còn lại:{' '}
-            <strong className={guestBalance > 0 ? 'text-[#B45309]' : 'text-[#0F5132]'}>
-              {formatCurrency(Math.max(0, guestBalance))}
-            </strong>
-          </div>
+            </>
+          ) : inHouseSiblings.length > 0 ? (
+            <>
+              {scopeTotalBalance > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setTab('payment')}
+                    data-testid="detail-primary-action-btn"
+                    className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[14px] font-semibold inline-flex items-center justify-center gap-1.5"
+                  >
+                    <CreditCard className="w-4 h-4" strokeWidth={2} />
+                    <span>Thu tiền ({formatCurrency(scopeTotalBalance)})</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleCheckOutRoom(inHouseSiblings[0])}
+                    className="min-h-[44px] px-3.5 rounded-xl border border-[#E7E3DA] bg-[#FAF9F6] text-[#1C1B18] text-[13px] font-semibold inline-flex items-center gap-1 shrink-0"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>Trả phòng</span>
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleCheckOutRoom(inHouseSiblings[0])}
+                  data-testid="detail-primary-action-btn"
+                  className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#0F5132] hover:bg-[#0B3D26] disabled:opacity-50 text-white text-[14px] font-semibold inline-flex items-center justify-center gap-1.5"
+                >
+                  <LogOut className="w-4 h-4" strokeWidth={2} />
+                  <span>
+                    Trả phòng {isMultiRoomGroup ? `P.${inHouseSiblings[0].roomNumber}` : ''}
+                  </span>
+                </button>
+              )}
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onOpenFormPreview(booking, 'payment_receipt')}
+              data-testid="detail-primary-action-btn"
+              className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[14px] font-semibold inline-flex items-center justify-center gap-1.5"
+            >
+              <FileText className="w-4 h-4" strokeWidth={2} />
+              <span>Xem &amp; In phiếu thanh toán</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {showCancelModal && (
+      {/* Sub-modals */}
+      {cancelScope && (
         <CancelBookingModal
-          bookingsScope={[booking]}
-          onClose={() => setShowCancelModal(false)}
+          bookingsScope={cancelScope}
+          onClose={() => setCancelScope(null)}
         />
       )}
 
-      {showDepositResModal && (
+      {depositResBooking && (
         <DepositResolutionModal
-          booking={booking}
-          onClose={() => setShowDepositResModal(false)}
+          booking={depositResBooking}
+          onClose={() => setDepositResBooking(null)}
         />
       )}
 
-      {showUndoCancelModal && (
+      {undoCancelBooking && (
         <UndoCancelModal
-          booking={booking}
-          onClose={() => setShowUndoCancelModal(false)}
+          booking={undoCancelBooking}
+          onClose={() => setUndoCancelBooking(null)}
         />
       )}
 
-      {postStayMode && (
+      {postStayTarget && (
         <PostStayAccountingModal
-          booking={booking}
-          mode={postStayMode}
-          onClose={() => setPostStayMode(null)}
-          onProceedToCancelAfterReverse={() => setShowCancelModal(true)}
+          booking={postStayTarget.booking}
+          mode={postStayTarget.mode}
+          onClose={() => setPostStayTarget(null)}
+          onProceedToCancelAfterReverse={() => {
+            const b = postStayTarget.booking;
+            setPostStayTarget(null);
+            setCancelScope([b]);
+          }}
         />
       )}
 

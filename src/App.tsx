@@ -34,6 +34,7 @@ import { SettingsAndAdminView } from './components/SettingsAndAdminView';
 import { BookingCreateModal } from './components/BookingCreateModal';
 import { GroupBookingModal } from './components/GroupBookingModal';
 import { BookingDetailModal } from './components/BookingDetailModal';
+import { BookingQuickPreviewSheet } from './components/BookingQuickPreviewSheet';
 import { PrintableFormModal } from './components/PrintableFormModal';
 import { RoomMaintenanceModal } from './components/RoomMaintenanceModal';
 import { DepositResolutionModal } from './components/DepositResolutionModal';
@@ -105,8 +106,12 @@ export const App: React.FC = () => {
     checkOut?: string;
   } | null>(null);
 
+  const [quickPreviewBookingId, setQuickPreviewBookingId] = useState<string | null>(null);
+
   const [activeBookingModal, setActiveBookingModal] = useState<{
     bookingId: string;
+    initialTab?: 'details' | 'occupants' | 'payment' | 'history';
+    openTransfer?: boolean;
     preselectedTransferRoom?: Room | null;
   } | null>(null);
 
@@ -533,7 +538,7 @@ export const App: React.FC = () => {
 
           {nav === 'calendar' && (
             <TimelineCalendarView
-              onSelectBooking={(b) => setActiveBookingModal({ bookingId: b.id })}
+              onSelectBooking={(b) => setQuickPreviewBookingId(b.id)}
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
               onOpenNewBooking={() => setCreateSingleDraft({})}
               onCreateFromRange={({ room, checkIn, checkOut }) =>
@@ -542,6 +547,7 @@ export const App: React.FC = () => {
               onRequestTransferRoom={(booking, targetRoom) =>
                 setActiveBookingModal({
                   bookingId: booking.id,
+                  openTransfer: true,
                   preselectedTransferRoom: targetRoom,
                 })
               }
@@ -599,9 +605,25 @@ export const App: React.FC = () => {
         />
       )}
 
+      {quickPreviewBookingId && (
+        <BookingQuickPreviewSheet
+          bookingId={quickPreviewBookingId}
+          onClose={() => setQuickPreviewBookingId(null)}
+          onOpenDetail={(opts) =>
+            setActiveBookingModal({
+              bookingId: quickPreviewBookingId,
+              initialTab: opts?.initialTab || 'details',
+              openTransfer: opts?.openTransfer,
+            })
+          }
+        />
+      )}
+
       {activeBookingModal && (
         <BookingDetailModal
           bookingId={activeBookingModal.bookingId}
+          initialTab={activeBookingModal.initialTab}
+          openTransferInitially={activeBookingModal.openTransfer}
           preselectedTransferRoom={activeBookingModal.preselectedTransferRoom}
           onClose={() => setActiveBookingModal(null)}
           onOpenFormPreview={(booking, type) => setPrintFormModal({ booking, type })}

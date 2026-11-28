@@ -7,6 +7,22 @@ Tất cả các thay đổi quan trọng của dự án **Like Family PMS** đ�
 
 ---
 
+## [2.2.2] - 28/11/2026 (Luồng xem đơn 2 bước từ Lịch Calendar)
+
+### Added
+- `BookingQuickPreviewSheet.tsx`: Thẻ Xem Nhanh dạng Bottom Sheet khi chạm thanh đơn trên Lịch (mã đơn copy, badge số phòng đoàn, mốc nhận/trả phòng, meta, ghi chú sửa nhanh, tổng kết tài chính 3 cột, nút chính 70% + menu `Khác ▾`).
+- `updateBookingNote()` trong `pmsActions.ts` (kèm `audit_logs`); trường tùy chọn `Guest.email`.
+- `scripts/qa_booking_2step_v222.mjs`: kiểm thử E2E luồng 2 bước trên Local Emulator (Mobile `390×844` & Desktop `1440×900`).
+
+### Changed
+- `BookingDetailModal.tsx` viết lại: header 1 dòng `52px`, 4 tab `Chi tiết | Khách & OCR | Thanh toán | Lịch sử`, khối Thông tin chung + khối Phòng dạng Accordion (Thu gọn/Mở rộng tất cả, `Thao tác` từng phòng, sửa giá & dịch vụ ngay trong thẻ), thanh nút chính cố định đáy màn hình.
+- `App.tsx`: Lịch Calendar mở Thẻ Xem Nhanh trước, Chi tiết đơn mở chồng lên trên.
+
+### Fixed
+- Lệch hiển thị số phòng và mã đơn (VD `P.404` nhưng mã `LIK00848-302`) trong header Chi tiết đơn.
+- Nút Back Android: đóng đúng tầng (Chi tiết → Thẻ Xem Nhanh → Lịch), không bị lặp `pushState` khi chạy React StrictMode.
+- Lớp phủ menu `Khác ▾` / `⋮` che mất chính nút mở menu.
+
 ## [2.2.2] - 28/11/2026 (GO-LIVE CHÍNH THỨC)
 
 **Chính thức Go-Live Production** trên **https://likefamilypms.web.app** (`likefamilypms`, 0đ Firebase Spark): dọn sạch 100% dữ liệu mẫu `QA2M_*`, thu hồi tài khoản test `qa_runner`, chuyển đổi hoàn chỉnh dữ liệu vận hành thực tế năm 2026 từ **GoHost PMS** (`962` bookings, `91` groups, `663` guests, `841` transactions, `4` lô OTA, `432` chỉ mục `room_occupancy` với **`0` xung đột trên `15/15` phòng**), bật khóa sổ kế toán lịch sử **`accountingLockDate: '2026-10-31'`** và xuất biên bản bàn giao [`QA_REPORTS/GOHOST_MIGRATION_2026/01_GOLIVE_HANDOVER_REPORT.md`](./QA_REPORTS/GOHOST_MIGRATION_2026/01_GOLIVE_HANDOVER_REPORT.md).

@@ -174,6 +174,7 @@ export interface Guest {
   normalizedName: string;
   phone: string;
   normalizedPhone: string;
+  email?: string;
   gender: string;
   dob: string;
   nationality: string;
