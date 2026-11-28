@@ -450,7 +450,11 @@ export const App: React.FC = () => {
 
       {/* Main Content Column */}
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="no-print h-14 bg-white border-b border-[#E5E2DC] px-4 lg:px-6 flex items-center justify-between gap-3 sticky top-0 z-20">
+        <header
+          className={`no-print h-14 bg-white border-b border-[#E5E2DC] px-4 lg:px-6 items-center justify-between gap-3 sticky top-0 z-20 ${
+            nav === 'calendar' ? 'hidden md:flex' : 'flex'
+          }`}
+        >
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -483,7 +487,11 @@ export const App: React.FC = () => {
           </div>
         </header>
 
-        <main className="flex-1 p-4 lg:p-6 max-w-[1520px] w-full mx-auto">
+        <main
+          className={`flex-1 max-w-[1520px] w-full mx-auto ${
+            nav === 'calendar' ? 'p-0 md:p-4 lg:p-6' : 'p-4 lg:p-6'
+          }`}
+        >
           {pendingDepositBookings.length > 0 && (
             <div className="no-print mb-4 px-4 py-3 rounded-xl bg-[#FFFBEB] border border-[#FDE68A] flex flex-wrap items-center justify-between gap-3 text-[13px] text-[#92400E]">
               <div>
@@ -526,6 +534,8 @@ export const App: React.FC = () => {
           {nav === 'calendar' && (
             <TimelineCalendarView
               onSelectBooking={(b) => setActiveBookingModal({ bookingId: b.id })}
+              onOpenMobileMenu={() => setMobileMenuOpen(true)}
+              onOpenNewBooking={() => setCreateSingleDraft({})}
               onCreateFromRange={({ room, checkIn, checkOut }) =>
                 setCreateSingleDraft({ room, checkIn, checkOut })
               }
