@@ -13,6 +13,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   Tag,
   Trash2,
   Users,
@@ -26,6 +27,8 @@ import {
   type Guest,
 } from '../types/pms';
 import {
+  addDays,
+  diffDays,
   formatCurrency,
   formatDateVN,
   getBookingGuestBalance,
@@ -34,6 +37,7 @@ import {
   getStatusLabel,
   normalizePhone,
   normalizeVietnamese,
+  todayISO,
 } from '../lib/utils';
 import {
   assignGuestCustomerGroup,
@@ -69,14 +73,26 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   onOpenNewSingle,
   onOpenNewGroup,
 }) => {
-  const { bookings, groups, guests, customerGroups, isAdmin, actor, notify } = usePms();
+  const { bookings, rooms, groups, guests, customerGroups, isAdmin, actor, notify } = usePms();
   const [subTab, setSubTab] = useState<'bookings' | 'groups' | 'asm_guests'>('bookings');
 
-  // Single-box diacritic-insensitive search + multi filters
+  // Tab 1: Bookings multi-filter & sort state
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
+  const [roomFilter, setRoomFilter] = useState('all');
+  const [rentalModeFilter, setRentalModeFilter] = useState<'all' | 'hourly' | 'daily' | 'monthly'>('all');
+  const [bookingPaymentFilter, setBookingPaymentFilter] = useState<'all' | 'unpaid' | 'paid'>('all');
+  const [bookingDateField, setBookingDateField] = useState<
+    'checkIn' | 'checkOut' | 'createdAt' | 'in_house_overlap'
+  >('checkIn');
+  const [bookingDateFrom, setBookingDateFrom] = useState('');
+  const [bookingDateTo, setBookingDateTo] = useState('');
+  const [bookingSort, setBookingSort] = useState<
+    'newest' | 'checkin_nearest' | 'checkout_nearest' | 'balance_desc'
+  >('newest');
   const [onlyAsmAlert, setOnlyAsmAlert] = useState(false);
+  const [showAdvancedBookingFilters, setShowAdvancedBookingFilters] = useState(false);
 
   // Group tab filters & room-collapse state
   const [groupStatusFilter, setGroupStatusFilter] = useState<
@@ -128,11 +144,28 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   const [partialCancelScope, setPartialCancelScope] = useState<Booking[] | null>(null);
   const [resolveDepositBooking, setResolveDepositBooking] = useState<Booking | null>(null);
 
+  const sortedRoomNumbers = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rooms) {
+      if (r.roomNumber) set.add(r.roomNumber);
+    }
+    for (const b of bookings) {
+      if (b.roomNumber) set.add(b.roomNumber);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }, [rooms, bookings]);
+
   const filteredBookings = useMemo(() => {
     const qNorm = normalizeVietnamese(searchText);
     const qDigits = normalizePhone(searchText);
+    const today = todayISO();
 
-    return bookings.filter((b) => {
+    const extractCodeSeq = (code: string | undefined | null): number => {
+      const m = String(code || '').match(/(\d+)/);
+      return m ? Number(m[1]) : 0;
+    };
+
+    const list = bookings.filter((b) => {
       if (statusFilter === 'pending_deposit') {
         if (b.depositResolutionStatus !== 'pending_deposit_resolution') return false;
       } else if (statusFilter !== 'all' && b.status !== statusFilter) {
@@ -142,12 +175,51 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
         if (sourceFilter === 'ota' && b.source !== 'ota') return false;
         if (sourceFilter !== 'ota' && b.source !== sourceFilter) return false;
       }
+      if (roomFilter !== 'all' && b.roomNumber !== roomFilter) {
+        return false;
+      }
+      if (rentalModeFilter !== 'all') {
+        const isHourly = b.bookingMode === 'hourly';
+        const isMonthly = !isHourly && (b.nights || 0) >= 28;
+        if (rentalModeFilter === 'hourly' && !isHourly) return false;
+        if (rentalModeFilter === 'monthly' && !isMonthly) return false;
+        if (rentalModeFilter === 'daily' && (isHourly || isMonthly)) return false;
+      }
+      if (bookingPaymentFilter !== 'all') {
+        const rem = Math.max(0, getBookingGuestBalance(b));
+        if (bookingPaymentFilter === 'unpaid' && !(rem > 0)) return false;
+        if (bookingPaymentFilter === 'paid' && rem !== 0) return false;
+      }
       if (onlyAsmAlert && !b.hasPendingAsm && !b.hasStayPermitAlert) return false;
+
+      if (bookingDateFrom || bookingDateTo) {
+        const from = bookingDateFrom || '0000-01-01';
+        const to = bookingDateTo || '9999-12-31';
+        if (bookingDateField === 'checkIn') {
+          if (!b.checkIn || b.checkIn < from || b.checkIn > to) return false;
+        } else if (bookingDateField === 'checkOut') {
+          if (!b.checkOut || b.checkOut < from || b.checkOut > to) return false;
+        } else if (bookingDateField === 'createdAt') {
+          const createdDay = (b.createdAt || '').slice(0, 10);
+          if (!createdDay || createdDay < from || createdDay > to) return false;
+        } else if (bookingDateField === 'in_house_overlap') {
+          if (!b.checkIn) return false;
+          const isHourly = b.bookingMode === 'hourly';
+          const effectiveEnd = isHourly ? b.checkIn : b.checkOut || b.checkIn;
+          if (b.checkIn > to) return false;
+          if (isHourly) {
+            if (effectiveEnd < from) return false;
+          } else {
+            if (effectiveEnd <= from && b.checkIn < from) return false;
+          }
+        }
+      }
 
       if (qNorm) {
         const haystacks = [
           b.bookingCode,
           b.roomNumber,
+          `P.${b.roomNumber}`,
           b.primaryGuestName,
           b.primaryGuestNormalizedName,
           b.primaryGuestPhone,
@@ -164,14 +236,123 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
         const matched = haystacks.some((h) => {
           const hn = normalizeVietnamese(h);
           if (hn.includes(qNorm)) return true;
-          if (qDigits.length >= 4 && normalizePhone(h).includes(qDigits)) return true;
+          if (qDigits.length >= 3 && normalizePhone(h).includes(qDigits)) return true;
           return false;
         });
         if (!matched) return false;
       }
       return true;
     });
-  }, [bookings, searchText, statusFilter, sourceFilter, onlyAsmAlert]);
+
+    const compareNewest = (a: Booking, b: Booking) => {
+      const aTime = a.createdAt ? Date.parse(a.createdAt) : NaN;
+      const bTime = b.createdAt ? Date.parse(b.createdAt) : NaN;
+      if (!Number.isNaN(aTime) && !Number.isNaN(bTime) && aTime !== bTime) {
+        return bTime - aTime;
+      }
+      const seqDiff = extractCodeSeq(b.bookingCode) - extractCodeSeq(a.bookingCode);
+      if (seqDiff !== 0) return seqDiff;
+      return (b.bookingCode || '').localeCompare(a.bookingCode || '');
+    };
+
+    const compareNearestDate = (dateA: string | undefined, dateB: string | undefined) => {
+      const dA = dateA ? diffDays(today, dateA) : 99999;
+      const dB = dateB ? diffDays(today, dateB) : 99999;
+      const absDiff = Math.abs(dA) - Math.abs(dB);
+      if (absDiff !== 0) return absDiff;
+      // Tie-breaker: upcoming/today (>= 0) before past (< 0)
+      if (dA >= 0 && dB < 0) return -1;
+      if (dA < 0 && dB >= 0) return 1;
+      return 0;
+    };
+
+    list.sort((a, b) => {
+      if (bookingSort === 'checkin_nearest') {
+        const c = compareNearestDate(a.checkIn, b.checkIn);
+        return c !== 0 ? c : compareNewest(a, b);
+      }
+      if (bookingSort === 'checkout_nearest') {
+        const c = compareNearestDate(a.checkOut, b.checkOut);
+        return c !== 0 ? c : compareNewest(a, b);
+      }
+      if (bookingSort === 'balance_desc') {
+        const diff = Math.max(0, getBookingGuestBalance(b)) - Math.max(0, getBookingGuestBalance(a));
+        return diff !== 0 ? diff : compareNewest(a, b);
+      }
+      return compareNewest(a, b);
+    });
+
+    return list;
+  }, [
+    bookings,
+    searchText,
+    statusFilter,
+    sourceFilter,
+    roomFilter,
+    rentalModeFilter,
+    bookingPaymentFilter,
+    bookingDateField,
+    bookingDateFrom,
+    bookingDateTo,
+    bookingSort,
+    onlyAsmAlert,
+  ]);
+
+  const activeAdvancedBookingFilterCount = useMemo(() => {
+    let n = 0;
+    if (sourceFilter !== 'all') n += 1;
+    if (roomFilter !== 'all') n += 1;
+    if (rentalModeFilter !== 'all') n += 1;
+    if (bookingPaymentFilter !== 'all') n += 1;
+    if (bookingDateFrom || bookingDateTo) n += 1;
+    if (onlyAsmAlert) n += 1;
+    return n;
+  }, [
+    sourceFilter,
+    roomFilter,
+    rentalModeFilter,
+    bookingPaymentFilter,
+    bookingDateFrom,
+    bookingDateTo,
+    onlyAsmAlert,
+  ]);
+
+  const hasActiveBookingFilters =
+    Boolean(searchText.trim()) ||
+    statusFilter !== 'all' ||
+    activeAdvancedBookingFilterCount > 0 ||
+    bookingSort !== 'newest';
+
+  const resetBookingFilters = () => {
+    setSearchText('');
+    setStatusFilter('all');
+    setSourceFilter('all');
+    setRoomFilter('all');
+    setRentalModeFilter('all');
+    setBookingPaymentFilter('all');
+    setBookingDateField('checkIn');
+    setBookingDateFrom('');
+    setBookingDateTo('');
+    setBookingSort('newest');
+    setOnlyAsmAlert(false);
+  };
+
+  const applyBookingDatePreset = (preset: 'today' | 'last7' | 'thisMonth') => {
+    const today = todayISO();
+    if (preset === 'today') {
+      setBookingDateFrom(today);
+      setBookingDateTo(today);
+    } else if (preset === 'last7') {
+      setBookingDateFrom(addDays(today, -6));
+      setBookingDateTo(today);
+    } else {
+      const [y, m] = today.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      const ym = today.slice(0, 7);
+      setBookingDateFrom(`${ym}-01`);
+      setBookingDateTo(`${ym}-${String(lastDay).padStart(2, '0')}`);
+    }
+  };
 
   // Foreign occupants across active stays for ASM declaration workflow
   const foreignerStays = useMemo(() => {
@@ -384,7 +565,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
 
   const bookingsPag = usePagination(
     filteredBookings,
-    `${searchText}|${statusFilter}|${sourceFilter}|${onlyAsmAlert}`,
+    `${searchText}|${statusFilter}|${sourceFilter}|${roomFilter}|${rentalModeFilter}|${bookingPaymentFilter}|${bookingDateField}|${bookingDateFrom}|${bookingDateTo}|${bookingSort}|${onlyAsmAlert}`,
     20
   );
   const groupsPag = usePagination(
@@ -577,55 +758,265 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
       {/* TAB 1: ALL BOOKINGS */}
       {subTab === 'bookings' && (
         <div className="space-y-3">
-          <div className="bg-white border border-[#E5E2DC] rounded-xl p-3 flex flex-wrap items-center gap-2.5">
-            <div className="relative flex-1 min-w-[240px]">
-              <Search className="w-4 h-4 text-[#8A847C] absolute left-3 top-2.5" strokeWidth={1.5} />
-              <input
-                type="text"
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Tìm 1 ô không dấu/có dấu: Tên khách, SĐT, CCCD/Passport, Mã đơn, Số phòng..."
-                className="w-full h-9 pl-9 pr-3 rounded-lg border border-[#E5E2DC] text-[13px] focus:outline-none focus:border-[#1B5E4B]"
-              />
+          <div className="bg-white border border-[#E5E2DC] rounded-2xl p-3.5 space-y-3">
+            {/* Row 1 (Primary): Search + Status + Sort + Mobile Advanced Toggle */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
+              <div className="sm:col-span-2 lg:col-span-5 relative">
+                <Search
+                  className="w-4 h-4 text-[#8A847C] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                  strokeWidth={1.5}
+                />
+                <input
+                  type="text"
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  data-testid="bookings-search-input"
+                  placeholder="Tìm mã đơn (LIK00848), P.202, tên khách, SĐT, CCCD, tên đoàn..."
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 pl-9 pr-3 rounded-lg border border-[#E5E2DC] text-[13px] focus:outline-none focus:border-[#0F5132]"
+                />
+              </div>
+
+              <div className="lg:col-span-3">
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  data-testid="bookings-status-filter"
+                  aria-label="Lọc trạng thái đơn"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px] focus:outline-none focus:border-[#0F5132]"
+                >
+                  <option value="all">Mọi trạng thái</option>
+                  <option value="reserved">Đặt trước</option>
+                  <option value="in_house">Đang lưu trú</option>
+                  <option value="checked_out">Đã trả phòng</option>
+                  <option value="transferred">Đã chuyển phòng</option>
+                  <option value="cancelled">Khách báo hủy / Đã hủy</option>
+                  <option value="no_show">Không đến (No-show)</option>
+                  <option value="pending_deposit">Cọc treo chờ xử lý</option>
+                </select>
+              </div>
+
+              <div className="lg:col-span-4 flex items-center gap-2">
+                <select
+                  value={bookingSort}
+                  onChange={(e) =>
+                    setBookingSort(
+                      e.target.value as
+                        | 'newest'
+                        | 'checkin_nearest'
+                        | 'checkout_nearest'
+                        | 'balance_desc'
+                    )
+                  }
+                  data-testid="bookings-sort-select"
+                  aria-label="Sắp xếp đơn đặt phòng"
+                  className="flex-1 min-w-0 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px] font-medium text-[#1C1B18] focus:outline-none focus:border-[#0F5132]"
+                >
+                  <option value="newest">Sắp xếp: Đơn mới nhất</option>
+                  <option value="checkin_nearest">Sắp xếp: Check-in gần nhất</option>
+                  <option value="checkout_nearest">Sắp xếp: Check-out gần nhất</option>
+                  <option value="balance_desc">Sắp xếp: Tiền còn thiếu (Cao → Thấp)</option>
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedBookingFilters((v) => !v)}
+                  data-testid="bookings-advanced-toggle"
+                  className={`lg:hidden shrink-0 min-h-[40px] px-3 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors ${
+                    showAdvancedBookingFilters || activeAdvancedBookingFilterCount > 0
+                      ? 'border-[#0F5132] bg-[#E8F2EE] text-[#0F5132]'
+                      : 'border-[#E5E2DC] bg-[#FAF9F6] text-[#57534E]'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" strokeWidth={1.6} />
+                  <span>Bộ lọc nâng cao</span>
+                  {activeAdvancedBookingFilterCount > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-[#0F5132] text-white font-mono-num text-[10px]">
+                      {activeAdvancedBookingFilterCount}
+                    </span>
+                  )}
+                </button>
+              </div>
             </div>
 
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
+            {/* Row 2 (Advanced Filters: Always open on Desktop lg:, toggleable on Mobile/Tablet) */}
+            <div
+              data-testid="bookings-advanced-panel"
+              className={`${showAdvancedBookingFilters ? 'block' : 'hidden'} lg:block pt-2.5 border-t border-[#F1EFEA] space-y-2.5`}
             >
-              <option value="all">Mọi trạng thái</option>
-              <option value="reserved">Đặt trước</option>
-              <option value="in_house">Đang lưu trú</option>
-              <option value="checked_out">Đã trả phòng</option>
-              <option value="transferred">Đã chuyển phòng</option>
-              <option value="cancelled">Khách báo hủy / Đã hủy</option>
-              <option value="no_show">Không đến (No-show)</option>
-              <option value="pending_deposit">Cọc treo chờ xử lý</option>
-            </select>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
+                <div className="lg:col-span-2">
+                  <select
+                    value={sourceFilter}
+                    onChange={(e) => setSourceFilter(e.target.value)}
+                    data-testid="bookings-source-filter"
+                    aria-label="Lọc nguồn đặt phòng"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px] focus:outline-none focus:border-[#0F5132]"
+                  >
+                    <option value="all">Mọi nguồn</option>
+                    <option value="walk_in">Khách lẻ tại quầy</option>
+                    <option value="zalo">Zalo</option>
+                    <option value="phone">Điện thoại</option>
+                    <option value="ota">Kênh OTA</option>
+                    <option value="group">Khách đoàn</option>
+                  </select>
+                </div>
 
-            <select
-              value={sourceFilter}
-              onChange={(e) => setSourceFilter(e.target.value)}
-              className="h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px]"
-            >
-              <option value="all">Mọi nguồn</option>
-              <option value="walk_in">Khách lẻ tại quầy</option>
-              <option value="zalo">Zalo</option>
-              <option value="phone">Điện thoại</option>
-              <option value="ota">Kênh OTA</option>
-              <option value="group">Khách đoàn</option>
-            </select>
+                <div className="lg:col-span-2">
+                  <select
+                    value={roomFilter}
+                    onChange={(e) => setRoomFilter(e.target.value)}
+                    data-testid="bookings-room-filter"
+                    aria-label="Lọc theo phòng"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px] font-mono-num focus:outline-none focus:border-[#0F5132]"
+                  >
+                    <option value="all">Tất cả phòng</option>
+                    {sortedRoomNumbers.map((rn) => (
+                      <option key={rn} value={rn}>
+                        P.{rn}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-            <label className="inline-flex items-center gap-1.5 text-[12px] text-[#57534E] px-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={onlyAsmAlert}
-                onChange={(e) => setOnlyAsmAlert(e.target.checked)}
-                className="accent-[#1B5E4B]"
-              />
-              Chỉ đơn cảnh báo ASM / Hạn lưu trú
-            </label>
+                <div className="lg:col-span-2">
+                  <select
+                    value={rentalModeFilter}
+                    onChange={(e) =>
+                      setRentalModeFilter(
+                        e.target.value as 'all' | 'hourly' | 'daily' | 'monthly'
+                      )
+                    }
+                    data-testid="bookings-mode-filter"
+                    aria-label="Lọc hình thức thuê"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px] focus:outline-none focus:border-[#0F5132]"
+                  >
+                    <option value="all">Tất cả loại thuê</option>
+                    <option value="hourly">Thuê theo giờ</option>
+                    <option value="daily">Thuê ngày/đêm</option>
+                    <option value="monthly">Thuê tháng (≥ 28 đêm)</option>
+                  </select>
+                </div>
+
+                <div className="lg:col-span-3">
+                  <select
+                    value={bookingPaymentFilter}
+                    onChange={(e) =>
+                      setBookingPaymentFilter(e.target.value as 'all' | 'unpaid' | 'paid')
+                    }
+                    data-testid="bookings-payment-filter"
+                    aria-label="Lọc công nợ thanh toán"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px] focus:outline-none focus:border-[#0F5132]"
+                  >
+                    <option value="all">Tất cả thanh toán</option>
+                    <option value="unpaid">Còn thiếu tiền</option>
+                    <option value="paid">Đã thanh toán đủ</option>
+                  </select>
+                </div>
+
+                <div className="lg:col-span-3">
+                  <label className="inline-flex items-center gap-2 text-[12px] text-[#57534E] px-1 cursor-pointer min-h-[36px]">
+                    <input
+                      type="checkbox"
+                      checked={onlyAsmAlert}
+                      onChange={(e) => setOnlyAsmAlert(e.target.checked)}
+                      data-testid="bookings-asm-alert-checkbox"
+                      className="accent-[#0F5132] w-4 h-4"
+                    />
+                    <span>Chỉ đơn cảnh báo ASM / Hạn lưu trú</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Date Criteria + From/To + Quick Chips */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
+                <div className="lg:col-span-3">
+                  <select
+                    value={bookingDateField}
+                    onChange={(e) =>
+                      setBookingDateField(
+                        e.target.value as
+                          | 'checkIn'
+                          | 'checkOut'
+                          | 'createdAt'
+                          | 'in_house_overlap'
+                      )
+                    }
+                    data-testid="bookings-date-field-select"
+                    aria-label="Tiêu chí lọc ngày"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] text-[12px] font-medium text-[#1C1B18] focus:outline-none focus:border-[#0F5132]"
+                  >
+                    <option value="checkIn">Theo ngày Check-in</option>
+                    <option value="checkOut">Theo ngày Check-out</option>
+                    <option value="createdAt">Theo ngày tạo đơn</option>
+                    <option value="in_house_overlap">Có mặt tại KS trong khoảng ngày</option>
+                  </select>
+                </div>
+
+                <div className="lg:col-span-2">
+                  <DateInputVN
+                    value={bookingDateFrom}
+                    onChange={setBookingDateFrom}
+                    placeholder="Từ ngày (dd/mm/yyyy)"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9"
+                  />
+                </div>
+
+                <div className="lg:col-span-2">
+                  <DateInputVN
+                    value={bookingDateTo}
+                    onChange={setBookingDateTo}
+                    placeholder="Đến ngày (dd/mm/yyyy)"
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9"
+                  />
+                </div>
+
+                <div className="sm:col-span-2 lg:col-span-5 flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    data-testid="bookings-date-chip-today"
+                    onClick={() => applyBookingDatePreset('today')}
+                    className="min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] hover:border-[#0F5132] hover:bg-[#E8F2EE] text-[12px] font-medium text-[#3F3D37] hover:text-[#0F5132] transition-colors"
+                  >
+                    Hôm nay
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="bookings-date-chip-last7"
+                    onClick={() => applyBookingDatePreset('last7')}
+                    className="min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] hover:border-[#0F5132] hover:bg-[#E8F2EE] text-[12px] font-medium text-[#3F3D37] hover:text-[#0F5132] transition-colors"
+                  >
+                    7 ngày qua
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="bookings-date-chip-month"
+                    onClick={() => applyBookingDatePreset('thisMonth')}
+                    className="min-h-[36px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] hover:border-[#0F5132] hover:bg-[#E8F2EE] text-[12px] font-medium text-[#3F3D37] hover:text-[#0F5132] transition-colors"
+                  >
+                    Tháng này
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Filter Status Summary Bar & 1-Click Reset */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#F1EFEA] text-[12px] text-[#57534E]">
+              <div data-testid="bookings-filter-summary" className="font-mono-num">
+                Tìm thấy <strong className="text-[#1C1B18]">{filteredBookings.length}</strong> /{' '}
+                <strong className="text-[#1C1B18]">{bookings.length}</strong> đơn
+              </div>
+              {hasActiveBookingFilters && (
+                <button
+                  type="button"
+                  onClick={resetBookingFilters}
+                  data-testid="bookings-reset-filters-btn"
+                  className="min-h-[36px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border border-[#FECACA] bg-[#FEF2F2]/60 hover:bg-[#FEF2F2] text-[#B91C1C] text-[12px] font-medium inline-flex items-center gap-1 transition-colors"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.6} />
+                  <span>Xóa bộ lọc</span>
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="bg-white border border-[#E5E2DC] rounded-2xl overflow-x-auto">
