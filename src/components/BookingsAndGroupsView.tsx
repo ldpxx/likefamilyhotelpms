@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Download,
   Globe,
@@ -9,6 +11,7 @@ import {
   Merge,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Tag,
   Trash2,
@@ -53,6 +56,7 @@ import { CancelBookingModal } from './CancelBookingModal';
 import { DepositResolutionModal } from './DepositResolutionModal';
 import { PaginationBar, usePagination } from './PaginationBar';
 import { CountrySelect } from './CountrySelect';
+import { DateInputVN } from './DateInputVN';
 
 interface BookingsAndGroupsViewProps {
   onSelectBooking: (booking: Booking) => void;
@@ -73,6 +77,16 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   const [statusFilter, setStatusFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [onlyAsmAlert, setOnlyAsmAlert] = useState(false);
+
+  // Group tab filters & room-collapse state
+  const [groupStatusFilter, setGroupStatusFilter] = useState<
+    'active_upcoming' | 'reserved' | 'in_house' | 'checked_out' | 'all'
+  >('active_upcoming');
+  const [groupSearch, setGroupSearch] = useState('');
+  const [groupPaymentFilter, setGroupPaymentFilter] = useState<'all' | 'unpaid' | 'paid'>('all');
+  const [groupDateFrom, setGroupDateFrom] = useState('');
+  const [groupDateTo, setGroupDateTo] = useState('');
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Record<string, boolean>>({});
 
   // Guest / ASM filters
   const [guestSearch, setGuestSearch] = useState('');
@@ -208,12 +222,176 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
     return list;
   }, [guests, guestSearch, guestCountryFilter, guestGroupFilter, customerGroupMap]);
 
+  const enrichedGroups = useMemo(() => {
+    const bookingsByGroup = new Map<string, Booking[]>();
+    for (const b of bookings) {
+      if (!b.groupId) continue;
+      const arr = bookingsByGroup.get(b.groupId) || [];
+      arr.push(b);
+      bookingsByGroup.set(b.groupId, arr);
+    }
+
+    const list = groups.map((g) => {
+      const gBookings = [...(bookingsByGroup.get(g.id) || [])].sort((a, b) =>
+        a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true })
+      );
+      const activeGroupBookings = gBookings.filter(
+        (b) => b.status === 'reserved' || b.status === 'in_house'
+      );
+      const hasInHouse = gBookings.some((b) => b.status === 'in_house');
+      const hasReserved = gBookings.some((b) => b.status === 'reserved');
+      const isActiveOrUpcoming = hasInHouse || hasReserved;
+      const isCheckedOut =
+        !isActiveOrUpcoming &&
+        gBookings.some((b) => b.status === 'checked_out' || b.status === 'transferred');
+
+      const nonCancelled = gBookings.filter(
+        (b) => b.status !== 'cancelled' && b.status !== 'no_show'
+      );
+      const totalGross = nonCancelled.reduce(
+        (s, b) => s + (b.grossRoomTotal || 0) + (b.serviceTotal || 0) + (b.hourlySurcharge || 0),
+        0
+      );
+      const totalPaid = gBookings.reduce(
+        (s, b) => s + (b.depositPaid || 0) + (b.guestPaid || 0),
+        0
+      );
+      const balance = Math.max(0, totalGross - totalPaid);
+      const reservedCount = gBookings.filter((b) => b.status === 'reserved').length;
+
+      const checkIns = gBookings.map((b) => b.checkIn).filter(Boolean).sort();
+      const checkOuts = gBookings.map((b) => b.checkOut).filter(Boolean).sort();
+      const earliestCheckIn = checkIns[0] || (g.createdAt || '').slice(0, 10);
+      const latestCheckOut = checkOuts[checkOuts.length - 1] || earliestCheckIn;
+
+      return {
+        group: g,
+        gBookings,
+        activeGroupBookings,
+        hasInHouse,
+        hasReserved,
+        isActiveOrUpcoming,
+        isCheckedOut,
+        totalGross,
+        totalPaid,
+        balance,
+        reservedCount,
+        earliestCheckIn,
+        latestCheckOut,
+      };
+    });
+
+    // Smart default sort: in_house first -> upcoming reserved (soonest check-in first) -> checked_out/history (latest first)
+    list.sort((a, b) => {
+      const rank = (x: typeof a) => (x.hasInHouse ? 0 : x.hasReserved ? 1 : 2);
+      const rA = rank(a);
+      const rB = rank(b);
+      if (rA !== rB) return rA - rB;
+      if (rA <= 1) {
+        return (a.earliestCheckIn || '').localeCompare(b.earliestCheckIn || '');
+      }
+      return (b.earliestCheckIn || '').localeCompare(a.earliestCheckIn || '');
+    });
+
+    return list;
+  }, [groups, bookings]);
+
+  const groupStatusCounts = useMemo(() => {
+    return {
+      active_upcoming: enrichedGroups.filter((x) => x.isActiveOrUpcoming).length,
+      reserved: enrichedGroups.filter((x) => x.hasReserved).length,
+      in_house: enrichedGroups.filter((x) => x.hasInHouse).length,
+      checked_out: enrichedGroups.filter((x) => x.isCheckedOut).length,
+      all: enrichedGroups.length,
+    };
+  }, [enrichedGroups]);
+
+  const filteredGroups = useMemo(() => {
+    const qNorm = normalizeVietnamese(groupSearch);
+    const qDigits = normalizePhone(groupSearch);
+
+    return enrichedGroups.filter((item) => {
+      if (groupStatusFilter === 'active_upcoming' && !item.isActiveOrUpcoming) return false;
+      if (groupStatusFilter === 'reserved' && !item.hasReserved) return false;
+      if (groupStatusFilter === 'in_house' && !item.hasInHouse) return false;
+      if (groupStatusFilter === 'checked_out' && !item.isCheckedOut) return false;
+
+      if (groupPaymentFilter === 'unpaid' && !(item.totalPaid < item.totalGross)) return false;
+      if (groupPaymentFilter === 'paid' && !(item.totalPaid >= item.totalGross)) return false;
+
+      if (groupDateFrom || groupDateTo) {
+        const ci = item.earliestCheckIn;
+        const co = item.latestCheckOut;
+        if (groupDateFrom && groupDateTo) {
+          const ciIn = ci >= groupDateFrom && ci <= groupDateTo;
+          const coIn = co >= groupDateFrom && co <= groupDateTo;
+          if (!ciIn && !coIn) return false;
+        } else if (groupDateFrom) {
+          if (ci < groupDateFrom && co < groupDateFrom) return false;
+        } else if (groupDateTo) {
+          if (ci > groupDateTo && co > groupDateTo) return false;
+        }
+      }
+
+      if (qNorm) {
+        const g = item.group;
+        const haystacks = [
+          g.groupCode,
+          g.groupName,
+          g.leaderName,
+          g.leaderPhone || '',
+          ...item.gBookings.flatMap((b) => [
+            b.bookingCode,
+            b.roomNumber,
+            `P.${b.roomNumber}`,
+            b.primaryGuestName,
+          ]),
+        ];
+        const matched = haystacks.some((h) => {
+          const hn = normalizeVietnamese(h);
+          if (hn.includes(qNorm)) return true;
+          if (qDigits.length >= 3 && normalizePhone(h).includes(qDigits)) return true;
+          return false;
+        });
+        if (!matched) return false;
+      }
+
+      return true;
+    });
+  }, [
+    enrichedGroups,
+    groupStatusFilter,
+    groupSearch,
+    groupPaymentFilter,
+    groupDateFrom,
+    groupDateTo,
+  ]);
+
+  const hasCustomGroupFilters =
+    groupStatusFilter !== 'active_upcoming' ||
+    Boolean(groupSearch.trim()) ||
+    groupPaymentFilter !== 'all' ||
+    Boolean(groupDateFrom) ||
+    Boolean(groupDateTo);
+
+  const resetGroupFilters = () => {
+    setGroupStatusFilter('active_upcoming');
+    setGroupSearch('');
+    setGroupPaymentFilter('all');
+    setGroupDateFrom('');
+    setGroupDateTo('');
+  };
+
   const bookingsPag = usePagination(
     filteredBookings,
     `${searchText}|${statusFilter}|${sourceFilter}|${onlyAsmAlert}`,
     20
   );
-  const groupsPag = usePagination(groups, 'groups', 20);
+  const groupsPag = usePagination(
+    filteredGroups,
+    `${groupStatusFilter}|${groupSearch}|${groupPaymentFilter}|${groupDateFrom}|${groupDateTo}`,
+    10
+  );
   const asmPag = usePagination(foreignerStays, String(asmOnlyPending), 20);
   const guestsPag = usePagination(
     filteredGuests,
@@ -667,105 +845,314 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
       {/* TAB 2: GROUPS */}
       {subTab === 'groups' && (
         <div className="space-y-3">
+          {/* Group Filter Bar */}
+          <div className="bg-white border border-[#E5E2DC] rounded-2xl p-3.5 sm:p-4 space-y-3">
+            {/* Row 1: Quick Status Filter Pills with counts */}
+            <div className="flex flex-wrap items-center gap-1.5" data-testid="groups-status-pills">
+              {(
+                [
+                  { id: 'active_upcoming', label: 'Đang ở & Sắp đến', count: groupStatusCounts.active_upcoming },
+                  { id: 'reserved', label: 'Đặt trước', count: groupStatusCounts.reserved },
+                  { id: 'in_house', label: 'Đang lưu trú', count: groupStatusCounts.in_house },
+                  { id: 'checked_out', label: 'Đã trả phòng', count: groupStatusCounts.checked_out },
+                  { id: 'all', label: 'Tất cả', count: groupStatusCounts.all },
+                ] as const
+              ).map((pill) => {
+                const active = groupStatusFilter === pill.id;
+                return (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    data-testid={`groups-status-pill-${pill.id}`}
+                    onClick={() => setGroupStatusFilter(pill.id)}
+                    className={`min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg text-[12px] font-medium inline-flex items-center gap-1.5 border transition-colors ${
+                      active
+                        ? 'bg-[#0F5132] border-[#0F5132] text-white'
+                        : 'bg-[#FAF9F6] border-[#E5E2DC] text-[#57534E] hover:border-[#0F5132]/50 hover:text-[#1C1B18]'
+                    }`}
+                  >
+                    <span>{pill.label}</span>
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full font-mono-num text-[11px] ${
+                        active ? 'bg-white/20 text-white' : 'bg-[#EAE7E0] text-[#44403C]'
+                      }`}
+                    >
+                      {pill.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Row 2: Search + Payment Status + Date Range + Reset */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-end">
+              <div className="sm:col-span-2 lg:col-span-4 relative">
+                <label className="block text-[11px] font-medium text-[#57534E] mb-1">
+                  Tìm kiếm nhanh
+                </label>
+                <div className="relative">
+                  <Search
+                    className="w-4 h-4 text-[#8A847C] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                    strokeWidth={1.5}
+                  />
+                  <input
+                    type="text"
+                    value={groupSearch}
+                    onChange={(e) => setGroupSearch(e.target.value)}
+                    data-testid="groups-search-input"
+                    placeholder="Mã đoàn (LIK00848), tên, SĐT, P.202..."
+                    className="w-full min-h-[40px] sm:min-h-0 sm:h-9 pl-9 pr-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px] focus:outline-none focus:border-[#0F5132]"
+                  />
+                </div>
+              </div>
+
+              <div className="lg:col-span-3">
+                <label className="block text-[11px] font-medium text-[#57534E] mb-1">
+                  Công nợ thanh toán
+                </label>
+                <select
+                  value={groupPaymentFilter}
+                  onChange={(e) =>
+                    setGroupPaymentFilter(e.target.value as 'all' | 'unpaid' | 'paid')
+                  }
+                  data-testid="groups-payment-filter"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[13px] focus:outline-none focus:border-[#0F5132]"
+                >
+                  <option value="all">Tất cả thanh toán</option>
+                  <option value="unpaid">Chưa thu đủ (Còn nợ)</option>
+                  <option value="paid">Đã thanh toán đủ</option>
+                </select>
+              </div>
+
+              <div className="lg:col-span-2">
+                <label className="block text-[11px] font-medium text-[#57534E] mb-1">
+                  Từ ngày (Nhận/Trả)
+                </label>
+                <DateInputVN
+                  value={groupDateFrom}
+                  onChange={setGroupDateFrom}
+                  placeholder="dd/mm/yyyy"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9"
+                />
+              </div>
+
+              <div className="lg:col-span-2">
+                <label className="block text-[11px] font-medium text-[#57534E] mb-1">
+                  Đến ngày (Nhận/Trả)
+                </label>
+                <DateInputVN
+                  value={groupDateTo}
+                  onChange={setGroupDateTo}
+                  placeholder="dd/mm/yyyy"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9"
+                />
+              </div>
+
+              <div className="lg:col-span-1">
+                <button
+                  type="button"
+                  disabled={!hasCustomGroupFilters}
+                  onClick={resetGroupFilters}
+                  data-testid="groups-reset-filters-btn"
+                  title="Đưa bộ lọc về mặc định (Đang ở & Sắp đến)"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white hover:bg-[#FAF9F6] disabled:opacity-45 text-[#57534E] hover:text-[#1C1B18] text-[12px] font-medium inline-flex items-center justify-center gap-1 transition-colors"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 shrink-0" strokeWidth={1.6} />
+                  <span>Xóa lọc</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
           {groups.length === 0 ? (
             <div className="bg-white border border-[#E5E2DC] rounded-2xl p-10 text-center text-[13px] text-[#8A847C]">
               Chưa có hồ sơ khách đoàn nào. Bấm "Đặt khách đoàn" hoặc chọn nhiều phòng từ Tìm phòng trống.
             </div>
+          ) : filteredGroups.length === 0 ? (
+            <div className="bg-white border border-[#E5E2DC] rounded-2xl p-8 text-center space-y-2.5">
+              <p className="text-[13px] text-[#57534E]">
+                Không tìm thấy hồ sơ khách đoàn nào khớp với bộ lọc hiện tại.
+              </p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {groupStatusFilter !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setGroupStatusFilter('all')}
+                    className="min-h-[38px] sm:min-h-0 sm:h-8 px-3.5 rounded-lg bg-[#0F5132] text-white text-[12px] font-medium"
+                  >
+                    Xem tất cả đoàn ({groups.length})
+                  </button>
+                )}
+                {hasCustomGroupFilters && (
+                  <button
+                    type="button"
+                    onClick={resetGroupFilters}
+                    className="min-h-[38px] sm:min-h-0 sm:h-8 px-3.5 rounded-lg border border-[#E5E2DC] bg-white text-[#57534E] text-[12px] font-medium"
+                  >
+                    Xóa bộ lọc
+                  </button>
+                )}
+              </div>
+            </div>
           ) : (
             <>
-              {groupsPag.pageItems.map((g) => {
-              const gBookings = bookings.filter((b) => b.groupId === g.id);
-              const activeGroupBookings = gBookings.filter(
-                (b) => b.status === 'reserved' || b.status === 'in_house'
-              );
-              const totalGross = gBookings
-                .filter((b) => b.status !== 'cancelled' && b.status !== 'no_show')
-                .reduce(
-                  (s, b) => s + b.grossRoomTotal + (b.serviceTotal || 0) + (b.hourlySurcharge || 0),
-                  0
-                );
-              const totalPaid = gBookings.reduce(
-                (s, b) => s + (b.depositPaid || 0) + (b.guestPaid || 0),
-                0
-              );
-              const reservedCount = gBookings.filter((b) => b.status === 'reserved').length;
+              {groupsPag.pageItems.map((item) => {
+                const {
+                  group: g,
+                  gBookings,
+                  activeGroupBookings,
+                  hasInHouse,
+                  hasReserved,
+                  totalGross,
+                  totalPaid,
+                  balance,
+                  reservedCount,
+                  earliestCheckIn,
+                  latestCheckOut,
+                } = item;
+                const isExpanded = Boolean(expandedGroupIds[g.id]);
+                const hasMoreRooms = gBookings.length > 4;
+                const visibleBookings =
+                  hasMoreRooms && !isExpanded ? gBookings.slice(0, 4) : gBookings;
 
-              return (
-                <div key={g.id} className="bg-white border border-[#E5E2DC] rounded-2xl p-5 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono-num text-[12px] px-2 py-0.5 rounded bg-[#E8F2EE] text-[#1B5E4B] font-semibold">
-                          {g.groupCode}
-                        </span>
-                        <h3 className="text-[15px] font-semibold text-[#1C1B18]">{g.groupName}</h3>
-                      </div>
-                      <p className="text-[12px] text-[#57534E] mt-0.5">
-                        Trưởng đoàn: {g.leaderName} ({g.leaderPhone || '—'}) • {gBookings.length}{' '}
-                        phòng • Thanh toán:{' '}
-                        {g.billingMode === 'master' ? 'Gộp hóa đơn đoàn' : 'Tách từng phòng'}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <div className="text-right font-mono-num text-[12px]">
-                        <div>
-                          Tổng đoàn: <strong>{formatCurrency(totalGross)}</strong>
-                        </div>
-                        <div className="text-[#15803D]">Đã thu/cọc: {formatCurrency(totalPaid)}</div>
-                      </div>
-                      {activeGroupBookings.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setPartialCancelScope(activeGroupBookings)}
-                          className="h-9 px-3 rounded-lg border border-[#FECACA] bg-white hover:bg-[#FEF2F2] text-[#B91C1C] text-[12px] font-medium"
-                        >
-                          Hủy một phần / phòng
-                        </button>
-                      )}
-                      {reservedCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => handleBulkCheckIn(g.id, g.groupName)}
-                          className="h-9 px-3.5 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[12px] font-medium inline-flex items-center gap-1.5"
-                        >
-                          <LogIn className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          Check-in cả đoàn ({reservedCount})
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                    {gBookings.map((b) => (
-                      <button
-                        key={b.id}
-                        type="button"
-                        onClick={() => onSelectBooking(b)}
-                        className="text-left p-3 rounded-xl border border-[#E5E2DC] hover:border-[#1B5E4B] bg-[#FAF9F6] transition-colors"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono-num font-semibold text-[13px] text-[#1C1B18]">
-                            P.{b.roomNumber}
+                return (
+                  <div
+                    key={g.id}
+                    data-testid={`group-card-${g.id}`}
+                    className="bg-white border border-[#E5E2DC] rounded-2xl p-4 sm:p-5 space-y-3"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono-num text-[12px] px-2 py-0.5 rounded bg-[#E8F2EE] text-[#1B5E4B] font-semibold">
+                            {g.groupCode}
                           </span>
-                          <span className="text-[11px] text-[#57534E]">{getStatusLabel(b.status)}</span>
+                          <h3 className="text-[15px] font-semibold text-[#1C1B18]">{g.groupName}</h3>
+                          {hasInHouse ? (
+                            <span className="px-2 py-0.5 rounded-full bg-[#ECFDF5] text-[#065F46] text-[11px] font-medium">
+                              Đang lưu trú
+                            </span>
+                          ) : hasReserved ? (
+                            <span className="px-2 py-0.5 rounded-full bg-[#FFFBEB] text-[#92400E] text-[11px] font-medium">
+                              Đặt trước
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full bg-[#F1EFEA] text-[#57534E] text-[11px] font-medium">
+                              Đã trả phòng
+                            </span>
+                          )}
+                          {balance > 0 ? (
+                            <span className="px-2 py-0.5 rounded-full bg-[#FEF3C7] text-[#B45309] font-mono-num text-[11px] font-semibold">
+                              Còn nợ: {formatCurrency(balance)}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full bg-[#E8F3EC] text-[#0F5132] text-[11px] font-medium">
+                              Đã thanh toán đủ
+                            </span>
+                          )}
                         </div>
-                        <div className="text-[11px] font-mono-num text-[#57534E] mt-1">
-                          {formatDateVN(b.checkIn)} → {formatDateVN(b.checkOut)} ({b.nights}đ)
+                        <p className="text-[12px] text-[#57534E] mt-1">
+                          Trưởng đoàn: <strong className="text-[#1C1B18]">{g.leaderName}</strong> (
+                          {g.leaderPhone || '—'}) •{' '}
+                          <span className="font-mono-num">
+                            {formatDateVN(earliestCheckIn)} → {formatDateVN(latestCheckOut)}
+                          </span>{' '}
+                          • {gBookings.length} phòng •{' '}
+                          {g.billingMode === 'master' ? 'Gộp hóa đơn đoàn' : 'Tách từng phòng'}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                        <div className="text-left sm:text-right font-mono-num text-[12px]">
+                          <div>
+                            Tổng đoàn: <strong>{formatCurrency(totalGross)}</strong>
+                          </div>
+                          <div className="text-[#15803D]">
+                            Đã thu/cọc: {formatCurrency(totalPaid)}
+                          </div>
                         </div>
-                        <div className="text-[12px] font-mono-num font-medium text-[#1B5E4B] mt-0.5">
-                          {formatCurrency(b.grossRoomTotal)}
-                        </div>
-                      </button>
-                    ))}
+                        {activeGroupBookings.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setPartialCancelScope(activeGroupBookings)}
+                            className="min-h-[38px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#FECACA] bg-white hover:bg-[#FEF2F2] text-[#B91C1C] text-[12px] font-medium"
+                          >
+                            Hủy một phần / phòng
+                          </button>
+                        )}
+                        {reservedCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleBulkCheckIn(g.id, g.groupName)}
+                            className="min-h-[38px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg bg-[#1B5E4B] hover:bg-[#144839] text-white text-[12px] font-medium inline-flex items-center gap-1.5"
+                          >
+                            <LogIn className="w-3.5 h-3.5" strokeWidth={1.5} />
+                            Check-in cả đoàn ({reservedCount})
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                      {visibleBookings.map((b) => (
+                        <button
+                          key={b.id}
+                          type="button"
+                          data-testid={`group-room-tile-${g.id}-${b.roomNumber}`}
+                          onClick={() => onSelectBooking(b)}
+                          className="text-left p-3 rounded-xl border border-[#E5E2DC] hover:border-[#1B5E4B] bg-[#FAF9F6] transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-mono-num font-semibold text-[13px] text-[#1C1B18]">
+                              P.{b.roomNumber}
+                            </span>
+                            <span className="text-[11px] text-[#57534E]">
+                              {getStatusLabel(b.status)}
+                            </span>
+                          </div>
+                          <div className="text-[11px] font-mono-num text-[#57534E] mt-1">
+                            {formatDateVN(b.checkIn)} → {formatDateVN(b.checkOut)} ({b.nights}đ)
+                          </div>
+                          <div className="text-[12px] font-mono-num font-medium text-[#1B5E4B] mt-0.5">
+                            {formatCurrency(b.grossRoomTotal)}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+
+                    {hasMoreRooms && (
+                      <div className="pt-0.5">
+                        <button
+                          type="button"
+                          data-testid={`group-toggle-rooms-${g.id}`}
+                          onClick={() =>
+                            setExpandedGroupIds((prev) => ({ ...prev, [g.id]: !prev[g.id] }))
+                          }
+                          className="min-h-[38px] sm:min-h-0 sm:h-8 px-3 rounded-lg border border-dashed border-[#0F5132]/40 bg-[#FAF9F6] hover:bg-[#E8F2EE] text-[#0F5132] text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors"
+                        >
+                          {isExpanded ? (
+                            <>
+                              <ChevronUp className="w-3.5 h-3.5" strokeWidth={1.75} />
+                              <span>Thu gọn bớt</span>
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="w-3.5 h-3.5" strokeWidth={1.75} />
+                              <span>Xem thêm {gBookings.length - 4} phòng...</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+
               <PaginationBar
                 testId="groups-pagination"
                 page={groupsPag.page}
                 pageSize={groupsPag.pageSize}
+                pageSizeOptions={[10, 20, 50]}
                 totalItems={groupsPag.totalItems}
                 onPageChange={groupsPag.setPage}
                 onPageSizeChange={groupsPag.setPageSize}
