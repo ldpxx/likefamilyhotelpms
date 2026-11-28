@@ -23,7 +23,6 @@ import {
   DEFAULT_FORM_TEMPLATES,
   DEFAULT_HOTEL_CONFIG,
   DEFAULT_SERVICE_CATALOG,
-  seedLikeFamilyHotelSampleData,
 } from '../lib/seedData';
 import { getDefaultPermissionsForRole } from '../lib/utils';
 import type {
@@ -61,6 +60,12 @@ export interface ToastNotice {
   message: string;
 }
 
+export interface HydrationStep {
+  key: 'config' | 'roomTypes' | 'rooms' | 'bookings' | 'finance';
+  label: string;
+  done: boolean;
+}
+
 interface PmsContextValue {
   firebaseUser: FirebaseUser | null;
   authLoading: boolean;
@@ -95,6 +100,13 @@ interface PmsContextValue {
   staffUsers: StaffUser[];
   auditLogs: AuditLog[];
   dataLoaded: boolean;
+  dataHydrating: boolean;
+  hydrationSteps: HydrationStep[];
+  hydrationProgressPct: number;
+  hydrationElapsedSec: number;
+  hydrationTimedOut: boolean;
+  hydrationError: string | null;
+  retryHydration: () => void;
 
   seedSampleHotel: () => Promise<void>;
   notify: (message: string, type?: ToastNotice['type']) => void;
@@ -136,6 +148,23 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [staffUsers, setStaffUsers] = useState<StaffUser[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [hydrationMap, setHydrationMap] = useState<{
+    config: boolean;
+    roomTypes: boolean;
+    rooms: boolean;
+    bookings: boolean;
+    finance: boolean;
+  }>({
+    config: false,
+    roomTypes: false,
+    rooms: false,
+    bookings: false,
+    finance: false,
+  });
+  const [hydrationElapsedSec, setHydrationElapsedSec] = useState(0);
+  const [hydrationTimedOut, setHydrationTimedOut] = useState(false);
+  const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const configMigrationCheckedRef = React.useRef(false);
   const customerGroupsSeededRef = React.useRef(false);
 
@@ -398,46 +427,96 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [staffProfile]
   );
 
-  // Real-time Firestore Subscriptions
+  const retryHydration = useCallback(() => {
+    setHydrationTimedOut(false);
+    setHydrationError(null);
+    setHydrationElapsedSec(0);
+    setHydrationMap({
+      config: false,
+      roomTypes: false,
+      rooms: false,
+      bookings: false,
+      finance: false,
+    });
+    setDataLoaded(false);
+    setHydrationAttempt((n) => n + 1);
+  }, []);
+
+  // Real-time Firestore Subscriptions with Initial Hydration Gate
   useEffect(() => {
     if (!staffProfile || !staffProfile.isActive) {
       setDataLoaded(false);
+      setHydrationMap({
+        config: false,
+        roomTypes: false,
+        rooms: false,
+        bookings: false,
+        finance: false,
+      });
+      setHydrationElapsedSec(0);
+      setHydrationTimedOut(false);
+      setHydrationError(null);
       return;
     }
+
+    setDataLoaded(false);
+    setHydrationMap({
+      config: false,
+      roomTypes: false,
+      rooms: false,
+      bookings: false,
+      finance: false,
+    });
+    setHydrationElapsedSec(0);
+    setHydrationTimedOut(false);
+    setHydrationError(null);
+
+    const markHydrated = (key: 'config' | 'roomTypes' | 'rooms' | 'bookings' | 'finance') => {
+      setHydrationMap((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+    };
+
+    const handleSnapshotErr = (err: Error) => {
+      setHydrationError(err.message || 'Kết nối đồng bộ dữ liệu bị gián đoạn.');
+    };
 
     const unsubs: Array<() => void> = [];
 
     unsubs.push(
-      onSnapshot(doc(db, 'hotel_config', 'main'), (snap) => {
-        if (snap.exists()) {
-          const data = snap.data() as Partial<HotelConfig> & {
-            otaChannels?: Array<{ id: string; name: string; color?: string; isActive?: boolean }>;
-          };
-          let sources: BookingSourceConfig[] = data.bookingSources || [];
-          if (sources.length === 0) {
-            sources = [...DEFAULT_HOTEL_CONFIG.bookingSources];
-            if (Array.isArray(data.otaChannels) && data.otaChannels.length > 0) {
-              const directs = DEFAULT_HOTEL_CONFIG.bookingSources.filter((s) => s.kind === 'direct');
-              const otas: BookingSourceConfig[] = data.otaChannels.map((c) => ({
-                id: c.id,
-                name: c.name,
-                kind: 'ota',
-                color: c.color,
-                isActive: c.isActive !== false,
-              }));
-              sources = [...directs, ...otas];
+      onSnapshot(
+        doc(db, 'hotel_config', 'main'),
+        (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as Partial<HotelConfig> & {
+              otaChannels?: Array<{ id: string; name: string; color?: string; isActive?: boolean }>;
+            };
+            let sources: BookingSourceConfig[] = data.bookingSources || [];
+            if (sources.length === 0) {
+              sources = [...DEFAULT_HOTEL_CONFIG.bookingSources];
+              if (Array.isArray(data.otaChannels) && data.otaChannels.length > 0) {
+                const directs = DEFAULT_HOTEL_CONFIG.bookingSources.filter((s) => s.kind === 'direct');
+                const otas: BookingSourceConfig[] = data.otaChannels.map((c) => ({
+                  id: c.id,
+                  name: c.name,
+                  kind: 'ota',
+                  color: c.color,
+                  isActive: c.isActive !== false,
+                }));
+                sources = [...directs, ...otas];
+              }
             }
+            setHotelConfig({
+              ...DEFAULT_HOTEL_CONFIG,
+              ...data,
+              bookingSources: sources,
+              serviceCatalog: Array.isArray(data.serviceCatalog)
+                ? data.serviceCatalog
+                : DEFAULT_SERVICE_CATALOG,
+            });
           }
-          setHotelConfig({
-            ...DEFAULT_HOTEL_CONFIG,
-            ...data,
-            bookingSources: sources,
-            serviceCatalog: Array.isArray(data.serviceCatalog)
-              ? data.serviceCatalog
-              : DEFAULT_SERVICE_CATALOG,
-          });
-        }
-      })
+          markHydrated('config');
+        },
+        handleSnapshotErr
+      )
     );
 
     unsubs.push(
@@ -454,50 +533,64 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     unsubs.push(
-      onSnapshot(collection(db, 'room_types'), (snap) => {
-        const list = snap.docs.map((d) => {
-          const raw = d.data() as Partial<RoomType>;
-          return {
-            ...raw,
-            isActive: raw.isActive !== false,
-            hourlyPricing: raw.hourlyPricing || {
-              firstHourPrice: 150000,
-              secondHourPrice: 50000,
-              additionalHourPrice: 30000,
-            },
-          } as RoomType;
-        });
-        list.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-        setRoomTypes(list);
-      })
+      onSnapshot(
+        collection(db, 'room_types'),
+        (snap) => {
+          const list = snap.docs.map((d) => {
+            const raw = d.data() as Partial<RoomType>;
+            return {
+              ...raw,
+              isActive: raw.isActive !== false,
+              hourlyPricing: raw.hourlyPricing || {
+                firstHourPrice: 150000,
+                secondHourPrice: 50000,
+                additionalHourPrice: 30000,
+              },
+            } as RoomType;
+          });
+          list.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+          setRoomTypes(list);
+          markHydrated('roomTypes');
+        },
+        handleSnapshotErr
+      )
     );
 
     unsubs.push(
-      onSnapshot(collection(db, 'rooms'), (snap) => {
-        const list = snap.docs.map((d) => {
-          const raw = d.data() as Partial<Room>;
-          return { ...raw, isActive: raw.isActive !== false } as Room;
-        });
-        list.sort(
-          (a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.roomNumber.localeCompare(b.roomNumber)
-        );
-        setRooms(list);
-        setDataLoaded(true);
-      })
+      onSnapshot(
+        collection(db, 'rooms'),
+        (snap) => {
+          const list = snap.docs.map((d) => {
+            const raw = d.data() as Partial<Room>;
+            return { ...raw, isActive: raw.isActive !== false } as Room;
+          });
+          list.sort(
+            (a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.roomNumber.localeCompare(b.roomNumber)
+          );
+          setRooms(list);
+          markHydrated('rooms');
+        },
+        handleSnapshotErr
+      )
     );
 
     unsubs.push(
-      onSnapshot(collection(db, 'bookings'), (snap) => {
-        const list = snap.docs.map((d) => {
-          const raw = d.data() as Partial<Booking>;
-          return {
-            ...raw,
-            bookingMode: raw.bookingMode || 'daily',
-          } as Booking;
-        });
-        list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-        setBookings(list);
-      })
+      onSnapshot(
+        collection(db, 'bookings'),
+        (snap) => {
+          const list = snap.docs.map((d) => {
+            const raw = d.data() as Partial<Booking>;
+            return {
+              ...raw,
+              bookingMode: raw.bookingMode || 'daily',
+            } as Booking;
+          });
+          list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+          setBookings(list);
+          markHydrated('bookings');
+        },
+        handleSnapshotErr
+      )
     );
 
     unsubs.push(
@@ -521,19 +614,24 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const list = snap.docs.map((d) => d.data() as CustomerGroup);
         list.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name, 'vi'));
         setCustomerGroups(list);
-        if (list.length === 0 && !customerGroupsSeededRef.current) {
+        if (list.length === 0 && !snap.metadata.fromCache && !customerGroupsSeededRef.current) {
           customerGroupsSeededRef.current = true;
-          ensureDefaultCustomerGroups().catch(() => {});
+          ensureDefaultCustomerGroups().catch(() => { });
         }
       })
     );
 
     unsubs.push(
-      onSnapshot(collection(db, 'transactions'), (snap) => {
-        const list = snap.docs.map((d) => d.data() as Transaction);
-        list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-        setTransactions(list);
-      })
+      onSnapshot(
+        collection(db, 'transactions'),
+        (snap) => {
+          const list = snap.docs.map((d) => d.data() as Transaction);
+          list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+          setTransactions(list);
+          markHydrated('finance');
+        },
+        handleSnapshotErr
+      )
     );
 
     unsubs.push(
@@ -634,7 +732,60 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       unsubs.forEach((fn) => fn());
     };
-  }, [staffProfile?.uid, staffProfile?.isActive, staffProfile?.role, staffProfile?.permissions?.canManageStaff]);
+  }, [
+    staffProfile?.uid,
+    staffProfile?.isActive,
+    staffProfile?.role,
+    staffProfile?.permissions?.canManageStaff,
+    hydrationAttempt,
+  ]);
+
+  // Mark dataLoaded ONLY when all 5 core operational snapshots have resolved
+  useEffect(() => {
+    const allCoreDone =
+      hydrationMap.config &&
+      hydrationMap.roomTypes &&
+      hydrationMap.rooms &&
+      hydrationMap.bookings &&
+      hydrationMap.finance;
+    if (allCoreDone && !dataLoaded) {
+      setDataLoaded(true);
+      setHydrationTimedOut(false);
+    }
+  }, [hydrationMap, dataLoaded]);
+
+  // Elapsed timer & 14-second slow network detector while hydrating
+  useEffect(() => {
+    if (!staffProfile || !staffProfile.isActive || dataLoaded) return;
+    const startedAt = Date.now();
+    const interval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      setHydrationElapsedSec(elapsed);
+      if (elapsed >= 14) {
+        setHydrationTimedOut(true);
+      }
+    }, 500);
+    return () => clearInterval(interval);
+  }, [staffProfile, dataLoaded, hydrationAttempt]);
+
+  const hydrationSteps: HydrationStep[] = useMemo(
+    () => [
+      { key: 'config', label: 'Cấu hình khách sạn', done: hydrationMap.config },
+      { key: 'roomTypes', label: 'Hạng phòng & Bảng giá', done: hydrationMap.roomTypes },
+      { key: 'rooms', label: 'Danh sách 15 phòng khách sạn', done: hydrationMap.rooms },
+      { key: 'bookings', label: 'Lịch đặt phòng & Lưu trú', done: hydrationMap.bookings },
+      { key: 'finance', label: 'Sổ quỹ & Giao dịch', done: hydrationMap.finance },
+    ],
+    [hydrationMap]
+  );
+
+  const hydrationProgressPct = useMemo(() => {
+    if (dataLoaded) return 100;
+    const doneCount = hydrationSteps.filter((s) => s.done).length;
+    return Math.min(100, Math.round((doneCount / hydrationSteps.length) * 100));
+  }, [dataLoaded, hydrationSteps]);
+
+  const dataHydrating = Boolean(staffProfile && staffProfile.isActive && !dataLoaded);
 
   const actor: ActorInfo = useMemo(
     () => ({
@@ -678,10 +829,10 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setStaffProfile(null);
   }, []);
 
+  // Production safeguard: sample data seeding is permanently disabled on operational UI
   const seedSampleHotel = useCallback(async () => {
-    await seedLikeFamilyHotelSampleData(actor.name);
-    notify('Đã khởi tạo dữ liệu mẫu 16 phòng (4 tầng, 4 loại phòng, giá ngày & giá theo giờ 3 bậc)');
-  }, [actor.name, notify]);
+    notify('Chức năng tạo dữ liệu mẫu đã được khóa vĩnh viễn trên hệ thống vận hành chính thức.', 'warning');
+  }, [notify]);
 
   // v2.2.2 BUG-03: Idempotent auto-migration of `hotel_config/main.bookingSources` (Owner / SuperAdmin only, runs max once/session)
   useEffect(() => {
@@ -726,6 +877,13 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     staffUsers,
     auditLogs,
     dataLoaded,
+    dataHydrating,
+    hydrationSteps,
+    hydrationProgressPct,
+    hydrationElapsedSec,
+    hydrationTimedOut,
+    hydrationError,
+    retryHydration,
     seedSampleHotel,
     notify,
     toasts,

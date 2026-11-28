@@ -84,7 +84,6 @@ export const SettingsAndAdminView: React.FC = () => {
     isSuperAdmin,
     staffProfile,
     actor,
-    seedSampleHotel,
     notify,
   } = usePms();
 
@@ -473,17 +472,17 @@ export const SettingsAndAdminView: React.FC = () => {
       const nextTiers =
         editingRt.priceTiers.length > 0
           ? editingRt.priceTiers.map((t, idx) => {
-              const isDef = t.isDefault || (!editingRt.priceTiers.some((x) => x.isDefault) && idx === 0);
-              return isDef ? { ...t, price: Math.max(0, Math.round(editingRtDefaultDailyPrice)) } : t;
-            })
+            const isDef = t.isDefault || (!editingRt.priceTiers.some((x) => x.isDefault) && idx === 0);
+            return isDef ? { ...t, price: Math.max(0, Math.round(editingRtDefaultDailyPrice)) } : t;
+          })
           : [
-              {
-                id: generateId('tier'),
-                tierName: 'Giá ngày thường',
-                price: Math.max(0, Math.round(editingRtDefaultDailyPrice)),
-                isDefault: true,
-              },
-            ];
+            {
+              id: generateId('tier'),
+              tierName: 'Giá ngày thường',
+              price: Math.max(0, Math.round(editingRtDefaultDailyPrice)),
+              isDefault: true,
+            },
+          ];
       const payload: RoomType = {
         ...editingRt,
         name: editingRt.name.trim(),
@@ -739,11 +738,11 @@ export const SettingsAndAdminView: React.FC = () => {
       const next = (hotelConfig.bookingSources || []).map((s) =>
         s.id === editingSource.id
           ? {
-              ...s,
-              name: editingSource.name.trim(),
-              kind: editingSource.kind,
-              isActive: editingSource.isActive !== false,
-            }
+            ...s,
+            name: editingSource.name.trim(),
+            kind: editingSource.kind,
+            isActive: editingSource.isActive !== false,
+          }
           : s
       );
       await saveBookingSources(next);
@@ -1166,21 +1165,6 @@ export const SettingsAndAdminView: React.FC = () => {
       {/* TAB 2: ROOM TYPES, MULTI-TIER DAILY + 3-TIER HOURLY PRICING & ROOMS (NO DELETE ON ROOM TYPES/ROOMS) */}
       {tab === 'rooms' && (
         <div className="space-y-5">
-          {canManageRoomsAndSources && rooms.length === 0 && (
-            <div className="bg-[#E8F2EE] border border-[#1B5E4B]/30 rounded-xl p-4 flex items-center justify-between gap-3">
-              <div className="text-[13px] text-[#1B5E4B]">
-                Khởi tạo nhanh 16 phòng chuẩn (Tầng 2–5) và 4 loại phòng kèm giá ngày & giá theo giờ 3 bậc.
-              </div>
-              <button
-                type="button"
-                onClick={seedSampleHotel}
-                className="h-9 px-4 rounded-lg bg-[#1B5E4B] text-white text-[13px] font-medium shrink-0"
-              >
-                Khởi tạo dữ liệu mẫu
-              </button>
-            </div>
-          )}
-
           {/* Room Types Section */}
           <div className="bg-white border border-[#E5E2DC] rounded-2xl p-5 space-y-4">
             <div>
@@ -2539,8 +2523,8 @@ export const SettingsAndAdminView: React.FC = () => {
         message={
           confirmDeleteTier
             ? `Xác nhận xóa gói giá "${confirmDeleteTier.tier.tierName}" (${formatCurrency(
-                confirmDeleteTier.tier.price
-              )}) khỏi hạng phòng ${confirmDeleteTier.roomType.name}?`
+              confirmDeleteTier.tier.price
+            )}) khỏi hạng phòng ${confirmDeleteTier.roomType.name}?`
             : ''
         }
         confirmLabel="Xóa gói giá"
@@ -2557,13 +2541,11 @@ export const SettingsAndAdminView: React.FC = () => {
         variant="danger"
         message={
           confirmDisableRt
-            ? `Loại phòng "${confirmDisableRt.roomType.name}" hiện còn ${
-                confirmDisableRt.activeChildren.length
-              } phòng con đang hoạt động (${confirmDisableRt.activeChildren
-                .map((r) => `P.${r.roomNumber}`)
-                .join(', ')}).\n\nXác nhận chuyển loại phòng này VÀ toàn bộ ${
-                confirmDisableRt.activeChildren.length
-              } phòng con sang trạng thái "Ngừng sử dụng"?`
+            ? `Loại phòng "${confirmDisableRt.roomType.name}" hiện còn ${confirmDisableRt.activeChildren.length
+            } phòng con đang hoạt động (${confirmDisableRt.activeChildren
+              .map((r) => `P.${r.roomNumber}`)
+              .join(', ')}).\n\nXác nhận chuyển loại phòng này VÀ toàn bộ ${confirmDisableRt.activeChildren.length
+            } phòng con sang trạng thái "Ngừng sử dụng"?`
             : ''
         }
         confirmLabel="Ngừng sử dụng tất cả"
@@ -2593,10 +2575,10 @@ export const SettingsAndAdminView: React.FC = () => {
         message={
           scanResult
             ? `Xác nhận xóa trắng ${scanResult.imageCount} ảnh Base64 (${formatFileSizeKB(
-                scanResult.totalBytes
-              )}) trong ${scanResult.docs.length} hồ sơ đã check-out trước ${formatDateVN(
-                cutoffDate
-              )}? Toàn bộ thông tin văn bản của khách vẫn được giữ nguyên.`
+              scanResult.totalBytes
+            )}) trong ${scanResult.docs.length} hồ sơ đã check-out trước ${formatDateVN(
+              cutoffDate
+            )}? Toàn bộ thông tin văn bản của khách vẫn được giữ nguyên.`
             : ''
         }
         confirmLabel="Xóa ảnh cũ"

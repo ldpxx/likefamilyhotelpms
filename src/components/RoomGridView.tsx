@@ -8,10 +8,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
-  Database,
   Globe,
   LogIn,
   Plus,
+  RotateCcw,
   Search,
   Sparkles,
   Wrench,
@@ -66,8 +66,7 @@ export const RoomGridView: React.FC<RoomGridViewProps> = ({
     customerGroups,
     hotelConfig,
     actor,
-    isAdmin,
-    seedSampleHotel,
+    retryHydration,
     notify,
   } = usePms();
 
@@ -77,7 +76,6 @@ export const RoomGridView: React.FC<RoomGridViewProps> = ({
   const [floorFilter, setFloorFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [seeding, setSeeding] = useState(false);
   const [busyRoomId, setBusyRoomId] = useState<string | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -350,17 +348,6 @@ export const RoomGridView: React.FC<RoomGridViewProps> = ({
     }
   };
 
-  const handleSeed = async () => {
-    setSeeding(true);
-    try {
-      await seedSampleHotel();
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Không thể khởi tạo dữ liệu mẫu', 'error');
-    } finally {
-      setSeeding(false);
-    }
-  };
-
   if (rooms.length === 0) {
     return (
       <div className="bg-white border border-[#E7E3DA] rounded-2xl p-10 text-center max-w-xl mx-auto mt-8">
@@ -368,23 +355,19 @@ export const RoomGridView: React.FC<RoomGridViewProps> = ({
           <BedDouble className="w-6 h-6" strokeWidth={1.5} />
         </div>
         <h2 className="text-[18px] font-semibold text-[#1C1B18]">
-          Chưa có sơ đồ phòng cho Like Family Hotel
+          Đang chờ đồng bộ danh sách phòng khách sạn
         </h2>
         <p className="text-[13px] text-[#57534E] mt-2 leading-relaxed">
-          Cơ sở dữ liệu hiện đang trống. Bạn có thể khởi tạo nhanh bộ phòng mẫu chuẩn gồm 16 phòng
-          (Tầng 2 đến Tầng 5), 4 loại phòng kèm bảng đa gói giá, hoặc tự cấu hình trong mục Cài đặt.
+          Chưa nhận được danh sách phòng từ máy chủ do kết nối mạng chậm hoặc đang tải lại. Vui lòng bấm nút bên dưới để đồng bộ lại.
         </p>
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={handleSeed}
-            disabled={seeding}
-            className="mt-5 h-10 px-5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] disabled:opacity-50 text-white text-[14px] font-medium inline-flex items-center gap-2 transition-colors"
-          >
-            <Database className="w-4 h-4" strokeWidth={1.5} />
-            {seeding ? 'Đang khởi tạo...' : 'Khởi tạo dữ liệu mẫu Like Family Hotel (16 phòng)'}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={retryHydration}
+          className="mt-5 h-10 px-5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[14px] font-medium inline-flex items-center gap-2 transition-colors"
+        >
+          <RotateCcw className="w-4 h-4" strokeWidth={1.5} />
+          Đồng bộ lại danh sách phòng
+        </button>
       </div>
     );
   }
@@ -759,6 +742,7 @@ export const RoomGridView: React.FC<RoomGridViewProps> = ({
                   return (
                     <div
                       key={room.id}
+                      data-testid={`room-grid-card-${room.roomNumber}`}
                       onClick={() => {
                         if (active) onSelectBooking(active);
                         else if (arrival) onSelectBooking(arrival);

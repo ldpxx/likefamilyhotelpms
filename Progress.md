@@ -1,7 +1,7 @@
 # Like Family PMS — Sổ Tay Kỹ Thuật & Trạng Thái Dự Án (`Progress.md`)
 
 - **Phiên bản hiện tại:** `v2.2.2` (**ĐÃ GO-LIVE CHÍNH THỨC** trên `https://likefamilypms.web.app` — dọn sạch 100% dữ liệu mẫu `QA2M_*` & thu hồi tài khoản `qa_runner`, nhập hoàn chỉnh dữ liệu vận hành thực tế GoHost 2026 (`962` đơn, `91` đoàn, `663` khách, `841` giao dịch, `432` chỉ mục `room_occupancy` với **`0` xung đột trên `15/15` phòng**), bật khóa sổ lịch sử `accountingLockDate: '2026-10-31'`)
-- **Cập nhật lần cuối:** `2026-11-28 20:07 (UTC+7)`
+- **Cập nhật lần cuối:** `2026-11-28 20:57 (UTC+7)`
 - **Trạng thái tổng thể:** Hoàn thành 100% Giai đoạn 1 (Web App + PWA) & Nâng cấp toàn diện Phần A + Phần B + Phần C
 - **URL Production:** https://likefamilypms.web.app (Nhân viên: `/` | SuperAdmin gốc: `/superadmin`)
 - **Firebase Project ID:** `likefamilypms`
@@ -278,3 +278,13 @@ Hotel PMS/
     5. [BookingsAndGroupsView.tsx](./src/components/BookingsAndGroupsView.tsx): thay 2 lệnh `confirm` (*Gộp hồ sơ Khách lẻ trùng WALK_IN_DEFAULT* & *Xóa nhóm khách hàng*) bằng `ConfirmDialog`.
     6. [App.tsx](./src/App.tsx): thay `prompt` hoàn tác nhanh trên thanh Undo 15 giây bằng `AppModal`.
   - **Nghiệm thu:** Quét toàn bộ `src/` đạt **`0` kết quả** `prompt / confirm / alert`; Playwright Local Emulator ([qa_app_dialogs_v222.mjs](./scripts/qa_app_dialogs_v222.mjs)) trên Desktop `1440×900` & Mobile `390×844` (`nativeDialogsCount: 0`, `mobileInputFontPx: 16`, `0` lỗi console, `0px` tràn ngang, nút Back Android đóng modal chuẩn) — `ALL_APP_DIALOG_QA_CHECKS_PASSED`. Build `0` lỗi & deploy Hosting lên `https://likefamilypms.web.app`.
+
+- **2026-11-28 (`v2.2.2` — Gỡ bỏ hoàn toàn "Tạo dữ liệu mẫu" trên luồng vận hành & Xây dựng Cổng Chờ Đồng Bộ Dữ Liệu 3 Trạng Thái cho Mạng Yếu):**
+  - **Khóa vĩnh viễn giao diện "Tạo dữ liệu mẫu" trên luồng vận hành:** Gỡ bỏ hoàn toàn nút & thẻ *"Khởi tạo dữ liệu mẫu Like Family Hotel (16 phòng)"* trong [RoomGridView.tsx](./src/components/RoomGridView.tsx) và banner *"Khởi tạo dữ liệu mẫu"* trong [SettingsAndAdminView.tsx](./src/components/SettingsAndAdminView.tsx); vô hiệu hóa hàm `seedSampleHotel()` trong [PmsContext.tsx](./src/context/PmsContext.tsx) và chỉ cho phép `ensureDefaultCustomerGroups()` chạy khi snapshot đến từ máy chủ (`!snap.metadata.fromCache`).
+  - **Cổng Chờ Đồng Bộ 3 Trạng Thái (`Auth & Initial Data Hydration Gate`) & Bộ nhớ đệm ngoại tuyến Firestore:**
+    1. `authChecking`: Xác thực phiên Firebase Auth & hồ sơ `staff_users`.
+    2. `dataHydrating`: Theo dõi phản hồi đầu tiên của đủ 5 nhóm snapshot cốt lõi (`hotel_config/main`, `room_types`, `rooms`, `bookings`, `transactions`). Chỉ mở khóa `dataLoaded = true` khi cả 5 nhóm đã nhận snapshot đầu tiên — tuyệt đối không đánh giá `rooms.length === 0` khi đang tải.
+    3. `networkSlow / error`: Sau `14–15 giây` mạng yếu hoặc khi gián đoạn kết nối, hiển thị cảnh báo thân thiện kèm nút **"Thử tải lại"** (`retryHydration()`).
+    4. Trong [firebase.ts](./src/lib/firebase.ts): bật `persistentLocalCache` với `persistentMultipleTabManager()` và fallback tự động sang `persistentSingleTabManager({ forceOwnership: true })` cho Android WebView.
+  - **Màn hình Chờ Đồng Bộ thương hiệu Like Family Hotel** ([App.tsx](./src/App.tsx)): hiển thị Logo khách sạn, tiêu đề *"Đang đồng bộ dữ liệu khách sạn..."*, **thanh tiến trình `%` thực tế** theo 5 nhóm dữ liệu cốt lõi và **bộ đếm thời gian / đếm ngược 15 giây**.
+  - **Nghiệm thu:** Playwright giả lập mạng chậm **Slow 3G** ([qa_slow_network_hydration_v222.mjs](./scripts/qa_slow_network_hydration_v222.mjs)) trên Mobile `390×844` & Desktop `1440×900`: `sawSeedText: false` (0 lần xuất hiện chữ Tạo/Khởi tạo dữ liệu mẫu), `sawHydrationScreen: true` (đủ 5 bước & thanh tiến trình), mở khóa đúng 15/15 phòng thật (`201`–`503`), `0` lỗi console, `0px` tràn ngang — `ALL_HYDRATION_SLOW3G_QA_CHECKS_PASSED`. Build `0` lỗi & deploy Hosting lên `https://likefamilypms.web.app`.

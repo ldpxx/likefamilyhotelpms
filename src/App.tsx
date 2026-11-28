@@ -61,6 +61,13 @@ export const App: React.FC = () => {
     hotelConfig,
     bookings,
     actor,
+    dataHydrating,
+    hydrationSteps,
+    hydrationProgressPct,
+    hydrationElapsedSec,
+    hydrationTimedOut,
+    hydrationError,
+    retryHydration,
     completeFirstLoginPasswordChange,
     logout,
     toasts,
@@ -137,8 +144,17 @@ export const App: React.FC = () => {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-[#F7F6F3] flex items-center justify-center">
-        <div className="text-[14px] text-[#57534E]">Đang tải Like Family PMS...</div>
+      <div
+        data-testid="auth-checking-screen"
+        className="min-h-screen bg-[#FAF9F6] flex items-center justify-center p-4"
+      >
+        <div className="w-full max-w-sm bg-white border border-[#E7E3DA] rounded-2xl p-6 text-center space-y-3 shadow-sm">
+          <div className="w-12 h-12 rounded-2xl bg-[#0F5132] text-white flex items-center justify-center mx-auto shadow-xs">
+            <Building2 className="w-6 h-6" strokeWidth={1.6} />
+          </div>
+          <div className="text-[15px] font-semibold text-[#1C1B18]">Like Family Hotel PMS</div>
+          <div className="text-[13px] text-[#57534E]">Đang xác thực phiên đăng nhập...</div>
+        </div>
       </div>
     );
   }
@@ -270,6 +286,133 @@ export const App: React.FC = () => {
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    );
+  }
+
+  // Stage 2 & 3 Gate: Wait until all core Firestore snapshots have hydrated before mounting operational views
+  if (dataHydrating) {
+    const logoSrc = hotelConfig.hotelLogoBase64 || hotelConfig.logoBase64 || '';
+    const remainingSec = Math.max(0, 15 - hydrationElapsedSec);
+
+    return (
+      <div
+        data-testid="hydration-loading-screen"
+        className="min-h-screen bg-[#FAF9F6] flex items-center justify-center p-4"
+      >
+        <div className="w-full max-w-md bg-white border border-[#E7E3DA] rounded-2xl p-6 space-y-5 shadow-md">
+          {/* Brand Header */}
+          <div className="flex items-center gap-3.5">
+            {logoSrc ? (
+              <img
+                src={logoSrc}
+                alt="Like Family Hotel"
+                className="w-12 h-12 rounded-xl object-contain border border-[#E7E3DA] bg-white p-1 shrink-0"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-2xl bg-[#0F5132] text-white flex items-center justify-center shrink-0 shadow-xs">
+                <Building2 className="w-6 h-6" strokeWidth={1.6} />
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="text-[16px] font-semibold text-[#1C1B18] truncate">
+                {hotelConfig.hotelName || 'Like Family Hotel'}
+              </div>
+              <div
+                data-testid="hydration-title"
+                className="text-[13px] font-medium text-[#0F5132]"
+              >
+                Đang đồng bộ dữ liệu khách sạn...
+              </div>
+            </div>
+          </div>
+
+          {/* Progress Bar + Percentage + Countdown Timer */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-[12px]">
+              <span
+                data-testid="hydration-timer"
+                className="text-[#57534E] font-mono-num"
+              >
+                {hydrationTimedOut
+                  ? `Kết nối mạng chậm (${hydrationElapsedSec}s)`
+                  : `Đang kết nối máy chủ... ${hydrationElapsedSec}s (còn ${remainingSec}s)`}
+              </span>
+              <span
+                data-testid="hydration-progress-pct"
+                className="font-mono-num font-bold text-[#0F5132]"
+              >
+                {hydrationProgressPct}%
+              </span>
+            </div>
+            <div className="h-2.5 w-full rounded-full bg-[#EFECE4] overflow-hidden">
+              <div
+                data-testid="hydration-progress-bar"
+                style={{ width: `${Math.max(12, hydrationProgressPct)}%` }}
+                className="h-full rounded-full bg-[#0F5132] transition-all duration-300"
+              />
+            </div>
+          </div>
+
+          {/* Step-by-Step Checklist */}
+          <div className="p-3.5 rounded-xl bg-[#FAF9F6] border border-[#EFECE4] space-y-2 text-[12px]">
+            {hydrationSteps.map((step) => (
+              <div
+                key={step.key}
+                data-testid={`hydration-step-${step.key}`}
+                className="flex items-center justify-between gap-2"
+              >
+                <span className={`truncate ${step.done ? 'text-[#1C1B18] font-medium' : 'text-[#57534E]'}`}>
+                  {step.label}
+                </span>
+                <span
+                  className={`shrink-0 whitespace-nowrap font-mono-num text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${
+                    step.done
+                      ? 'bg-[#E8F3EC] text-[#0F5132]'
+                      : 'bg-[#FFFBEB] text-[#B45309]'
+                  }`}
+                >
+                  {step.done ? 'Đã xong' : 'Đang tải...'}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Slow Network / Error Banner with Retry & Logout */}
+          {(hydrationTimedOut || hydrationError) && (
+            <div
+              data-testid="hydration-slow-banner"
+              className="p-3.5 rounded-xl bg-[#FFFBEB] border border-[#FDE68A] space-y-2.5 text-[12px] text-[#92400E]"
+            >
+              <div className="font-semibold">
+                {hydrationError
+                  ? `Gián đoạn kết nối: ${hydrationError}`
+                  : 'Mạng Wi-Fi / 4G đang phản hồi chậm hơn bình thường.'}
+              </div>
+              <p className="text-[#78350F] leading-relaxed">
+                Hệ thống vẫn đang giữ phiên đăng nhập an toàn và chờ tải dữ liệu thật của khách sạn. Bạn có thể bấm thử tải lại ngay bên dưới.
+              </p>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={retryHydration}
+                  data-testid="hydration-retry-btn"
+                  className="flex-1 min-h-[40px] px-4 rounded-xl bg-[#0F5132] hover:bg-[#0B3D26] text-white text-[13px] font-semibold inline-flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <RotateCcw className="w-4 h-4" strokeWidth={1.75} />
+                  Thử tải lại
+                </button>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="min-h-[40px] px-3.5 rounded-xl border border-[#E7E3DA] bg-white hover:bg-[#F5F4F0] text-[#57534E] text-[12px] font-medium"
+                >
+                  Đăng xuất
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );

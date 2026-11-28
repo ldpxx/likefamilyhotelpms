@@ -7,6 +7,19 @@ Tất cả các thay đổi quan trọng của dự án **Like Family PMS** đ�
 
 ---
 
+## [2.2.2] - 28/11/2026 (Cổng chờ đồng bộ dữ liệu mạng yếu & Gỡ bỏ nút Tạo dữ liệu mẫu)
+
+### Added
+- Cổng chờ đồng bộ dữ liệu 3 trạng thái (`authChecking` → `dataHydrating` → `networkSlow / error`) trong `PmsContext.tsx` & `App.tsx` kèm thanh tiến trình `%` theo 5 nhóm dữ liệu cốt lõi, bộ đếm ngược `15s` và nút **Thử tải lại** (`retryHydration`).
+- Fallback `persistentSingleTabManager({ forceOwnership: true })` cho `persistentLocalCache` trong `src/lib/firebase.ts` để tối ưu cache ngoại tuyến trên Android WebView.
+- `scripts/qa_slow_network_hydration_v222.mjs`: kiểm thử Playwright giả lập mạng chậm Slow 3G trên Mobile `390×844` & Desktop `1440×900`.
+
+### Removed
+- Xóa vĩnh viễn màn hình và nút **"Khởi tạo dữ liệu mẫu"** khỏi `RoomGridView.tsx` và `SettingsAndAdminView.tsx`; khóa hàm `seedSampleHotel()` trên luồng vận hành.
+
+### Fixed
+- Khắc phục triệt để lỗi mạng yếu khiến ứng dụng render sớm khi `rooms` chưa tải về và hiển thị nhầm màn hình tạo dữ liệu mẫu.
+
 ## [2.2.2] - 28/11/2026 (Hệ thống AppModal & ConfirmDialog thay thế 100% hộp thoại trình duyệt)
 
 ### Added

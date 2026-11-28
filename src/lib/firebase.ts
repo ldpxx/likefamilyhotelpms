@@ -5,6 +5,7 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  persistentSingleTabManager,
   getFirestore,
   type Firestore,
 } from 'firebase/firestore';
@@ -70,7 +71,15 @@ if (USE_EMULATOR) {
       }),
     });
   } catch {
-    dbInstance = getFirestore(app);
+    try {
+      dbInstance = initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentSingleTabManager({ forceOwnership: true }),
+        }),
+      });
+    } catch {
+      dbInstance = getFirestore(app);
+    }
   }
 }
 
