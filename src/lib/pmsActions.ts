@@ -32,18 +32,20 @@ import {
 } from './occupancyService';
 import { toVietnamISODate } from './revenueMetrics';
 import { normalizeCountryCode } from './countries';
-import { DEFAULT_HOTEL_CONFIG } from './seedData';
-import type {
-  AuditLog,
-  Booking,
-  BookingGroup,
-  BookingMode,
-  BookingServiceItem,
-  DailyRate,
-  Guest,
-  GuestDocument,
-  HousekeepingStatus,
-  Occupant,
+import { DEFAULT_CUSTOMER_GROUPS, DEFAULT_HOTEL_CONFIG } from './seedData';
+import {
+  WALK_IN_DEFAULT_GUEST_ID,
+  type AuditLog,
+  type Booking,
+  type BookingGroup,
+  type BookingMode,
+  type BookingServiceItem,
+  type CustomerGroup,
+  type DailyRate,
+  type Guest,
+  type GuestDocument,
+  type HousekeepingStatus,
+  type Occupant,
   OtaAdjustment,
   OtaPayoutBatch,
   PaymentMethod,
@@ -127,6 +129,24 @@ export async function writeAuditLog(params: {
  * 2. Normalized Phone Number
  * 3. Normalized Vietnamese Full Name
  */
+/**
+ * Returns true if the guest payload represents an anonymous walk-in ("Khách lẻ" or blank name)
+ * with NO phone number and NO ID/Passport/Visa number.
+ * Per business rule, all such stays MUST consolidate into the single system profile WALK_IN_DEFAULT.
+ */
+export function isAnonymousWalkInGuest(input: {
+  fullName?: string | null;
+  phone?: string | null;
+  idNumber?: string | null;
+  visaNumber?: string | null;
+}): boolean {
+  const normName = normalizeVietnamese(input.fullName || '');
+  const hasPhone = normalizePhone(input.phone || '').length > 0;
+  const hasId = Boolean((input.idNumber || '').trim() || (input.visaNumber || '').trim());
+  const isGenericWalkInName = !normName || normName === 'khach le';
+  return isGenericWalkInName && !hasPhone && !hasId;
+}
+
 export function findMatchingGuests(
   guests: Guest[],
   queryParams: { idNumber?: string; phone?: string; fullName?: string }
@@ -139,6 +159,10 @@ export function findMatchingGuests(
 
   const scored: Array<{ guest: Guest; score: number }> = [];
   for (const g of guests) {
+    // Never auto-suggest the system consolidated "Khách lẻ" profile as a returning guest match
+    if (g.id === WALK_IN_DEFAULT_GUEST_ID || g.isSystemDefault || isAnonymousWalkInGuest(g)) {
+      continue;
+    }
     let score = 0;
     if (cleanId && cleanId.length >= 4) {
       if (g.idNumber && g.idNumber.toLowerCase().includes(cleanId)) {
@@ -168,11 +192,62 @@ export async function upsertGuestProfile(
   incrementStay = false
 ): Promise<{ guestId: string; isReturning: boolean; stayCount: number }> {
   const now = new Date().toISOString();
+
+  // Rule 1: Anonymous "Khách lẻ" (blank or "Khách lẻ" + no phone + no ID/passport) -> ALWAYS consolidate into WALK_IN_DEFAULT
+  if (isAnonymousWalkInGuest(input)) {
+    const walkInRef = doc(db, 'guests', WALK_IN_DEFAULT_GUEST_ID);
+    const cachedWalkIn = existingGuests?.find((g) => g.id === WALK_IN_DEFAULT_GUEST_ID);
+    let existingWalkIn: Guest | undefined = cachedWalkIn;
+    if (!existingWalkIn) {
+      const snap = await getDoc(walkInRef).catch(() => null);
+      if (snap && snap.exists()) existingWalkIn = snap.data() as Guest;
+    }
+    const prevStays = existingWalkIn?.totalStays || 0;
+    const nextStays = incrementStay ? prevStays + 1 : Math.max(prevStays, 0);
+
+    const walkInPayload: Guest = {
+      id: WALK_IN_DEFAULT_GUEST_ID,
+      guestCategory: 'vietnamese',
+      fullName: 'Khách lẻ',
+      normalizedName: 'khach le',
+      phone: '',
+      normalizedPhone: '',
+      gender: '',
+      dob: '',
+      nationality: 'VN',
+      idType: 'cccd',
+      idNumber: '',
+      visaNumber: '',
+      idIssueDate: '',
+      address: '',
+      entryDate: '',
+      stayPermitExpiryDate: '',
+      latestDocumentId: null,
+      preferences: existingWalkIn?.preferences || '',
+      isSystemDefault: true,
+      customerGroupId:
+        input.customerGroupId !== undefined
+          ? input.customerGroupId
+          : existingWalkIn?.customerGroupId ?? null,
+      totalStays: nextStays,
+      totalSpent: existingWalkIn?.totalSpent || 0,
+      lastVisitDate: todayISO(),
+      createdAt: existingWalkIn?.createdAt || now,
+      updatedAt: now,
+    };
+    await setDoc(walkInRef, walkInPayload, { merge: true });
+    return {
+      guestId: WALK_IN_DEFAULT_GUEST_ID,
+      isReturning: false,
+      stayCount: nextStays,
+    };
+  }
+
   const normName = normalizeVietnamese(input.fullName);
   const normPhone = normalizePhone(input.phone);
 
   let matched: Guest | undefined;
-  if (input.id) {
+  if (input.id && input.id !== WALK_IN_DEFAULT_GUEST_ID) {
     matched = existingGuests?.find((g) => g.id === input.id);
   }
   if (!matched && existingGuests && existingGuests.length > 0) {
@@ -191,7 +266,9 @@ export async function upsertGuestProfile(
     }
   }
 
-  const guestId = matched?.id || input.id || generateId('guest');
+  const guestId =
+    matched?.id ||
+    (input.id && input.id !== WALK_IN_DEFAULT_GUEST_ID ? input.id : generateId('guest'));
   const category = input.guestCategory || matched?.guestCategory || 'vietnamese';
   const prevStays = matched?.totalStays || 0;
   const nextStays = incrementStay ? prevStays + 1 : Math.max(prevStays, 0);
@@ -217,9 +294,12 @@ export async function upsertGuestProfile(
     stayPermitExpiryDate: input.stayPermitExpiryDate || matched?.stayPermitExpiryDate || '',
     latestDocumentId: input.latestDocumentId ?? matched?.latestDocumentId ?? null,
     preferences: input.preferences ?? matched?.preferences ?? '',
+    isSystemDefault: false,
+    customerGroupId:
+      input.customerGroupId !== undefined ? input.customerGroupId : matched?.customerGroupId ?? null,
     totalStays: nextStays,
     totalSpent: matched?.totalSpent || 0,
-    lastVisitDate: todayISO(),
+    lastVisitDate: matched?.lastVisitDate || todayISO(),
     createdAt: matched?.createdAt || now,
     updatedAt: now,
   };
@@ -230,6 +310,254 @@ export async function upsertGuestProfile(
     isReturning: Boolean(matched),
     stayCount: matched ? prevStays + 1 : 1,
   };
+}
+
+/**
+ * Consolidates all legacy duplicate anonymous "Khách lẻ" guest docs into WALK_IN_DEFAULT,
+ * re-linking every booking (primaryGuestId & occupants[].guestId), recomputing totalStays & lastVisitDate,
+ * and deleting the redundant duplicate docs.
+ */
+export async function mergeDuplicateWalkInGuests(
+  guests: Guest[],
+  bookings: Booking[],
+  actor: ActorInfo
+): Promise<{
+  mergedGuestCount: number;
+  updatedBookingCount: number;
+  walkInTotalStays: number;
+  walkInLastVisitDate: string;
+}> {
+  const now = new Date().toISOString();
+  const duplicateGuests = guests.filter(
+    (g) => g.id !== WALK_IN_DEFAULT_GUEST_ID && isAnonymousWalkInGuest(g)
+  );
+  const dupIdSet = new Set(duplicateGuests.map((g) => g.id));
+
+  // Find bookings referencing any duplicate walk-in guest OR whose primary guest is anonymous walk-in not yet linked to WALK_IN_DEFAULT
+  const bookingsToUpdate: Booking[] = [];
+  for (const b of bookings) {
+    const primaryIsDup = dupIdSet.has(b.primaryGuestId);
+    const primaryIsAnonymous =
+      b.primaryGuestId !== WALK_IN_DEFAULT_GUEST_ID &&
+      isAnonymousWalkInGuest({
+        fullName: b.primaryGuestName,
+        phone: b.primaryGuestPhone,
+        idNumber: b.primaryGuestIdNumber,
+      });
+    const hasDupOcc = (b.occupants || []).some((o) => dupIdSet.has(o.guestId));
+    if (primaryIsDup || primaryIsAnonymous || hasDupOcc) {
+      bookingsToUpdate.push(b);
+    }
+  }
+
+  // Recompute totalStays & latest lastVisitDate across all bookings now linked to WALK_IN_DEFAULT
+  const updatedBookingIdSet = new Set(bookingsToUpdate.map((b) => b.id));
+  const walkInLinkedBookings = bookings.filter((b) => {
+    const linked = b.primaryGuestId === WALK_IN_DEFAULT_GUEST_ID || updatedBookingIdSet.has(b.id);
+    if (!linked) return false;
+    return b.status !== 'cancelled' && b.status !== 'no_show' && !b.voidCheckedOutAt;
+  });
+
+  const existingWalkIn = guests.find((g) => g.id === WALK_IN_DEFAULT_GUEST_ID);
+  const latestDates: string[] = [];
+  if (existingWalkIn?.lastVisitDate) latestDates.push(existingWalkIn.lastVisitDate);
+  for (const d of duplicateGuests) {
+    if (d.lastVisitDate) latestDates.push(d.lastVisitDate);
+  }
+  for (const b of walkInLinkedBookings) {
+    if (b.checkIn) latestDates.push(b.checkIn);
+  }
+  latestDates.sort();
+  const walkInLastVisitDate = latestDates.length > 0 ? latestDates[latestDates.length - 1] : todayISO();
+  const walkInTotalStays = walkInLinkedBookings.length;
+  const walkInTotalSpent = walkInLinkedBookings.reduce(
+    (sum, b) => sum + (b.grossRoomTotal || 0) + (b.serviceTotal || 0) + (b.hourlySurcharge || 0),
+    0
+  );
+
+  // Batch write: upsert WALK_IN_DEFAULT + re-link bookings + delete duplicate docs
+  type Op =
+    | { kind: 'set'; col: string; id: string; data: Record<string, unknown>; merge?: boolean }
+    | { kind: 'update'; col: string; id: string; data: UpdateData<DocumentData> }
+    | { kind: 'delete'; col: string; id: string };
+
+  const ops: Op[] = [
+    {
+      kind: 'set',
+      col: 'guests',
+      id: WALK_IN_DEFAULT_GUEST_ID,
+      data: {
+        id: WALK_IN_DEFAULT_GUEST_ID,
+        guestCategory: 'vietnamese',
+        fullName: 'Khách lẻ',
+        normalizedName: 'khach le',
+        phone: '',
+        normalizedPhone: '',
+        gender: '',
+        dob: '',
+        nationality: 'VN',
+        idType: 'cccd',
+        idNumber: '',
+        visaNumber: '',
+        idIssueDate: '',
+        address: '',
+        entryDate: '',
+        stayPermitExpiryDate: '',
+        latestDocumentId: null,
+        preferences: existingWalkIn?.preferences || '',
+        isSystemDefault: true,
+        customerGroupId: existingWalkIn?.customerGroupId ?? null,
+        totalStays: walkInTotalStays,
+        totalSpent: walkInTotalSpent,
+        lastVisitDate: walkInLastVisitDate,
+        createdAt: existingWalkIn?.createdAt || now,
+        updatedAt: now,
+      },
+      merge: true,
+    },
+  ];
+
+  for (const b of bookingsToUpdate) {
+    const shouldRelinkPrimary =
+      dupIdSet.has(b.primaryGuestId) ||
+      isAnonymousWalkInGuest({
+        fullName: b.primaryGuestName,
+        phone: b.primaryGuestPhone,
+        idNumber: b.primaryGuestIdNumber,
+      });
+    const nextOccupants = (b.occupants || []).map((o) =>
+      dupIdSet.has(o.guestId) || (shouldRelinkPrimary && o.isPrimary)
+        ? { ...o, guestId: WALK_IN_DEFAULT_GUEST_ID, fullName: o.fullName?.trim() || 'Khách lẻ' }
+        : o
+    );
+    ops.push({
+      kind: 'update',
+      col: 'bookings',
+      id: b.id,
+      data: {
+        ...(shouldRelinkPrimary
+          ? {
+              primaryGuestId: WALK_IN_DEFAULT_GUEST_ID,
+              primaryGuestName: 'Khách lẻ',
+              primaryGuestNormalizedName: 'khach le',
+            }
+          : {}),
+        occupants: nextOccupants,
+        updatedAt: now,
+      },
+    });
+  }
+
+  for (const dup of duplicateGuests) {
+    ops.push({ kind: 'delete', col: 'guests', id: dup.id });
+  }
+
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = writeBatch(db);
+    for (const op of ops.slice(i, i + 400)) {
+      const ref = doc(db, op.col, op.id);
+      if (op.kind === 'set') batch.set(ref, op.data, { merge: op.merge !== false });
+      else if (op.kind === 'update') batch.update(ref, op.data);
+      else batch.delete(ref);
+    }
+    await batch.commit();
+  }
+
+  await writeAuditLog({
+    actionType: 'update_booking',
+    targetId: WALK_IN_DEFAULT_GUEST_ID,
+    targetLabel: `Gộp ${duplicateGuests.length} hồ sơ Khách lẻ trùng → WALK_IN_DEFAULT`,
+    newState: {
+      mergedGuestCount: duplicateGuests.length,
+      updatedBookingCount: bookingsToUpdate.length,
+      walkInTotalStays,
+      walkInLastVisitDate,
+    },
+    reason: 'Dọn dẹp & gộp hồ sơ Khách lẻ vô danh trùng lặp thành 1 hồ sơ hệ thống duy nhất',
+    actor,
+  }).catch(() => {});
+
+  return {
+    mergedGuestCount: duplicateGuests.length,
+    updatedBookingCount: bookingsToUpdate.length,
+    walkInTotalStays,
+    walkInLastVisitDate,
+  };
+}
+
+/**
+ * Ensures the 5 default manual Customer Groups exist in `customer_groups` (idempotent).
+ */
+export async function ensureDefaultCustomerGroups(): Promise<void> {
+  const existing = await getDocs(collection(db, 'customer_groups'));
+  if (!existing.empty) return;
+  const now = new Date().toISOString();
+  const batch = writeBatch(db);
+  for (const grp of DEFAULT_CUSTOMER_GROUPS) {
+    batch.set(doc(db, 'customer_groups', grp.id), { ...grp, createdAt: now, updatedAt: now }, { merge: true });
+  }
+  await batch.commit();
+}
+
+export async function saveCustomerGroup(
+  input: { id?: string; name: string; color: string; sortOrder?: number },
+  actor: ActorInfo
+): Promise<CustomerGroup> {
+  const cleanName = input.name.trim();
+  if (!cleanName) throw new Error('Vui lòng nhập tên nhóm khách hàng');
+  const now = new Date().toISOString();
+  const id = input.id || generateId('cg');
+  const payload: CustomerGroup = {
+    id,
+    name: cleanName,
+    color: input.color || '#0F5132',
+    sortOrder: input.sortOrder ?? Date.now(),
+    createdAt: now,
+    updatedAt: now,
+  };
+  await setDoc(doc(db, 'customer_groups', id), payload, { merge: true });
+  await writeAuditLog({
+    actionType: 'update_booking',
+    targetId: id,
+    targetLabel: `Nhóm khách: ${cleanName}`,
+    newState: { name: cleanName, color: payload.color },
+    reason: input.id ? 'Cập nhật nhóm khách hàng' : 'Thêm nhóm khách hàng mới',
+    actor,
+  }).catch(() => {});
+  return payload;
+}
+
+export async function deleteCustomerGroup(
+  groupId: string,
+  guests: Guest[],
+  actor: ActorInfo
+): Promise<void> {
+  const affected = guests.filter((g) => g.customerGroupId === groupId);
+  const now = new Date().toISOString();
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'customer_groups', groupId));
+  for (const g of affected) {
+    batch.update(doc(db, 'guests', g.id), { customerGroupId: null, updatedAt: now });
+  }
+  await batch.commit();
+  await writeAuditLog({
+    actionType: 'update_booking',
+    targetId: groupId,
+    targetLabel: `Xóa nhóm khách (${groupId})`,
+    newState: { clearedGuests: affected.length },
+    reason: 'Xóa nhóm khách hàng khỏi danh mục',
+    actor,
+  }).catch(() => {});
+}
+
+export async function assignGuestCustomerGroup(
+  guestId: string,
+  customerGroupId: string | null
+): Promise<void> {
+  await updateDoc(doc(db, 'guests', guestId), {
+    customerGroupId: customerGroupId || null,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 export async function saveGuestDocumentImages(params: {
@@ -329,10 +657,17 @@ export async function createBooking(
   actor: ActorInfo
 ): Promise<Booking> {
   const now = new Date().toISOString();
-  const { guestId, isReturning, stayCount } = await upsertGuestProfile(
+  const isWalkInAnon = isAnonymousWalkInGuest({
+    fullName: payload.guestName,
+    phone: payload.guestPhone,
+    idNumber: payload.guestIdNumber,
+  });
+  const effectiveGuestName = isWalkInAnon ? 'Khách lẻ' : payload.guestName.trim();
+
+  const { guestId, stayCount } = await upsertGuestProfile(
     {
-      id: payload.existingGuestId,
-      fullName: payload.guestName,
+      id: isWalkInAnon ? WALK_IN_DEFAULT_GUEST_ID : payload.existingGuestId,
+      fullName: effectiveGuestName,
       phone: payload.guestPhone,
       guestCategory: payload.guestCategory,
       idNumber: payload.guestIdNumber,
@@ -343,7 +678,7 @@ export async function createBooking(
       idIssueDate: payload.guestIdIssueDate,
     },
     existingGuests,
-    false
+    isWalkInAnon
   );
 
   const isHourly = payload.bookingMode === 'hourly';
@@ -400,13 +735,13 @@ export async function createBooking(
     actualCheckInAt: payload.checkInImmediately ? now : null,
     actualCheckOutAt: null,
     primaryGuestId: guestId,
-    primaryGuestName: payload.guestName.trim(),
-    primaryGuestNormalizedName: normalizeVietnamese(payload.guestName),
+    primaryGuestName: effectiveGuestName,
+    primaryGuestNormalizedName: normalizeVietnamese(effectiveGuestName),
     primaryGuestPhone: payload.guestPhone.trim(),
     primaryGuestIdNumber: payload.guestIdNumber?.trim() || '',
     occupants: [primaryOccupant],
     ...flags,
-    isReturningGuest: isReturning || stayCount >= 2,
+    isReturningGuest: false,
     guestStayCount: stayCount,
     source: payload.source,
     sourceLabel: payload.sourceLabel || undefined,
@@ -835,8 +1170,8 @@ export async function checkOutBooking(
     }
   });
 
-  // Increment completed stay count for primary guest so >= 2 stays auto-earn "Khách hàng thân quen"
-  if (booking.primaryGuestId) {
+  // Increment completed stay count for identified primary guest (WALK_IN_DEFAULT increments at booking creation)
+  if (booking.primaryGuestId && booking.primaryGuestId !== WALK_IN_DEFAULT_GUEST_ID) {
     try {
       const gRef = doc(db, 'guests', booking.primaryGuestId);
       const gSnap = await getDoc(gRef);

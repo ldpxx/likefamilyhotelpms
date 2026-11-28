@@ -807,7 +807,7 @@ export const OccupantOcrPanel: React.FC<OccupantOcrPanelProps> = ({ booking }) =
             <div className="text-[11px] text-[#8A847C]">
               {activeOcc.asmStatus === 'declared_asm' && activeOcc.asmDeclaredAt
                 ? `Đã khai báo ASM lúc ${formatDateTimeVN(activeOcc.asmDeclaredAt)} bởi ${activeOcc.asmDeclaredBy}`
-                : 'Hồ sơ khách sẽ tự động đồng bộ vào Kho Khách Hàng để nhận diện Khách hàng thân quen.'}
+                : 'Hồ sơ khách sẽ tự động đồng bộ vào Kho Hồ sơ Khách hàng để quản lý lưu trú và phân nhóm khách.'}
             </div>
             <button
               type="button"

@@ -1,20 +1,27 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  Award,
   CheckCircle2,
   Clock,
   Download,
   Globe,
   LogIn,
+  Merge,
   Pencil,
   Plus,
   Search,
+  Tag,
+  Trash2,
   Users,
   X,
 } from 'lucide-react';
 import { usePms } from '../context/PmsContext';
-import type { Booking, Guest } from '../types/pms';
+import {
+  WALK_IN_DEFAULT_GUEST_ID,
+  type Booking,
+  type CustomerGroup,
+  type Guest,
+} from '../types/pms';
 import {
   formatCurrency,
   formatDateVN,
@@ -22,15 +29,20 @@ import {
   getCancellationTypeLabel,
   getSourceLabel,
   getStatusLabel,
-  isLoyalGuest,
   normalizePhone,
   normalizeVietnamese,
 } from '../lib/utils';
 import {
+  assignGuestCustomerGroup,
   bulkCheckInGroup,
+  deleteCustomerGroup,
+  isAnonymousWalkInGuest,
   markOccupantAsmDeclared,
+  mergeDuplicateWalkInGuests,
+  saveCustomerGroup,
   upsertGuestProfile,
 } from '../lib/pmsActions';
+import { CUSTOMER_GROUP_COLOR_PALETTE } from '../lib/seedData';
 import { exportAsmForeignerCsv } from '../lib/backupExport';
 import {
   formatCountryBadge,
@@ -53,7 +65,7 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   onOpenNewSingle,
   onOpenNewGroup,
 }) => {
-  const { bookings, groups, guests, actor, notify } = usePms();
+  const { bookings, groups, guests, customerGroups, isAdmin, actor, notify } = usePms();
   const [subTab, setSubTab] = useState<'bookings' | 'groups' | 'asm_guests'>('bookings');
 
   // Single-box diacritic-insensitive search + multi filters
@@ -65,11 +77,38 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   // Guest / ASM filters
   const [guestSearch, setGuestSearch] = useState('');
   const [guestCountryFilter, setGuestCountryFilter] = useState('');
+  const [guestGroupFilter, setGuestGroupFilter] = useState('all');
   const [asmOnlyPending, setAsmOnlyPending] = useState(false);
 
-  // Quick Guest CRM edit modal
+  // Quick Guest CRM edit modal, inline group assign & Customer Groups manager modal
   const [editingGuest, setEditingGuest] = useState<Guest | null>(null);
   const [savingGuest, setSavingGuest] = useState(false);
+  const [inlineAssignGuestId, setInlineAssignGuestId] = useState<string | null>(null);
+  const [mergingWalkIn, setMergingWalkIn] = useState(false);
+
+  const [showGroupManager, setShowGroupManager] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [groupFormName, setGroupFormName] = useState('');
+  const [groupFormColor, setGroupFormColor] = useState('#0F5132');
+  const [savingGroup, setSavingGroup] = useState(false);
+
+  const customerGroupMap = useMemo(() => {
+    const m = new Map<string, CustomerGroup>();
+    for (const cg of customerGroups) m.set(cg.id, cg);
+    return m;
+  }, [customerGroups]);
+
+  const guestByIdMap = useMemo(() => {
+    const m = new Map<string, Guest>();
+    for (const g of guests) m.set(g.id, g);
+    return m;
+  }, [guests]);
+
+  const duplicateWalkInCount = useMemo(
+    () =>
+      guests.filter((g) => g.id !== WALK_IN_DEFAULT_GUEST_ID && isAnonymousWalkInGuest(g)).length,
+    [guests]
+  );
 
   // Partial Group Cancel & Pending Deposit modals
   const [partialCancelScope, setPartialCancelScope] = useState<Booking[] | null>(null);
@@ -138,21 +177,36 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
     const qNorm = normalizeVietnamese(guestSearch);
     const qDigits = normalizePhone(guestSearch);
     const filterCode = normalizeCountryCode(guestCountryFilter).toLowerCase();
-    return guests.filter((g) => {
+    const list = guests.filter((g) => {
       if (filterCode) {
         const gCode = normalizeCountryCode(g.nationality).toLowerCase();
         if (gCode !== filterCode) return false;
       }
+      if (guestGroupFilter === '__UNGROUPED__') {
+        if (g.customerGroupId && customerGroupMap.has(g.customerGroupId)) return false;
+      } else if (guestGroupFilter !== 'all') {
+        if (g.customerGroupId !== guestGroupFilter) return false;
+      }
       if (!qNorm) return true;
       const countryHaystack = normalizeVietnamese(formatCountryDisplay(g.nationality));
+      const grpName = g.customerGroupId ? customerGroupMap.get(g.customerGroupId)?.name || '' : '';
       return (
         g.normalizedName.includes(qNorm) ||
         (qDigits.length >= 4 && g.normalizedPhone.includes(qDigits)) ||
         (g.idNumber || '').toLowerCase().includes(qNorm) ||
-        countryHaystack.includes(qNorm)
+        countryHaystack.includes(qNorm) ||
+        normalizeVietnamese(grpName).includes(qNorm)
       );
     });
-  }, [guests, guestSearch, guestCountryFilter]);
+    // Always pin system WALK_IN_DEFAULT ("Khách lẻ") to the top of the table
+    list.sort((a, b) => {
+      const aSys = a.id === WALK_IN_DEFAULT_GUEST_ID || a.isSystemDefault ? 1 : 0;
+      const bSys = b.id === WALK_IN_DEFAULT_GUEST_ID || b.isSystemDefault ? 1 : 0;
+      if (aSys !== bSys) return bSys - aSys;
+      return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+    });
+    return list;
+  }, [guests, guestSearch, guestCountryFilter, guestGroupFilter, customerGroupMap]);
 
   const bookingsPag = usePagination(
     filteredBookings,
@@ -161,7 +215,11 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
   );
   const groupsPag = usePagination(groups, 'groups', 20);
   const asmPag = usePagination(foreignerStays, String(asmOnlyPending), 20);
-  const guestsPag = usePagination(filteredGuests, `${guestSearch}|${guestCountryFilter}`, 20);
+  const guestsPag = usePagination(
+    filteredGuests,
+    `${guestSearch}|${guestCountryFilter}|${guestGroupFilter}`,
+    20
+  );
 
   const handleSaveGuestEdit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -171,29 +229,114 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
     }
     setSavingGuest(true);
     try {
+      const isSysWalkIn =
+        editingGuest.id === WALK_IN_DEFAULT_GUEST_ID || editingGuest.isSystemDefault;
       await upsertGuestProfile(
         {
           id: editingGuest.id,
-          guestCategory: editingGuest.guestCategory,
-          fullName: editingGuest.fullName.trim(),
-          phone: editingGuest.phone,
-          gender: editingGuest.gender,
-          dob: editingGuest.dob,
-          nationality: normalizeCountryCode(editingGuest.nationality),
+          guestCategory: isSysWalkIn ? 'vietnamese' : editingGuest.guestCategory,
+          fullName: isSysWalkIn ? 'Khách lẻ' : editingGuest.fullName.trim(),
+          phone: isSysWalkIn ? '' : editingGuest.phone,
+          gender: isSysWalkIn ? '' : editingGuest.gender,
+          dob: isSysWalkIn ? '' : editingGuest.dob,
+          nationality: isSysWalkIn ? 'VN' : normalizeCountryCode(editingGuest.nationality),
           idType: editingGuest.guestCategory === 'vietnamese' ? 'cccd' : 'visa_passport',
-          idNumber: editingGuest.idNumber,
-          visaNumber: editingGuest.visaNumber,
-          address: editingGuest.address,
+          idNumber: isSysWalkIn ? '' : editingGuest.idNumber,
+          visaNumber: isSysWalkIn ? '' : editingGuest.visaNumber,
+          address: isSysWalkIn ? '' : editingGuest.address,
+          customerGroupId: editingGuest.customerGroupId || null,
         },
         guests,
         false
       );
-      notify(`Đã cập nhật hồ sơ khách ${editingGuest.fullName}`);
+      notify(`Đã cập nhật hồ sơ khách ${isSysWalkIn ? 'Khách lẻ' : editingGuest.fullName}`);
       setEditingGuest(null);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Lỗi cập nhật hồ sơ khách', 'error');
     } finally {
       setSavingGuest(false);
+    }
+  };
+
+  const handleQuickAssignGroup = async (guestId: string, groupId: string | null) => {
+    try {
+      await assignGuestCustomerGroup(guestId, groupId);
+      setInlineAssignGuestId(null);
+      const grp = groupId ? customerGroupMap.get(groupId) : null;
+      notify(grp ? `Đã gán nhóm "${grp.name}"` : 'Đã gỡ phân nhóm khách hàng');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi cập nhật nhóm khách', 'error');
+    }
+  };
+
+  const handleMergeWalkInDuplicates = async () => {
+    const ok = window.confirm(
+      duplicateWalkInCount > 0
+        ? `Gộp ${duplicateWalkInCount} hồ sơ "Khách lẻ" vô danh trùng lặp thành 1 hồ sơ hệ thống duy nhất (WALK_IN_DEFAULT) và đồng bộ lại toàn bộ đơn đặt phòng liên quan?`
+        : 'Đồng bộ lại hồ sơ hệ thống "Khách lẻ" (WALK_IN_DEFAULT) và tính lại tổng số lần lưu trú?'
+    );
+    if (!ok) return;
+    setMergingWalkIn(true);
+    try {
+      const res = await mergeDuplicateWalkInGuests(guests, bookings, actor);
+      notify(
+        `Đã gộp ${res.mergedGuestCount} hồ sơ Khách lẻ trùng, cập nhật ${res.updatedBookingCount} đơn (Tổng lượt: ${res.walkInTotalStays})`
+      );
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi gộp hồ sơ Khách lẻ trùng', 'error');
+    } finally {
+      setMergingWalkIn(false);
+    }
+  };
+
+  const handleSaveCustomerGroupForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!groupFormName.trim()) {
+      notify('Vui lòng nhập tên nhóm khách hàng', 'warning');
+      return;
+    }
+    setSavingGroup(true);
+    try {
+      await saveCustomerGroup(
+        {
+          id: editingGroupId || undefined,
+          name: groupFormName.trim(),
+          color: groupFormColor,
+          sortOrder: editingGroupId
+            ? customerGroupMap.get(editingGroupId)?.sortOrder ?? customerGroups.length + 1
+            : customerGroups.length + 1,
+        },
+        actor
+      );
+      notify(editingGroupId ? 'Đã cập nhật nhóm khách hàng' : 'Đã thêm nhóm khách hàng mới');
+      setEditingGroupId(null);
+      setGroupFormName('');
+      setGroupFormColor('#0F5132');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi lưu nhóm khách hàng', 'error');
+    } finally {
+      setSavingGroup(false);
+    }
+  };
+
+  const handleDeleteCustomerGroupItem = async (grp: CustomerGroup) => {
+    const usedCount = guests.filter((g) => g.customerGroupId === grp.id).length;
+    const ok = window.confirm(
+      usedCount > 0
+        ? `Xóa nhóm "${grp.name}"? Hiện có ${usedCount} khách thuộc nhóm này sẽ tự động chuyển về "Chưa phân nhóm".`
+        : `Xóa nhóm khách hàng "${grp.name}"?`
+    );
+    if (!ok) return;
+    try {
+      await deleteCustomerGroup(grp.id, guests, actor);
+      if (guestGroupFilter === grp.id) setGuestGroupFilter('all');
+      if (editingGroupId === grp.id) {
+        setEditingGroupId(null);
+        setGroupFormName('');
+      }
+      notify(`Đã xóa nhóm "${grp.name}"`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Lỗi xóa nhóm khách hàng', 'error');
     }
   };
 
@@ -346,13 +489,25 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                         </td>
                         <td className="px-4 py-3">
                           <div className="font-medium text-[#1C1B18] flex flex-wrap items-center gap-1.5">
-                            {b.primaryGuestName}
-                            {(isLoyalGuest(b.guestStayCount) || b.isReturningGuest) && (
-                              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[#FEF3C7] text-[#92400E] font-semibold">
-                                <Award className="w-3 h-3" strokeWidth={1.5} />
-                                Khách hàng thân quen
-                              </span>
-                            )}
+                            <span>{b.primaryGuestName}</span>
+                            {(() => {
+                              const gRec = guestByIdMap.get(b.primaryGuestId);
+                              const grp = gRec?.customerGroupId
+                                ? customerGroupMap.get(gRec.customerGroupId)
+                                : undefined;
+                              if (!grp) return null;
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-semibold"
+                                  style={{
+                                    backgroundColor: `${grp.color}18`,
+                                    color: grp.color,
+                                  }}
+                                >
+                                  {grp.name}
+                                </span>
+                              );
+                            })()}
                           </div>
                           <div className="text-[11px] font-mono-num text-[#57534E]">
                             {b.primaryGuestPhone || '—'} • {b.occupantCount} khách
@@ -748,12 +903,28 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
           {/* Repeat Guest Directory */}
           <div className="bg-white border border-[#E5E2DC] rounded-2xl p-5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="text-[15px] font-semibold text-[#1C1B18]">
-                Kho Hồ sơ Khách hàng & Khách quay lại ({filteredGuests.length}
-                {filteredGuests.length !== guests.length ? ` / ${guests.length}` : ''})
-              </h3>
-              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                <div className="w-full sm:w-56">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-[15px] font-semibold text-[#1C1B18]">
+                  Kho Hồ sơ Khách hàng & Khách quay lại ({filteredGuests.length}
+                  {filteredGuests.length !== guests.length ? ` / ${guests.length}` : ''})
+                </h3>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                <select
+                  value={guestGroupFilter}
+                  onChange={(e) => setGuestGroupFilter(e.target.value)}
+                  data-testid="guests-group-filter"
+                  className="min-h-[40px] sm:min-h-0 sm:h-8 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px] text-[#1C1B18] w-full sm:w-44 focus:outline-none focus:border-[#0F5132]"
+                >
+                  <option value="all">Tất cả nhóm khách</option>
+                  <option value="__UNGROUPED__">Chưa phân nhóm</option>
+                  {customerGroups.map((cg) => (
+                    <option key={cg.id} value={cg.id}>
+                      {cg.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="w-full sm:w-52">
                   <CountrySelect
                     value={guestCountryFilter}
                     onChange={setGuestCountryFilter}
@@ -768,8 +939,45 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   value={guestSearch}
                   onChange={(e) => setGuestSearch(e.target.value)}
                   placeholder="Tìm tên, SĐT, CCCD, quốc tịch..."
-                  className="min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border border-[#E5E2DC] text-[12px] w-full sm:w-60"
+                  className="min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border border-[#E5E2DC] text-[12px] w-full sm:w-56"
                 />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingGroupId(null);
+                    setGroupFormName('');
+                    setGroupFormColor('#0F5132');
+                    setShowGroupManager(true);
+                  }}
+                  data-testid="manage-customer-groups-btn"
+                  className="min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border border-[#0F5132]/35 bg-[#E8F2EE] hover:bg-[#D5E9E0] text-[#0F5132] text-[12px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Tag className="w-3.5 h-3.5" strokeWidth={1.6} />
+                  <span>Quản lý nhóm khách</span>
+                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    disabled={mergingWalkIn}
+                    onClick={() => void handleMergeWalkInDuplicates()}
+                    data-testid="merge-walkin-btn"
+                    className={`min-h-[40px] sm:min-h-0 sm:h-8 px-3 rounded-lg border text-[12px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 ${
+                      duplicateWalkInCount > 0
+                        ? 'border-[#F59E0B] bg-[#FFFBEB] text-[#92400E] hover:bg-[#FEF3C7]'
+                        : 'border-[#E5E2DC] bg-white text-[#57534E] hover:bg-[#F7F6F3]'
+                    }`}
+                    title="Gộp toàn bộ hồ sơ Khách lẻ vô danh trùng lặp về 1 hồ sơ hệ thống duy nhất (WALK_IN_DEFAULT)"
+                  >
+                    <Merge className="w-3.5 h-3.5" strokeWidth={1.6} />
+                    <span>
+                      {mergingWalkIn
+                        ? 'Đang gộp...'
+                        : duplicateWalkInCount > 0
+                          ? `Gộp khách lẻ trùng (${duplicateWalkInCount})`
+                          : 'Gộp khách lẻ trùng'}
+                    </span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -777,53 +985,113 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
               <table className="w-full text-[12px]">
                 <thead className="bg-[#FAF9F6] border-b border-[#E5E2DC] text-[#57534E]">
                   <tr>
-                    <th className="text-left px-3 py-2 font-medium">Họ tên</th>
+                    <th className="text-left px-3 py-2 font-medium">Họ tên / Nhóm khách</th>
                     <th className="text-left px-3 py-2 font-medium">SĐT</th>
                     <th className="text-left px-3 py-2 font-medium">CCCD / Hộ chiếu</th>
                     <th className="text-left px-3 py-2 font-medium">Quốc tịch</th>
                     <th className="text-right px-3 py-2 font-medium">Số lần lưu trú</th>
                     <th className="text-right px-3 py-2 font-medium">Lần cuối</th>
-                    <th className="text-right px-3 py-2 font-medium">Sửa</th>
+                    <th className="text-right px-3 py-2 font-medium">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F1EFEA]">
-                  {guestsPag.pageItems.map((g) => (
-                    <tr key={g.id}>
-                      <td className="px-3 py-2 font-medium text-[#1C1B18]">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span>{g.fullName}</span>
-                          {isLoyalGuest(g.totalStays) && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#FEF3C7] text-[#92400E] text-[10px] font-semibold">
-                              <Award className="w-3 h-3" strokeWidth={1.5} />
-                              Khách hàng thân quen
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 font-mono-num">{g.phone || '—'}</td>
-                      <td className="px-3 py-2 font-mono-num">{g.idNumber || '—'}</td>
-                      <td className="px-3 py-2 font-medium text-[#3F3D37]">
-                        {formatCountryBadge(g.nationality) || '—'}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono-num font-semibold text-[#1B5E4B]">
-                        {g.totalStays}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono-num text-[#57534E]">
-                        {formatDateVN(g.lastVisitDate)}
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => setEditingGuest({ ...g })}
-                          data-testid={`edit-guest-btn-${g.id}`}
-                          className="min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border border-[#E5E2DC] hover:border-[#0F5132] hover:text-[#0F5132] text-[11px] font-medium inline-flex items-center gap-1"
-                        >
-                          <Pencil className="w-3 h-3" strokeWidth={1.5} />
-                          <span>Sửa</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {guestsPag.pageItems.map((g) => {
+                    const isSysWalkIn = g.id === WALK_IN_DEFAULT_GUEST_ID || g.isSystemDefault;
+                    const assignedGroup = g.customerGroupId
+                      ? customerGroupMap.get(g.customerGroupId)
+                      : undefined;
+                    return (
+                      <tr
+                        key={g.id}
+                        data-testid={`guest-row-${g.id}`}
+                        className={isSysWalkIn ? 'bg-[#FAF9F6]/80' : undefined}
+                      >
+                        <td className="px-3 py-2 font-medium text-[#1C1B18]">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span>{g.fullName}</span>
+                            {isSysWalkIn && (
+                              <span
+                                data-testid="walkin-system-badge"
+                                className="inline-flex items-center px-1.5 py-0.5 rounded bg-[#E7E5E0] text-[#44403C] text-[10px] font-semibold"
+                              >
+                                [Hệ thống]
+                              </span>
+                            )}
+                            {inlineAssignGuestId === g.id ? (
+                              <select
+                                autoFocus
+                                value={g.customerGroupId || ''}
+                                onBlur={() => setInlineAssignGuestId(null)}
+                                onChange={(e) =>
+                                  void handleQuickAssignGroup(g.id, e.target.value || null)
+                                }
+                                data-testid={`inline-group-select-${g.id}`}
+                                className="h-6 px-1.5 rounded border border-[#0F5132] bg-white text-[11px] font-medium text-[#1C1B18]"
+                              >
+                                <option value="">Chưa phân nhóm</option>
+                                {customerGroups.map((cg) => (
+                                  <option key={cg.id} value={cg.id}>
+                                    {cg.name}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : assignedGroup ? (
+                              <button
+                                type="button"
+                                onClick={() => setInlineAssignGuestId(g.id)}
+                                data-testid={`guest-group-badge-${g.id}`}
+                                title="Bấm để đổi nhóm khách"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-opacity hover:opacity-85"
+                                style={{
+                                  backgroundColor: `${assignedGroup.color}18`,
+                                  borderColor: `${assignedGroup.color}40`,
+                                  color: assignedGroup.color,
+                                }}
+                              >
+                                <span
+                                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                                  style={{ backgroundColor: assignedGroup.color }}
+                                />
+                                {assignedGroup.name}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setInlineAssignGuestId(g.id)}
+                                data-testid={`guest-group-assign-btn-${g.id}`}
+                                title="Bấm để gán nhóm khách thủ công"
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-dashed border-[#D6D1C7] text-[#8A847C] hover:border-[#0F5132] hover:text-[#0F5132] text-[10px] font-medium transition-colors"
+                              >
+                                + Nhóm
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 font-mono-num">{g.phone || '—'}</td>
+                        <td className="px-3 py-2 font-mono-num">{g.idNumber || '—'}</td>
+                        <td className="px-3 py-2 font-medium text-[#3F3D37]">
+                          {formatCountryBadge(g.nationality) || '—'}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono-num font-semibold text-[#1B5E4B]">
+                          {g.totalStays}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono-num text-[#57534E]">
+                          {formatDateVN(g.lastVisitDate)}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setEditingGuest({ ...g })}
+                            data-testid={`edit-guest-btn-${g.id}`}
+                            className="min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border border-[#E5E2DC] hover:border-[#0F5132] hover:text-[#0F5132] text-[11px] font-medium inline-flex items-center gap-1"
+                          >
+                            <Pencil className="w-3 h-3" strokeWidth={1.5} />
+                            <span>Sửa</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -895,9 +1163,10 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                 <input
                   type="text"
                   required
+                  disabled={editingGuest.id === WALK_IN_DEFAULT_GUEST_ID || editingGuest.isSystemDefault}
                   value={editingGuest.fullName}
                   onChange={(e) => setEditingGuest({ ...editingGuest, fullName: e.target.value })}
-                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px]"
+                  className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] disabled:bg-[#F5F4F0] disabled:text-[#8A847C] text-[13px]"
                 />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -905,9 +1174,10 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   <label className="block text-[12px] text-[#57534E] mb-1">Số điện thoại</label>
                   <input
                     type="tel"
+                    disabled={editingGuest.id === WALK_IN_DEFAULT_GUEST_ID || editingGuest.isSystemDefault}
                     value={editingGuest.phone || ''}
                     onChange={(e) => setEditingGuest({ ...editingGuest, phone: e.target.value })}
-                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px] font-mono-num"
+                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] disabled:bg-[#F5F4F0] disabled:text-[#8A847C] text-[13px] font-mono-num"
                   />
                 </div>
                 <div>
@@ -916,9 +1186,10 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                   </label>
                   <input
                     type="text"
+                    disabled={editingGuest.id === WALK_IN_DEFAULT_GUEST_ID || editingGuest.isSystemDefault}
                     value={editingGuest.idNumber || ''}
                     onChange={(e) => setEditingGuest({ ...editingGuest, idNumber: e.target.value })}
-                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] text-[13px] font-mono-num"
+                    className="w-full h-9 px-3 rounded-lg border border-[#E5E2DC] disabled:bg-[#F5F4F0] disabled:text-[#8A847C] text-[13px] font-mono-num"
                   />
                 </div>
               </div>
@@ -927,10 +1198,37 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
                 <CountrySelect
                   value={editingGuest.nationality || ''}
                   onChange={(code) => setEditingGuest({ ...editingGuest, nationality: code })}
+                  disabled={editingGuest.id === WALK_IN_DEFAULT_GUEST_ID || editingGuest.isSystemDefault}
                   placeholder="Chọn quốc tịch..."
                   testId="guest-edit-nationality-select"
                 />
               </div>
+              <div>
+                <label className="block text-[12px] text-[#57534E] mb-1">Nhóm khách hàng (Phân loại thủ công)</label>
+                <select
+                  value={editingGuest.customerGroupId || ''}
+                  onChange={(e) =>
+                    setEditingGuest({
+                      ...editingGuest,
+                      customerGroupId: e.target.value || null,
+                    })
+                  }
+                  data-testid="guest-edit-group-select"
+                  className="w-full min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px] focus:outline-none focus:border-[#0F5132]"
+                >
+                  <option value="">Chưa phân nhóm</option>
+                  {customerGroups.map((cg) => (
+                    <option key={cg.id} value={cg.id}>
+                      {cg.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {(editingGuest.id === WALK_IN_DEFAULT_GUEST_ID || editingGuest.isSystemDefault) && (
+                <p className="text-[11px] text-[#8A847C] bg-[#FAF9F6] border border-[#E5E2DC] rounded-lg px-3 py-2">
+                  Đây là hồ sơ hệ thống mặc định (<strong>WALK_IN_DEFAULT</strong>) gom toàn bộ lượt khách lẻ vô danh — không thể xóa hoặc đổi tên định danh.
+                </p>
+              )}
             </div>
             <div className="px-4 py-3 border-t border-[#E5E2DC] bg-[#FAF9F6] rounded-b-2xl flex items-center justify-end gap-2">
               <button
@@ -949,6 +1247,178 @@ export const BookingsAndGroupsView: React.FC<BookingsAndGroupsViewProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Modal Quản lý Danh mục Nhóm khách (customer_groups) */}
+      {showGroupManager && (
+        <div
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-3"
+          onClick={() => !savingGroup && setShowGroupManager(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg max-h-[90vh] flex flex-col rounded-2xl bg-white border border-[#E5E2DC] shadow-xl overflow-hidden"
+          >
+            <div className="px-4 py-3 border-b border-[#E5E2DC] flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2">
+                <Tag className="w-4 h-4 text-[#0F5132]" strokeWidth={1.75} />
+                <h3 className="text-[15px] font-semibold text-[#1C1B18]">
+                  Quản lý Danh mục Nhóm khách hàng
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowGroupManager(false)}
+                className="min-w-[36px] min-h-[36px] rounded-lg hover:bg-[#F5F4F0] flex items-center justify-center text-[#57534E]"
+              >
+                <X className="w-4 h-4" strokeWidth={1.75} />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4 overflow-y-auto flex-1">
+              <form
+                onSubmit={handleSaveCustomerGroupForm}
+                className="p-3.5 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] space-y-3"
+              >
+                <div className="text-[12px] font-semibold text-[#1C1B18]">
+                  {editingGroupId ? 'Chỉnh sửa nhóm khách' : 'Thêm nhóm khách mới'}
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    required
+                    value={groupFormName}
+                    onChange={(e) => setGroupFormName(e.target.value)}
+                    data-testid="customer-group-name-input"
+                    placeholder="VD: Khách VIP, Khách thân quen, Cần lưu ý..."
+                    className="flex-1 min-h-[40px] sm:min-h-0 sm:h-9 px-3 rounded-lg border border-[#E5E2DC] bg-white text-[13px] focus:outline-none focus:border-[#0F5132]"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="submit"
+                      disabled={savingGroup}
+                      data-testid="customer-group-save-btn"
+                      className="min-h-[40px] sm:min-h-0 sm:h-9 px-3.5 rounded-lg bg-[#0F5132] hover:bg-[#0B3D26] disabled:opacity-50 text-white text-[12px] font-medium"
+                    >
+                      {savingGroup ? 'Đang lưu...' : editingGroupId ? 'Cập nhật' : '+ Thêm nhóm'}
+                    </button>
+                    {editingGroupId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingGroupId(null);
+                          setGroupFormName('');
+                          setGroupFormColor('#0F5132');
+                        }}
+                        className="min-h-[40px] sm:min-h-0 sm:h-9 px-2.5 rounded-lg border border-[#E5E2DC] bg-white text-[12px] text-[#57534E]"
+                      >
+                        Hủy
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] text-[#57534E]">Màu nhãn:</span>
+                  {CUSTOMER_GROUP_COLOR_PALETTE.map((c) => (
+                    <button
+                      key={c.hex}
+                      type="button"
+                      title={c.label}
+                      onClick={() => setGroupFormColor(c.hex)}
+                      className={`w-6 h-6 rounded-full border-2 transition-transform ${
+                        groupFormColor === c.hex
+                          ? 'border-[#1C1B18] scale-110'
+                          : 'border-white shadow-xs'
+                      }`}
+                      style={{ backgroundColor: c.hex }}
+                    />
+                  ))}
+                  {groupFormName.trim() && (
+                    <span
+                      className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border"
+                      style={{
+                        backgroundColor: `${groupFormColor}18`,
+                        borderColor: `${groupFormColor}40`,
+                        color: groupFormColor,
+                      }}
+                    >
+                      <span
+                        className="w-1.5 h-1.5 rounded-full"
+                        style={{ backgroundColor: groupFormColor }}
+                      />
+                      {groupFormName.trim()}
+                    </span>
+                  )}
+                </div>
+              </form>
+
+              <div className="space-y-1.5">
+                <div className="text-[12px] font-semibold text-[#57534E]">
+                  Danh sách nhóm hiện có ({customerGroups.length})
+                </div>
+                {customerGroups.length === 0 ? (
+                  <p className="text-[12px] text-[#8A847C] py-3">Chưa có nhóm khách nào.</p>
+                ) : (
+                  <div className="divide-y divide-[#F1EFEA] border border-[#E5E2DC] rounded-xl overflow-hidden">
+                    {customerGroups.map((grp) => {
+                      const count = guests.filter((g) => g.customerGroupId === grp.id).length;
+                      return (
+                        <div
+                          key={grp.id}
+                          data-testid={`customer-group-item-${grp.id}`}
+                          className="px-3 py-2.5 bg-white flex items-center justify-between gap-2"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[12px] font-semibold border"
+                              style={{
+                                backgroundColor: `${grp.color}18`,
+                                borderColor: `${grp.color}40`,
+                                color: grp.color,
+                              }}
+                            >
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: grp.color }}
+                              />
+                              {grp.name}
+                            </span>
+                            <span className="text-[11px] font-mono-num text-[#8A847C]">
+                              ({count} khách)
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingGroupId(grp.id);
+                                setGroupFormName(grp.name);
+                                setGroupFormColor(grp.color);
+                              }}
+                              className="min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border border-[#E5E2DC] hover:border-[#0F5132] text-[11px] font-medium text-[#57534E] hover:text-[#0F5132] inline-flex items-center gap-1"
+                            >
+                              <Pencil className="w-3 h-3" strokeWidth={1.5} />
+                              Sửa
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteCustomerGroupItem(grp)}
+                              data-testid={`delete-group-btn-${grp.id}`}
+                              className="min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border border-[#FECACA] hover:bg-[#FEF2F2] text-[11px] font-medium text-[#B91C1C] inline-flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                              Xóa
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

@@ -1,12 +1,32 @@
 import { doc, writeBatch } from 'firebase/firestore';
 import { db } from './firebase';
 import type {
+  CustomerGroup,
   FormTemplate,
   HotelConfig,
   Room,
   RoomType,
   ServiceCatalogItem,
 } from '../types/pms';
+
+export const CUSTOMER_GROUP_COLOR_PALETTE: Array<{ label: string; hex: string }> = [
+  { label: 'Xanh ngọc (VIP)', hex: '#0F5132' },
+  { label: 'Vàng hổ phách (Thân quen)', hex: '#D97706' },
+  { label: 'Xanh dương (Đoàn/Công ty)', hex: '#2563EB' },
+  { label: 'Tím (Đối tác)', hex: '#7C3AED' },
+  { label: 'Đỏ (Cần lưu ý)', hex: '#DC2626' },
+  { label: 'Xám đá (Thường)', hex: '#64748B' },
+  { label: 'Hồng đậm', hex: '#DB2777' },
+  { label: 'Xanh lam đậm', hex: '#0891B2' },
+];
+
+export const DEFAULT_CUSTOMER_GROUPS: CustomerGroup[] = [
+  { id: 'cg_regular', name: 'Khách thường', color: '#64748B', sortOrder: 1, createdAt: '' },
+  { id: 'cg_loyal', name: 'Khách thân quen', color: '#D97706', sortOrder: 2, createdAt: '' },
+  { id: 'cg_vip', name: 'Khách VIP', color: '#0F5132', sortOrder: 3, createdAt: '' },
+  { id: 'cg_corporate', name: 'Khách đoàn/Công ty', color: '#2563EB', sortOrder: 4, createdAt: '' },
+  { id: 'cg_attention', name: 'Cần lưu ý', color: '#DC2626', sortOrder: 5, createdAt: '' },
+];
 
 export const DEFAULT_SERVICE_CATALOG: ServiceCatalogItem[] = [
   { id: 'svc_water', name: 'Nước suối Lavie', category: 'drink', price: 15000, isActive: true, order: 1 },

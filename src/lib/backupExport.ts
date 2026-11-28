@@ -65,7 +65,7 @@ export async function exportFullBackupExcel(
       Phong: b.roomNumber,
       LoaiPhong: b.roomTypeName,
       KhachChinh: b.primaryGuestName,
-      KhachThanQuen: (b.guestStayCount || 0) >= 2 ? 'Có' : 'Không',
+      SoLanO: b.guestStayCount || 1,
       SDT: b.primaryGuestPhone,
       CheckIn: formatDateVN(b.checkIn),
       CheckOut: formatDateVN(b.checkOut),
@@ -90,7 +90,7 @@ export async function exportFullBackupExcel(
     bundle.guests.map((g) => ({
       HoTen: g.fullName,
       PhanLoai: g.guestCategory === 'foreigner' ? 'Nước ngoài' : 'Việt Nam',
-      KhachThanQuen: g.totalStays >= 2 ? 'Khách hàng thân quen' : 'Khách thường',
+      MaNhomKhach: g.customerGroupId || 'Chưa phân nhóm',
       SDT: g.phone,
       GioiTinh: g.gender,
       NgaySinh: formatDateVN(g.dob),

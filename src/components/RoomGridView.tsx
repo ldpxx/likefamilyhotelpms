@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  Award,
   BedDouble,
   Brush,
   CalendarClock,
@@ -29,7 +28,6 @@ import {
   getHkStatusLabel,
   getSourceLabel,
   getStatusLabel,
-  isLoyalGuest,
   normalizeVietnamese,
   todayISO,
 } from '../lib/utils';
@@ -64,6 +62,8 @@ export const RoomGridView: React.FC<RoomGridViewProps> = ({
     activeRooms: rooms,
     roomTypes,
     bookings,
+    guests,
+    customerGroups,
     hotelConfig,
     actor,
     isAdmin,
@@ -818,15 +818,25 @@ export const RoomGridView: React.FC<RoomGridViewProps> = ({
                               <span className="text-[13px] font-semibold text-[#1C1B18] truncate">
                                 {primaryBooking.primaryGuestName}
                               </span>
-                              {(isLoyalGuest(primaryBooking.guestStayCount) ||
-                                primaryBooking.isReturningGuest) && (
-                                <span title="Khách hàng thân quen">
-                                  <Award
-                                    className="w-3.5 h-3.5 text-[#D97706] shrink-0"
-                                    strokeWidth={1.75}
-                                  />
-                                </span>
-                              )}
+                              {(() => {
+                                const gRec = guests.find((g) => g.id === primaryBooking.primaryGuestId);
+                                const grp = gRec?.customerGroupId
+                                  ? customerGroups.find((cg) => cg.id === gRec.customerGroupId)
+                                  : undefined;
+                                if (!grp) return null;
+                                return (
+                                  <span
+                                    title={grp.name}
+                                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0"
+                                    style={{
+                                      backgroundColor: `${grp.color}18`,
+                                      color: grp.color,
+                                    }}
+                                  >
+                                    {grp.name}
+                                  </span>
+                                );
+                              })()}
                             </div>
 
                             <div className="flex items-center justify-between gap-2 text-[11px] text-[#57534E]">

@@ -31,6 +31,7 @@ import type {
   Booking,
   BookingGroup,
   BookingSourceConfig,
+  CustomerGroup,
   FormTemplate,
   FormTemplateType,
   Guest,
@@ -46,7 +47,11 @@ import type {
   Transaction,
   UndoBannerState,
 } from '../types/pms';
-import { ensureBookingSourcesConfig, type ActorInfo } from '../lib/pmsActions';
+import {
+  ensureBookingSourcesConfig,
+  ensureDefaultCustomerGroups,
+  type ActorInfo,
+} from '../lib/pmsActions';
 
 const LS_STAFF_SESSION = 'lfpms_staff_session_v11';
 
@@ -80,6 +85,7 @@ interface PmsContextValue {
   bookings: Booking[];
   groups: BookingGroup[];
   guests: Guest[];
+  customerGroups: CustomerGroup[];
   transactions: Transaction[];
   otaBatches: OtaPayoutBatch[];
   otaAdjustments: OtaAdjustment[];
@@ -118,6 +124,7 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [groups, setGroups] = useState<BookingGroup[]>([]);
   const [guests, setGuests] = useState<Guest[]>([]);
+  const [customerGroups, setCustomerGroups] = useState<CustomerGroup[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [otaBatches, setOtaBatches] = useState<OtaPayoutBatch[]>([]);
   const [otaAdjustments, setOtaAdjustments] = useState<OtaAdjustment[]>([]);
@@ -130,6 +137,7 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [dataLoaded, setDataLoaded] = useState(false);
   const configMigrationCheckedRef = React.useRef(false);
+  const customerGroupsSeededRef = React.useRef(false);
 
   const [toasts, setToasts] = useState<ToastNotice[]>([]);
   const [undoBanner, setUndoBanner] = useState<UndoBannerState | null>(null);
@@ -267,7 +275,7 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               const oldSnap = await getDoc(doc(db, 'staff_users', rootUid)).catch(() => null);
               if (oldSnap && oldSnap.exists()) {
                 migratedFromOld = oldSnap.data() as Partial<StaffUser>;
-                await deleteDoc(doc(db, 'staff_users', rootUid)).catch(() => {});
+                await deleteDoc(doc(db, 'staff_users', rootUid)).catch(() => { });
               }
             }
           }
@@ -509,6 +517,18 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     unsubs.push(
+      onSnapshot(collection(db, 'customer_groups'), (snap) => {
+        const list = snap.docs.map((d) => d.data() as CustomerGroup);
+        list.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name, 'vi'));
+        setCustomerGroups(list);
+        if (list.length === 0 && !customerGroupsSeededRef.current) {
+          customerGroupsSeededRef.current = true;
+          ensureDefaultCustomerGroups().catch(() => {});
+        }
+      })
+    );
+
+    unsubs.push(
       onSnapshot(collection(db, 'transactions'), (snap) => {
         const list = snap.docs.map((d) => d.data() as Transaction);
         list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -696,6 +716,7 @@ export const PmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     bookings,
     groups,
     guests,
+    customerGroups,
     transactions,
     otaBatches,
     otaAdjustments,

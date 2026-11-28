@@ -174,7 +174,13 @@ service cloud.firestore {
     // Core operational collections (Strictly Authenticated Active Staff / SuperAdmin)
     match /guests/{guestId} {
       allow read, create, update: if isActiveStaff();
-      allow delete: if isSuperAdmin();
+      // Protect system default WALK_IN_DEFAULT from deletion; allow Owner/SuperAdmin to clean up duplicate walk-in docs
+      allow delete: if guestId != 'WALK_IN_DEFAULT' && isOwnerOrSuperAdmin();
+    }
+
+    // Manual Customer Groups (CRM classification — no auto-labeling)
+    match /customer_groups/{groupId} {
+      allow read, create, update, delete: if isActiveStaff();
     }
 
     match /bookings/{bookingId} {

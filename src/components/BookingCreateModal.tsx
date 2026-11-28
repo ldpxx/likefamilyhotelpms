@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Award, Clock, History, UserCheck, X } from 'lucide-react';
+import { Clock, History, UserCheck, X } from 'lucide-react';
 import { usePms } from '../context/PmsContext';
 import type { Booking, BookingMode, DailyRate, Guest, PaymentMethod, Room } from '../types/pms';
 import {
@@ -10,7 +10,6 @@ import {
   formatCurrency,
   formatDateVN,
   isBookingBlockingCalendar,
-  isLoyalGuest,
   sumDailyRates,
   todayISO,
 } from '../lib/utils';
@@ -52,6 +51,7 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
     maintenances,
     hotelConfig,
     guests,
+    customerGroups,
     actor,
     staffProfile,
     notify,
@@ -606,7 +606,11 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
                   Phát hiện khách đã từng lưu trú — bấm để điền tự động toàn bộ hồ sơ:
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {repeatMatches.map((g) => (
+                  {repeatMatches.map((g) => {
+                    const grp = g.customerGroupId
+                      ? customerGroups.find((cg) => cg.id === g.customerGroupId)
+                      : undefined;
+                    return (
                     <button
                       key={g.id}
                       type="button"
@@ -615,10 +619,15 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
                     >
                       <div className="font-medium text-[#1C1B18] flex items-center gap-1.5">
                         <span>{g.fullName}</span>
-                        {isLoyalGuest((g.totalStays || 0) + 1) && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#FEF3C7] text-[#92400E] text-[10px] font-semibold">
-                            <Award className="w-3 h-3" strokeWidth={1.5} />
-                            Khách hàng thân quen
+                        {grp && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                            style={{
+                              backgroundColor: `${grp.color}18`,
+                              color: grp.color,
+                            }}
+                          >
+                            {grp.name}
                           </span>
                         )}
                       </div>
@@ -627,7 +636,8 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
                         {g.idNumber ? ` • ${g.idNumber}` : ''}
                       </div>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -636,12 +646,25 @@ export const BookingCreateModal: React.FC<BookingCreateModalProps> = ({
               <div className="flex flex-wrap items-center gap-2 text-[12px]">
                 <span className="inline-flex items-center gap-1.5 text-[#15803D] bg-[#ECFDF5] px-2.5 py-1 rounded-lg">
                   <UserCheck className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  Đã điền tự động hồ sơ khách cũ (Lần thứ {(matchedGuest.totalStays || 0) + 1})
+                  Đã điền tự động hồ sơ khách cũ (Đã lưu trú {matchedGuest.totalStays || 0} lần)
                 </span>
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FEF3C7] text-[#92400E] font-semibold">
-                  <Award className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  Khách hàng thân quen
-                </span>
+                {(() => {
+                  const grp = matchedGuest.customerGroupId
+                    ? customerGroups.find((cg) => cg.id === matchedGuest.customerGroupId)
+                    : undefined;
+                  if (!grp) return null;
+                  return (
+                    <span
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg font-semibold"
+                      style={{
+                        backgroundColor: `${grp.color}18`,
+                        color: grp.color,
+                      }}
+                    >
+                      {grp.name}
+                    </span>
+                  );
+                })()}
               </div>
             )}
           </div>

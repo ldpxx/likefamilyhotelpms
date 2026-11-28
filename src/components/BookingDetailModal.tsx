@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
   ArrowRightLeft,
-  Award,
   Clock,
   Copy,
   CreditCard,
@@ -41,7 +40,6 @@ import {
   getStatusLabel,
   isBookingBlockingCalendar,
   isDateRangeOverlap,
-  isLoyalGuest,
   sumDailyRates,
   todayISO,
 } from '../lib/utils';
@@ -87,6 +85,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
     activeRooms,
     roomTypes,
     guests,
+    customerGroups,
     transactions,
     postCheckoutAdjustments,
     hotelConfig,
@@ -198,11 +197,9 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
 
   const roomType = roomTypes.find((rt) => rt.id === booking.roomTypeId);
   const primaryGuestRecord = guests.find((g) => g.id === booking.primaryGuestId);
-  const effectiveStayCount = Math.max(
-    primaryGuestRecord?.totalStays || 0,
-    booking.guestStayCount || 0
-  );
-  const showLoyalBadge = isLoyalGuest(effectiveStayCount) || booking.isReturningGuest;
+  const primaryGuestGroup = primaryGuestRecord?.customerGroupId
+    ? customerGroups.find((cg) => cg.id === primaryGuestRecord.customerGroupId)
+    : undefined;
 
   const guestBalance = getBookingGuestBalance(booking);
   const today = todayISO();
@@ -498,10 +495,20 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                 <span className="px-2 py-0.5 rounded-full bg-[#FAF9F6] border border-[#E7E3DA] text-[11px] font-medium text-[#57534E]">
                   {getSourceLabel(booking.source, booking.otaChannel, booking.sourceLabel)}
                 </span>
-                {showLoyalBadge && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#FEF3C7] text-[#B45309] text-[11px] font-semibold">
-                    <Award className="w-3 h-3" strokeWidth={1.5} />
-                    Khách hàng thân quen
+                {primaryGuestGroup && (
+                  <span
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border"
+                    style={{
+                      backgroundColor: `${primaryGuestGroup.color}18`,
+                      borderColor: `${primaryGuestGroup.color}40`,
+                      color: primaryGuestGroup.color,
+                    }}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: primaryGuestGroup.color }}
+                    />
+                    {primaryGuestGroup.name}
                   </span>
                 )}
                 {booking.groupName && (
@@ -1179,11 +1186,10 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                         setServicePrice(20000);
                       }
                     }}
-                    className={`min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border text-[11px] font-medium transition-colors ${
-                      serviceCustomMode
-                        ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132]'
-                        : 'border-[#E5E2DC] bg-[#FAF9F6] text-[#57534E] hover:text-[#1C1B18]'
-                    }`}
+                    className={`min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg border text-[11px] font-medium transition-colors ${serviceCustomMode
+                      ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132]'
+                      : 'border-[#E5E2DC] bg-[#FAF9F6] text-[#57534E] hover:text-[#1C1B18]'
+                      }`}
                   >
                     {serviceCustomMode ? '← Chọn từ bảng giá chuẩn' : '+ Nhập dịch vụ ngoài danh mục'}
                   </button>
@@ -1204,11 +1210,10 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                           key={g.id}
                           type="button"
                           onClick={() => setServiceCatalogFilter(g.id)}
-                          className={`min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg text-[11px] font-medium transition-colors ${
-                            serviceCatalogFilter === g.id
-                              ? 'bg-[#0F5132] text-white'
-                              : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
-                          }`}
+                          className={`min-h-[34px] sm:min-h-0 sm:h-7 px-2.5 rounded-lg text-[11px] font-medium transition-colors ${serviceCatalogFilter === g.id
+                            ? 'bg-[#0F5132] text-white'
+                            : 'bg-[#F3F0E9] text-[#57534E] hover:text-[#1C1B18]'
+                            }`}
                         >
                           {g.label}
                         </button>
@@ -1231,11 +1236,10 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                               key={item.id}
                               type="button"
                               onClick={() => handlePickCatalogItem(item)}
-                              className={`min-h-[40px] px-3 py-1.5 rounded-lg border text-left flex items-center justify-between gap-2 text-[12px] transition-colors ${
-                                isSelected
-                                  ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132] font-semibold'
-                                  : 'border-[#E7E3DA] bg-[#FAF9F6] hover:border-[#0F5132]/50 text-[#1C1B18]'
-                              }`}
+                              className={`min-h-[40px] px-3 py-1.5 rounded-lg border text-left flex items-center justify-between gap-2 text-[12px] transition-colors ${isSelected
+                                ? 'border-[#0F5132] bg-[#E8F3EC] text-[#0F5132] font-semibold'
+                                : 'border-[#E7E3DA] bg-[#FAF9F6] hover:border-[#0F5132]/50 text-[#1C1B18]'
+                                }`}
                             >
                               <span className="truncate">{item.name}</span>
                               <span className="font-mono-num text-[11px] font-semibold shrink-0">
@@ -1248,10 +1252,10 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                         (it) =>
                           serviceCatalogFilter === 'all' || it.category === serviceCatalogFilter
                       ).length === 0 && (
-                        <div className="col-span-full text-[12px] text-[#8A847C] py-2">
-                          Chưa có mục đang bán trong nhóm này.
-                        </div>
-                      )}
+                          <div className="col-span-full text-[12px] text-[#8A847C] py-2">
+                            Chưa có mục đang bán trong nhóm này.
+                          </div>
+                        )}
                     </div>
                   </div>
                 )}
@@ -1325,13 +1329,12 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                           >
                             <div className="min-w-0 flex flex-wrap items-center gap-1.5">
                               <span
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${
-                                  grp === 'food'
-                                    ? 'bg-[#FFFBEB] text-[#B45309]'
-                                    : grp === 'drink'
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${grp === 'food'
+                                  ? 'bg-[#FFFBEB] text-[#B45309]'
+                                  : grp === 'drink'
                                     ? 'bg-[#E8F3EC] text-[#0F5132]'
                                     : 'bg-[#F0F7F9] text-[#335C67]'
-                                }`}
+                                  }`}
                               >
                                 {grpLabel}
                               </span>

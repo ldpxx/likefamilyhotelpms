@@ -156,6 +156,17 @@ export interface RoomMaintenance {
 export type GuestCategory = 'vietnamese' | 'foreigner';
 export type AsmStatus = 'pending_asm' | 'declared_asm' | 'not_applicable';
 
+export const WALK_IN_DEFAULT_GUEST_ID = 'WALK_IN_DEFAULT';
+
+export interface CustomerGroup {
+  id: string;
+  name: string;
+  color: string;
+  sortOrder?: number;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface Guest {
   id: string;
   guestCategory: GuestCategory;
@@ -175,7 +186,11 @@ export interface Guest {
   stayPermitExpiryDate?: string;
   latestDocumentId?: string | null;
   preferences?: string;
-  /** Completed stays count; >= 2 automatically receives "Khách hàng thân quen" badge */
+  /** True only for the single consolidated system profile WALK_IN_DEFAULT ("Khách lẻ") */
+  isSystemDefault?: boolean;
+  /** Manual customer group assignment (ID in `customer_groups`); null/undefined = Chưa phân nhóm */
+  customerGroupId?: string | null;
+  /** Total stays counter (informational only; never auto-assigns a group badge) */
   totalStays: number;
   totalSpent: number;
   lastVisitDate?: string;
